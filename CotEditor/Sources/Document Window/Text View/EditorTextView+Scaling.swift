@@ -77,6 +77,10 @@ extension EditorTextView: TextSizeChanging {
     /// Resets scale by two-finger double tapping.
     override func smartMagnify(with event: NSEvent) {
         
+        if self.handleInlineImageSmartMagnify(with: event) {
+            return
+        }
+        
         let scale = (self.scale == 1.0) ? 1.5 : 1.0
         let center = self.convert(event.locationInWindow, from: nil)
         

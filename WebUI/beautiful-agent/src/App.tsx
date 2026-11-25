@@ -848,11 +848,15 @@ export default function App() {
       {/* Main chat surface */}
       <section className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-page">
         {/* Clean top header bar */}
-        <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-line px-4">
+        <header
+          className={`flex shrink-0 items-center justify-between gap-2 border-b border-line px-4 ${
+            isNews ? "h-10" : "h-12"
+          }`}
+        >
           <div className="flex min-w-0 items-center gap-2.5">
             {isNews ? (
-              <span className="truncate text-[14px] font-semibold text-ink">
-                {state.locale === "zh" ? "AI 精读与追问" : "AI Companion"}
+              <span className="truncate text-[13px] font-medium tracking-tight text-ink-2">
+                {state.locale === "zh" ? "AI" : "AI"}
               </span>
             ) : (
               <>
@@ -1026,20 +1030,20 @@ export default function App() {
 
         {/* Thread or Empty State */}
         {!hasMessages ? (
-          <div className="bui-scroll flex min-h-0 flex-1 flex-col justify-center overflow-y-auto px-6 py-8">
+          <div className="bui-scroll flex min-h-0 flex-1 flex-col justify-center overflow-y-auto px-5 py-6">
             <div className="mx-auto flex w-full max-w-[640px] flex-col">
-              <div className="mb-5" style={homeRevealStyle(revealStage >= 1)}>
-                <h1 className="text-[22px] font-semibold tracking-[-0.02em] text-ink">
-                  {isNews
-                    ? state.greetingName || (state.locale === "zh" ? "围绕这篇文章" : "About this article")
-                    : butlerEmptyHeading}
-                </h1>
-              </div>
+              {!isNews && (
+                <div className="mb-5" style={homeRevealStyle(revealStage >= 1)}>
+                  <h1 className="text-[22px] font-semibold tracking-[-0.02em] text-ink">
+                    {butlerEmptyHeading}
+                  </h1>
+                </div>
+              )}
 
-              <div style={homeRevealStyle(revealStage >= 2)}>
+              <div style={homeRevealStyle(isNews ? true : revealStage >= 2)}>
                 <PromptBar
                   ref={promptBarRef}
-                  tall
+                  tall={!isNews}
                   placeholder={state.placeholder}
                   locale={state.locale}
                   isStreaming={state.isStreaming}
@@ -1087,7 +1091,7 @@ export default function App() {
                   ) : (
                     <AssistantMessageBlock
                       key={msg.id}
-                      message={msg}
+                      message={isNews ? { ...msg, followUps: undefined } : msg}
                       locale={state.locale}
                       statusLabel={isLastAssistant ? state.streamingStatusLabel : undefined}
                       onRetry={

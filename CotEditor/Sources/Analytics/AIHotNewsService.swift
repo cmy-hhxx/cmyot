@@ -1985,7 +1985,6 @@ final class AIHotNewsService {
                 )
                 
                 let toolChips = result.toolNames.map { PiToolDisplayMeta.label(for: $0) }
-                let followUps = Self.newsFollowUpSuggestions(for: item, toolNames: result.toolNames)
                 self.updateAssistantMessage(
                     id: assistantID,
                     itemID: itemID,
@@ -1994,7 +1993,7 @@ final class AIHotNewsService {
                     thinkingDurationMs: result.thinkingDurationMs,
                     steps: result.steps.isEmpty ? nil : result.steps,
                     toolChips: toolChips.isEmpty ? nil : toolChips,
-                    followUps: followUps
+                    followUps: nil
                 )
                 if saveAsBrief, !finalText.isEmpty {
                     self.setAIBrief(finalText, for: itemID)
@@ -2070,7 +2069,7 @@ final class AIHotNewsService {
                 id: assistantID,
                 itemID: itemID,
                 text: finalClean,
-                followUps: Self.newsFollowUpSuggestions(for: item, toolNames: [])
+                followUps: nil
             )
             if saveAsBrief, !finalClean.isEmpty {
                 self.setAIBrief(finalClean, for: itemID)
@@ -2091,17 +2090,6 @@ final class AIHotNewsService {
                 isError: true
             )
         }
-    }
-    
-    
-    private static func newsFollowUpSuggestions(for item: AIHotNewsItem, toolNames: [String]) -> [String] {
-        var result: [String] = []
-        if !toolNames.contains("lookup_stock_quote") {
-            result.append(AppLanguage.text("查一下相关公司最新股价与市场反应", en: "Check related stock quotes"))
-        }
-        result.append(AppLanguage.text("反面视角：这件事有哪些被忽视的风险？", en: "What are the counter-arguments & risks?"))
-        result.append(AppLanguage.text("整理成结构化 Markdown 笔记打开", en: "Save as structured Markdown note"))
-        return Array(result.prefix(3))
     }
     
     

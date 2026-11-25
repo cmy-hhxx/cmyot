@@ -1686,14 +1686,16 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         let pboard = NSPasteboard.general
         let document = self.textStorage.flatMap { self.documentViewController?.document(for: $0) }
         let docURL = document?.fileURL
-        let rendersPlainTextImages = (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true
-        let isMarkdown = (document?.syntaxName == "Markdown")
+        let syntaxName = document?.syntaxName ?? SyntaxName.none
+        let rendersInlineImages = (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true
+        let isMarkdown = syntaxName.caseInsensitiveCompare("Markdown") == .orderedSame
         
-        if (rendersPlainTextImages || isMarkdown),
+        if (rendersInlineImages || isMarkdown),
+           PlainTextInlineImageStore.hasPasteableImage(in: pboard),
            let image = PlainTextInlineImageStore.shared.extractImage(from: pboard),
            let stored = PlainTextInlineImageStore.shared.store(image: image, for: docURL)
         {
-            if rendersPlainTextImages {
+            if rendersInlineImages {
                 self.insertInlineImageTokenCleanly(stored.token)
             } else {
                 let insertionText = "![image](.cot-assets/\(stored.fileURL.lastPathComponent))"
@@ -2055,90 +2057,113 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
-    /// Builds the text view's categorized, icon-rich context menu.
+    /// Computes a fast, zero-decode state snapshot used to drive context menu grouping and edge cases.
+    func currentContextMenuState() -> EditorContextMenuState {
+        
+        let nsString = self.backingNSString
+        let isEmpty = (nsString.length == 0)
+        let selectedRange = self.selectedRange()
+        let hasSelection = !selectedRange.isEmpty && selectedRange.upperBound <= nsString.length
+        let selectedSnippet = hasSelection ? nsString.substring(with: selectedRange) : ""
+        let canHighlight = hasSelection && NotesTextColorPaletteController.shouldPresent(for: selectedSnippet)
+        
+        let pboard = NSPasteboard.general
+        let hasClipboardText = (pboard.types ?? []).contains(.string)
+        let hasClipboardImage = PlainTextInlineImageStore.hasPasteableImage(in: pboard)
+        
+        let rendersInlineImages = (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true
+        let syntaxName = self.textStorage.flatMap { self.documentViewController?.document(for: $0)?.syntaxName }
+        let inlineImagesPref = UserDefaults.standard.object(forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
+        let supportsInlineImages = rendersInlineImages
+            || (inlineImagesPref && syntaxName.map { PlainTextInlineImageStore.supportsInlineImages(syntaxName: $0) } == true)
+        
+        let hasTable: Bool
+        if hasSelection, selectedSnippet.contains("|"), MarkdownTableFormatter.containsAnyTable(selectedSnippet) {
+            hasTable = true
+        } else if !isEmpty, nsString.range(of: "|", options: .literal).location != NSNotFound {
+            hasTable = MarkdownTableFormatter.containsAnyTable(self.string)
+        } else {
+            hasTable = false
+        }
+        
+        let controller = self.documentViewController
+        return EditorContextMenuState(
+            isEditable: self.isEditable,
+            isEmptyDocument: isEmpty,
+            hasSelection: hasSelection,
+            selectedCharacterCount: selectedSnippet.count,
+            canHighlightSelection: canHighlight,
+            hasClipboardText: hasClipboardText,
+            hasClipboardImage: hasClipboardImage,
+            supportsInlineImages: supportsInlineImages,
+            hasTable: hasTable,
+            splitPaneCount: controller?.editorViewControllers.count ?? 1,
+            showsLineNumber: controller?.showsLineNumber ?? true,
+            hasDocumentController: controller != nil
+        )
+    }
+    
+    
+    /// Builds the text view's categorized, high-craft right-click menu.
     ///
-    /// Organized into scannable functional groups (Edit, Quick Highlight Swatches,
-    /// Bots Smart Actions, Workflows & Tools, and Split/View) with consistent SF Symbols.
+    /// Top hero 4-tile edit dock, contextual highlight bar, categorized AI/Structure/Media/View sections,
+    /// zero tiny explainers, cached SF Symbols, and instant zero-decode clipboard detection.
     func makeContextMenu() -> NSMenu {
         
         let menu = NSMenu()
         menu.autoenablesItems = false
+        menu.minimumWidth = EditorContextMenuMetrics.menuWidth
+        let state = self.currentContextMenuState()
         
-        let hasSelection = !self.selectedRange().isEmpty
-        let canPaste = NSPasteboard.general.string(forType: .string) != nil
-            || PlainTextInlineImageStore.shared.extractImage(from: NSPasteboard.general) != nil
+        // 1. Hero Top 4-Tile Edit Dock (Cut / Copy / Paste / Select All)
+        let dockItem = NSMenuItem(title: AppLanguage.text("编辑", en: "Edit"), action: nil, keyEquivalent: "")
+        dockItem.view = ContextMenuActionDockView(actions: [
+            ContextMenuDockAction(
+                title: AppLanguage.text("剪切", en: "Cut"),
+                symbolName: "scissors",
+                toolTip: AppLanguage.text("剪切 (⌘X)", en: "Cut (⌘X)"),
+                isEnabled: state.canCut
+            ) { [weak self, weak menu] in
+                menu?.cancelTracking()
+                self?.cut(nil)
+            },
+            ContextMenuDockAction(
+                title: AppLanguage.text("拷贝", en: "Copy"),
+                symbolName: "doc.on.doc",
+                toolTip: AppLanguage.text("拷贝 (⌘C)", en: "Copy (⌘C)"),
+                isEnabled: state.canCopy
+            ) { [weak self, weak menu] in
+                menu?.cancelTracking()
+                self?.copy(nil)
+            },
+            ContextMenuDockAction(
+                title: AppLanguage.text("粘贴", en: "Paste"),
+                symbolName: state.showsClipboardImageHint ? "photo.on.rectangle" : "doc.on.clipboard",
+                toolTip: state.showsClipboardImageHint
+                    ? AppLanguage.text("粘贴图片 (⌘V)", en: "Paste Image (⌘V)")
+                    : AppLanguage.text("粘贴 (⌘V)", en: "Paste (⌘V)"),
+                isEnabled: state.canPaste,
+                showsAccentDot: state.showsClipboardImageHint
+            ) { [weak self, weak menu] in
+                menu?.cancelTracking()
+                self?.paste(nil)
+            },
+            ContextMenuDockAction(
+                title: AppLanguage.text("全选", en: "All"),
+                symbolName: "selection.pin.in.out",
+                toolTip: AppLanguage.text("全选 (⌘A)", en: "Select All (⌘A)"),
+                isEnabled: state.canSelectAll
+            ) { [weak self, weak menu] in
+                menu?.cancelTracking()
+                self?.selectAll(nil)
+            },
+        ])
+        menu.addItem(dockItem)
         
-        func makeItem(
-            title: String,
-            symbol: String,
-            action: Selector?,
-            target: AnyObject? = nil,
-            keyEquivalent: String = "",
-            modifiers: NSEvent.ModifierFlags = .command,
-            enabled: Bool = true
-        ) -> NSMenuItem {
-            let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
-            if !keyEquivalent.isEmpty {
-                item.keyEquivalentModifierMask = modifiers
-            }
-            item.target = target
-            item.isEnabled = enabled
-            item.image = Self.contextMenuSymbol(symbol)
-            return item
-        }
-        
-        // MARK: 1. 编辑 (Clipboard & Selection Essentials)
-        menu.addItem(.sectionHeader(title: AppLanguage.text("编辑", en: "Edit")))
-        
-        menu.addItem(makeItem(
-            title: AppLanguage.text("剪切", en: "Cut"),
-            symbol: "scissors",
-            action: #selector(cut(_:)),
-            target: self,
-            keyEquivalent: "x",
-            enabled: hasSelection && self.isEditable
-        ))
-        
-        menu.addItem(makeItem(
-            title: String(localized: "chrome.contextMenu.copy", defaultValue: "Copy", table: "Chrome"),
-            symbol: "doc.on.doc",
-            action: #selector(copy(_:)),
-            target: self,
-            keyEquivalent: "c",
-            enabled: hasSelection
-        ))
-        
-        menu.addItem(makeItem(
-            title: String(localized: "chrome.contextMenu.paste", defaultValue: "Paste", table: "Chrome"),
-            symbol: "doc.on.clipboard",
-            action: #selector(paste(_:)),
-            target: self,
-            keyEquivalent: "v",
-            enabled: self.isEditable && canPaste
-        ))
-        
-        menu.addItem(makeItem(
-            title: String(localized: "chrome.contextMenu.selectAll", defaultValue: "Select All", table: "Chrome"),
-            symbol: "selection.pin.in.out",
-            action: #selector(selectAll(_:)),
-            target: self,
-            keyEquivalent: "a",
-            enabled: !self.string.isEmpty
-        ))
-        
-        // MARK: 2. 文字高亮 (1-Click Inline Swatch Bar)
-        let selectedRange = self.selectedRange()
-        let selectedSnippet: String = if selectedRange.length > 0,
-                                         selectedRange.upperBound <= (self.string as NSString).length
-        {
-            (self.string as NSString).substring(with: selectedRange)
-        } else {
-            ""
-        }
-        let canHighlightSelection = hasSelection && NotesTextColorPaletteController.shouldPresent(for: selectedSnippet)
-        
-        if let documentViewController = self.documentViewController, canHighlightSelection {
-            menu.addItem(.separator())
+        // 2. Contextual 1-Click Highlight Swatch Row (selection-only & editable-only)
+        if let documentViewController = self.documentViewController, state.showsHighlightBar {
             let swatchRowItem = NSMenuItem()
             swatchRowItem.view = ContextMenuQuickHighlightRowView(
                 target: documentViewController,
@@ -2160,222 +2185,350 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             menu.addItem(swatchRowItem)
         }
         
-        // MARK: 3. 文本规整 (Format Clean & Semantic Restructure)
-        if let documentViewController = self.documentViewController {
+        guard let documentViewController = self.documentViewController else {
             menu.addItem(.separator())
-            menu.addItem(.sectionHeader(title: AppLanguage.text("文本规整", en: "Structure & Clean")))
-            
-            menu.addItem(makeItem(
-                title: AppLanguage.text("清洗规整", en: "Clean & Structure"),
-                symbol: "list.bullet.indent",
-                action: #selector(DocumentViewController.cleanAndStructureText(_:)),
-                target: documentViewController,
-                enabled: self.isEditable && !self.string.isEmpty
-            ))
-            
-            menu.addItem(makeItem(
-                title: AppLanguage.text("语义规整", en: "Semantic Restructure"),
-                symbol: "doc.plaintext",
-                action: #selector(DocumentViewController.semanticRestructureText(_:)),
-                target: documentViewController,
-                enabled: !self.string.isEmpty
-            ))
-            
-            // MARK: 4. Bots · 选区润色 & 5. 工作流与工具
-            menu.addItem(.separator())
-            menu.addItem(.sectionHeader(title: AppLanguage.text("Bots · 选区润色", en: "Bots · Selection")))
-            
-            menu.addItem(makeItem(
-                title: hasSelection
-                    ? AppLanguage.text("问总管（带入选中内容）", en: "Ask Butler with Selection")
-                    : AppLanguage.text("问总管（结合当前文档）", en: "Ask Butler about Document"),
-                symbol: "sparkles",
-                action: #selector(DocumentViewController.askButlerWithSelection(_:)),
-                target: documentViewController,
-                enabled: true
-            ))
-            
-            let primaryBotActions: [(action: AIAction, symbol: String, selector: Selector)] = [
-                (.translate, "character.bubble", #selector(DocumentViewController.translateSelection(_:))),
-                (.summarize, "text.alignleft", #selector(DocumentViewController.summarizeSelection(_:))),
-                (.explain, "lightbulb", #selector(DocumentViewController.explainSelection(_:))),
-            ]
-            for entry in primaryBotActions {
-                menu.addItem(makeItem(
-                    title: entry.action.title,
-                    symbol: entry.symbol,
-                    action: entry.selector,
-                    target: documentViewController,
-                    enabled: hasSelection
-                ))
+            menu.addItem(.sectionHeader(title: AppLanguage.text("行编辑", en: "Line Actions")))
+            for item in self.makeLineActionMenuItems(state: state) {
+                menu.addItem(item)
             }
-            
-            menu.addItem(.separator())
-            menu.addItem(.sectionHeader(title: AppLanguage.text("工作流与工具", en: "Workflows & Tools")))
-            
-            // Submenu A: 周报助手
-            let weeklySubmenu = NSMenu()
-            weeklySubmenu.autoenablesItems = false
-            weeklySubmenu.addItem(makeItem(
-                title: AIAction.weeklyReportItem.title,
-                symbol: "text.badge.plus",
-                action: #selector(DocumentViewController.generateWeeklyReportItem(_:)),
-                target: documentViewController,
-                enabled: hasSelection
-            ))
-            weeklySubmenu.addItem(makeItem(
-                title: AIAction.weeklyReport.title,
-                symbol: "doc.text.image",
-                action: #selector(DocumentViewController.generateWeeklyReport(_:)),
-                target: documentViewController,
-                enabled: true
-            ))
-            let weeklyRootItem = makeItem(
-                title: AppLanguage.text("周报助手", en: "Weekly Report"),
-                symbol: "calendar.badge.checkmark",
-                action: nil
-            )
-            weeklyRootItem.submenu = weeklySubmenu
-            menu.addItem(weeklyRootItem)
-            
-            // Submenu B: 表格与数据图表
-            let tableSubmenu = NSMenu()
-            tableSubmenu.autoenablesItems = false
-            tableSubmenu.addItem(makeItem(
-                title: String(localized: "chrome.contextMenu.alignTable", defaultValue: "Align Markdown Table", table: "Chrome"),
-                symbol: "arrow.left.and.right.text.vertical",
-                action: #selector(DocumentViewController.alignMarkdownTable(_:)),
-                target: documentViewController,
-                enabled: !self.string.isEmpty
-            ))
-            tableSubmenu.addItem(makeItem(
-                title: AIAction.interactiveChart.title,
-                symbol: "chart.xyaxis.line",
-                action: #selector(DocumentViewController.generateInteractiveChart(_:)),
-                target: documentViewController,
-                enabled: hasSelection || MarkdownTableFormatter.containsAnyTable(self.string)
-            ))
-            let tableRootItem = makeItem(
-                title: AppLanguage.text("表格与数据图表", en: "Tables & Charts"),
-                symbol: "tablecells",
-                action: nil
-            )
-            tableRootItem.submenu = tableSubmenu
-            menu.addItem(tableRootItem)
-            
-            // Direct Media & Workspace Tools
-            menu.addItem(makeItem(
-                title: AIAction.ocrPolish.title,
-                symbol: "doc.text.viewfinder",
-                action: #selector(DocumentViewController.runOCRAndAI(_:)),
-                target: documentViewController,
-                enabled: true
-            ))
-            
-            if (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true {
-                menu.addItem(makeItem(
-                    title: String(localized: "chrome.contextMenu.insertInlineImage", defaultValue: "Insert Image (Plain Text)…", table: "Chrome"),
-                    symbol: "photo.badge.plus",
-                    action: #selector(DocumentViewController.insertPlainTextImage(_:)),
-                    target: documentViewController,
-                    enabled: self.isEditable
-                ))
-            }
-            
-            menu.addItem(makeItem(
-                title: AIAction.organizeAndMerge.title,
-                symbol: "square.stack.3d.up",
-                action: #selector(DocumentViewController.organizeAndMergeAllDocuments(_:)),
-                target: documentViewController,
-                enabled: true
-            ))
-            
-            // Submenu C: 在终端唤起 Pi Bot
-            if PiKernelManager.shared.isAvailable {
-                let piSubmenu = NSMenu()
-                piSubmenu.autoenablesItems = false
-                for botID in AIBotID.allCases where botID != .ghost && botID != .persona && botID != .readingCompanion {
-                    guard AIBotStore.shared.config(for: botID).isEnabled else { continue }
-                    let botItem = makeItem(
-                        title: "\(botID.displayName)  \(botID.handle)",
-                        symbol: botID.symbolName,
-                        action: #selector(DocumentViewController.launchPiBotFromMenu(_:)),
-                        target: documentViewController,
-                        enabled: true
-                    )
-                    botItem.representedObject = botID.rawValue
-                    piSubmenu.addItem(botItem)
-                }
-                if !piSubmenu.items.isEmpty {
-                    let piRootItem = makeItem(
-                        title: AppLanguage.text("在终端唤起 Pi Bot", en: "Launch Pi Bot in Terminal"),
-                        symbol: "terminal",
-                        action: nil
-                    )
-                    piRootItem.submenu = piSubmenu
-                    menu.addItem(piRootItem)
-                }
-            }
-            
-            // Submenu D: 分屏与视图
-            menu.addItem(.separator())
-            let viewSubmenu = NSMenu()
-            viewSubmenu.autoenablesItems = false
-            let paneTarget: AnyObject = self.editorViewController ?? documentViewController
-            viewSubmenu.addItem(makeItem(
-                title: AppLanguage.text("向右分屏", en: "Split Right"),
-                symbol: "rectangle.split.2x1",
-                action: #selector(DocumentViewController.splitEditorVertically(_:)),
-                target: documentViewController,
-                enabled: true
-            ))
-            viewSubmenu.addItem(makeItem(
-                title: AppLanguage.text("向下分屏", en: "Split Down"),
-                symbol: "rectangle.split.1x2",
-                action: #selector(DocumentViewController.splitEditorHorizontally(_:)),
-                target: documentViewController,
-                enabled: true
-            ))
-            if documentViewController.editorViewControllers.count > 1 {
-                viewSubmenu.addItem(makeItem(
-                    title: AppLanguage.text("关闭当前分栏", en: "Close Split Pane"),
-                    symbol: "xmark.rectangle",
-                    action: #selector(DocumentViewController.closeSplitTextView(_:)),
-                    target: documentViewController,
-                    enabled: true
-                ))
-            }
-            viewSubmenu.addItem(.separator())
-            viewSubmenu.addItem(makeItem(
-                title: documentViewController.showsLineNumber
-                    ? AppLanguage.text("隐藏行号", en: "Hide Line Numbers")
-                    : AppLanguage.text("显示行号", en: "Show Line Numbers"),
-                symbol: "list.number",
-                action: #selector(DocumentViewController.toggleLineNumber(_:)),
-                target: documentViewController,
-                enabled: true
-            ))
-            _ = paneTarget
-            let viewRootItem = makeItem(
-                title: AppLanguage.text("分屏与视图", en: "Split & View"),
-                symbol: "rectangle.split.2x1",
-                action: nil
-            )
-            viewRootItem.submenu = viewSubmenu
-            menu.addItem(viewRootItem)
+            return menu
         }
+        
+        self.appendAIContextMenuSection(to: menu, state: state, controller: documentViewController)
+        self.appendStructureAndLineMenuSection(to: menu, state: state, controller: documentViewController)
+        self.appendMediaAndWorkflowMenuSection(to: menu, state: state, controller: documentViewController)
+        self.appendViewMenuSection(to: menu, state: state, controller: documentViewController)
         
         return menu
     }
     
     
-    /// Returns a consistently sized template SF Symbol image for context menu items.
+    private func makeContextMenuItem(
+        title: String,
+        symbol: String,
+        action: Selector?,
+        target: AnyObject? = nil,
+        keyEquivalent: String = "",
+        modifiers: NSEvent.ModifierFlags = .command,
+        enabled: Bool = true
+    ) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
+        if !keyEquivalent.isEmpty {
+            item.keyEquivalentModifierMask = modifiers
+        }
+        item.target = target
+        item.isEnabled = enabled
+        item.image = Self.contextMenuSymbol(symbol)
+        return item
+    }
+    
+    
+    private func makeLineActionMenuItems(state: EditorContextMenuState) -> [NSMenuItem] {
+        [
+            self.makeContextMenuItem(
+                title: AppLanguage.text("复制当前行", en: "Duplicate Line"),
+                symbol: "plus.square.on.square",
+                action: #selector(duplicateLine(_:)),
+                target: self,
+                enabled: state.canEditLines
+            ),
+            self.makeContextMenuItem(
+                title: AppLanguage.text("删除当前行", en: "Delete Line"),
+                symbol: "minus.square",
+                action: #selector(deleteLine(_:)),
+                target: self,
+                enabled: state.canEditLines
+            ),
+            self.makeContextMenuItem(
+                title: AppLanguage.text("去除行尾空格", en: "Trim Trailing Whitespace"),
+                symbol: "text.badge.minus",
+                action: #selector(trimTrailingWhitespace(_:)),
+                target: self,
+                enabled: state.canEditLines
+            ),
+            self.makeContextMenuItem(
+                title: AppLanguage.text("按行升序排列", en: "Sort Lines Ascending"),
+                symbol: "arrow.up.arrow.down",
+                action: #selector(sortLinesAscending(_:)),
+                target: self,
+                enabled: state.canEditLines
+            ),
+        ]
+    }
+    
+    
+    private func appendAIContextMenuSection(
+        to menu: NSMenu,
+        state: EditorContextMenuState,
+        controller: DocumentViewController
+    ) {
+        menu.addItem(.separator())
+        menu.addItem(.sectionHeader(title: AppLanguage.text("AI 助手", en: "AI Assistant")))
+        
+        let isEnglish = (AppLanguage.current(in: .standard) == .english)
+        let butlerItem = NSMenuItem(title: AppLanguage.text("问总管", en: "Ask Butler"), action: nil, keyEquivalent: "")
+        butlerItem.view = ContextMenuFeaturedActionRowView(
+            title: AppLanguage.text("问总管", en: "Ask Butler"),
+            symbolName: "bubble.left.and.text.bubble.right",
+            badgeText: state.butlerContextBadge(isEnglish: isEnglish)
+        ) { [weak controller, weak menu] in
+            menu?.cancelTracking()
+            controller?.askButlerWithSelection(nil)
+        }
+        menu.addItem(butlerItem)
+        
+        let chipsItem = NSMenuItem(title: AppLanguage.text("选区快捷指令", en: "Quick AI"), action: nil, keyEquivalent: "")
+        chipsItem.view = ContextMenuChipStripView(chips: [
+            ContextMenuChipAction(
+                title: AppLanguage.text("翻译", en: "Translate"),
+                symbolName: "character.bubble",
+                isEnabled: state.hasSelection
+            ) { [weak controller, weak menu] in
+                menu?.cancelTracking()
+                controller?.translateSelection(nil)
+            },
+            ContextMenuChipAction(
+                title: AppLanguage.text("总结", en: "Summarize"),
+                symbolName: "text.alignleft",
+                isEnabled: state.hasSelection
+            ) { [weak controller, weak menu] in
+                menu?.cancelTracking()
+                controller?.summarizeSelection(nil)
+            },
+            ContextMenuChipAction(
+                title: AppLanguage.text("解释", en: "Explain"),
+                symbolName: "lightbulb",
+                isEnabled: state.hasSelection
+            ) { [weak controller, weak menu] in
+                menu?.cancelTracking()
+                controller?.explainSelection(nil)
+            },
+        ])
+        menu.addItem(chipsItem)
+    }
+    
+    
+    private func appendStructureAndLineMenuSection(
+        to menu: NSMenu,
+        state: EditorContextMenuState,
+        controller: DocumentViewController
+    ) {
+        menu.addItem(.separator())
+        menu.addItem(.sectionHeader(title: AppLanguage.text("排版与规整", en: "Format & Structure")))
+        
+        menu.addItem(self.makeContextMenuItem(
+            title: AppLanguage.text("清洗规整", en: "Clean & Structure"),
+            symbol: "list.bullet.indent",
+            action: #selector(DocumentViewController.cleanAndStructureText(_:)),
+            target: controller,
+            enabled: state.canCleanStructure
+        ))
+        
+        menu.addItem(self.makeContextMenuItem(
+            title: AppLanguage.text("语义规整", en: "Semantic Restructure"),
+            symbol: "doc.plaintext",
+            action: #selector(DocumentViewController.semanticRestructureText(_:)),
+            target: controller,
+            enabled: state.canSemanticRestructure
+        ))
+        
+        if state.hasTable {
+            menu.addItem(self.makeContextMenuItem(
+                title: AppLanguage.text("一键对齐表格", en: "Align Table"),
+                symbol: "arrow.left.and.right.text.vertical",
+                action: #selector(DocumentViewController.alignMarkdownTable(_:)),
+                target: controller,
+                enabled: state.canAlignTable
+            ))
+        }
+        
+        let lineSubmenu = NSMenu()
+        lineSubmenu.autoenablesItems = false
+        for item in self.makeLineActionMenuItems(state: state) {
+            lineSubmenu.addItem(item)
+        }
+        lineSubmenu.addItem(self.makeContextMenuItem(
+            title: AppLanguage.text("合并行", en: "Join Lines"),
+            symbol: "arrow.triangle.merge",
+            action: #selector(joinLines(_:)),
+            target: self,
+            enabled: state.canEditLines
+        ))
+        let lineRoot = self.makeContextMenuItem(
+            title: AppLanguage.text("行编辑", en: "Line Actions"),
+            symbol: "text.line.first.and.arrowtriangle.forward",
+            action: nil,
+            enabled: state.canEditLines
+        )
+        lineRoot.submenu = lineSubmenu
+        menu.addItem(lineRoot)
+    }
+    
+    
+    private func appendMediaAndWorkflowMenuSection(
+        to menu: NSMenu,
+        state: EditorContextMenuState,
+        controller: DocumentViewController
+    ) {
+        menu.addItem(.separator())
+        menu.addItem(.sectionHeader(title: AppLanguage.text("媒体与工作流", en: "Media & Workflows")))
+        
+        if state.supportsInlineImages {
+            menu.addItem(self.makeContextMenuItem(
+                title: AppLanguage.text("插入图片…", en: "Insert Image…"),
+                symbol: "photo.badge.plus",
+                action: #selector(DocumentViewController.insertPlainTextImage(_:)),
+                target: controller,
+                enabled: state.canInsertInlineImage
+            ))
+        }
+        
+        menu.addItem(self.makeContextMenuItem(
+            title: AIAction.ocrPolish.title,
+            symbol: "doc.text.viewfinder",
+            action: #selector(DocumentViewController.runOCRAndAI(_:)),
+            target: controller,
+            enabled: true
+        ))
+        
+        let tableSubmenu = NSMenu()
+        tableSubmenu.autoenablesItems = false
+        tableSubmenu.addItem(self.makeContextMenuItem(
+            title: AppLanguage.text("对齐 Markdown 表格", en: "Align Markdown Table"),
+            symbol: "arrow.left.and.right.text.vertical",
+            action: #selector(DocumentViewController.alignMarkdownTable(_:)),
+            target: controller,
+            enabled: state.canAlignTable
+        ))
+        tableSubmenu.addItem(self.makeContextMenuItem(
+            title: AIAction.interactiveChart.title,
+            symbol: "chart.xyaxis.line",
+            action: #selector(DocumentViewController.generateInteractiveChart(_:)),
+            target: controller,
+            enabled: state.canInteractiveChart
+        ))
+        let tableRoot = self.makeContextMenuItem(
+            title: AppLanguage.text("表格与图表", en: "Tables & Charts"),
+            symbol: "tablecells",
+            action: nil
+        )
+        tableRoot.submenu = tableSubmenu
+        menu.addItem(tableRoot)
+        
+        let weeklySubmenu = NSMenu()
+        weeklySubmenu.autoenablesItems = false
+        weeklySubmenu.addItem(self.makeContextMenuItem(
+            title: AIAction.weeklyReportItem.title,
+            symbol: "text.badge.plus",
+            action: #selector(DocumentViewController.generateWeeklyReportItem(_:)),
+            target: controller,
+            enabled: state.hasSelection
+        ))
+        weeklySubmenu.addItem(self.makeContextMenuItem(
+            title: AIAction.weeklyReport.title,
+            symbol: "doc.text.image",
+            action: #selector(DocumentViewController.generateWeeklyReport(_:)),
+            target: controller,
+            enabled: true
+        ))
+        let weeklyRoot = self.makeContextMenuItem(
+            title: AppLanguage.text("周报助手", en: "Weekly Report"),
+            symbol: "calendar.badge.checkmark",
+            action: nil
+        )
+        weeklyRoot.submenu = weeklySubmenu
+        menu.addItem(weeklyRoot)
+        
+        menu.addItem(self.makeContextMenuItem(
+            title: AIAction.organizeAndMerge.title,
+            symbol: "square.stack.3d.up",
+            action: #selector(DocumentViewController.organizeAndMergeAllDocuments(_:)),
+            target: controller,
+            enabled: true
+        ))
+        
+        if PiKernelManager.shared.isAvailable {
+            let piSubmenu = NSMenu()
+            piSubmenu.autoenablesItems = false
+            for botID in AIBotID.allCases where botID != .ghost && botID != .persona && botID != .readingCompanion {
+                guard AIBotStore.shared.config(for: botID).isEnabled else { continue }
+                let botItem = self.makeContextMenuItem(
+                    title: "\(botID.displayName)  \(botID.handle)",
+                    symbol: botID.symbolName,
+                    action: #selector(DocumentViewController.launchPiBotFromMenu(_:)),
+                    target: controller,
+                    enabled: true
+                )
+                botItem.representedObject = botID.rawValue
+                piSubmenu.addItem(botItem)
+            }
+            if !piSubmenu.items.isEmpty {
+                let piRoot = self.makeContextMenuItem(
+                    title: AppLanguage.text("终端 Pi Bot", en: "Pi Bot in Terminal"),
+                    symbol: "terminal",
+                    action: nil
+                )
+                piRoot.submenu = piSubmenu
+                menu.addItem(piRoot)
+            }
+        }
+    }
+    
+    
+    private func appendViewMenuSection(
+        to menu: NSMenu,
+        state: EditorContextMenuState,
+        controller: DocumentViewController
+    ) {
+        menu.addItem(.separator())
+        let viewSubmenu = NSMenu()
+        viewSubmenu.autoenablesItems = false
+        viewSubmenu.addItem(self.makeContextMenuItem(
+            title: AppLanguage.text("向右分屏", en: "Split Right"),
+            symbol: "rectangle.split.2x1",
+            action: #selector(DocumentViewController.splitEditorVertically(_:)),
+            target: controller,
+            enabled: true
+        ))
+        viewSubmenu.addItem(self.makeContextMenuItem(
+            title: AppLanguage.text("向下分屏", en: "Split Down"),
+            symbol: "rectangle.split.1x2",
+            action: #selector(DocumentViewController.splitEditorHorizontally(_:)),
+            target: controller,
+            enabled: true
+        ))
+        if state.splitPaneCount > 1 {
+            viewSubmenu.addItem(self.makeContextMenuItem(
+                title: AppLanguage.text("关闭当前分栏", en: "Close Split Pane"),
+                symbol: "xmark.rectangle",
+                action: #selector(DocumentViewController.closeSplitTextView(_:)),
+                target: controller,
+                enabled: true
+            ))
+        }
+        viewSubmenu.addItem(.separator())
+        viewSubmenu.addItem(self.makeContextMenuItem(
+            title: state.showsLineNumber
+                ? AppLanguage.text("隐藏行号", en: "Hide Line Numbers")
+                : AppLanguage.text("显示行号", en: "Show Line Numbers"),
+            symbol: "list.number",
+            action: #selector(DocumentViewController.toggleLineNumber(_:)),
+            target: controller,
+            enabled: true
+        ))
+        let viewRoot = self.makeContextMenuItem(
+            title: AppLanguage.text("分屏与视图", en: "Split & View"),
+            symbol: "rectangle.split.2x1",
+            action: nil
+        )
+        viewRoot.submenu = viewSubmenu
+        menu.addItem(viewRoot)
+    }
+    
+    
+    /// Returns a consistently sized cached template SF Symbol image for context menu items.
     private static func contextMenuSymbol(_ name: String) -> NSImage? {
-        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
-        let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
-            .withSymbolConfiguration(config)
-        image?.isTemplate = true
-        return image
+        EditorContextMenuSymbols.image(named: name, pointSize: 13, weight: .medium)
     }
     
     
@@ -2624,65 +2777,128 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             return false
         }
         let point = self.convert(event.locationInWindow, from: nil)
-        let targetEntry = self.selectedInlineImageEntry()
-            ?? self.inlineImageCardEntries.first(where: { $0.hitTestImage(point: point) })
+        let targetEntry = self.inlineImageCardEntries.first(where: { $0.hitTestImage(point: point) })
+            ?? self.selectedInlineImageEntry()
         guard let entry = targetEntry else {
             return false
         }
         
         self.selectedInlineImageIdentifier = entry.identifier
         let docURL = self.currentInlineImageDocURL
-        var tx = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
+        let currentTx = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
         let factor = max(0.5, min(2.0, 1.0 + event.magnification))
-        let maxCardW = max(BoundingBoxResizeMath.minWidth, self.effectiveInlineImageContainerWidth - 24)
+        let containerW = self.effectiveInlineImageContainerWidth
+        let maxImgW = PlainTextInlineImageStore.effectiveMaxImageWidth(containerWidth: containerW, glyphX: 0)
         
-        if tx.customWidth != nil || tx.customHeight != nil {
-            let currentW = max(BoundingBoxResizeMath.minWidth, entry.drawSize.width)
-            let targetW = max(BoundingBoxResizeMath.minWidth, min(maxCardW, round(currentW * factor)))
-            let naturalSize = PlainTextInlineImageStore.shared.naturalSize(for: entry.identifier, documentURL: docURL)
-            let aspect: CGFloat = {
-                if let naturalSize, naturalSize.height > 0 {
-                    return naturalSize.width / naturalSize.height
-                }
-                return entry.drawSize.height > 0 ? (entry.drawSize.width / entry.drawSize.height) : 1.0
-            }()
-            let candidate = NSSize(
-                width: targetW,
-                height: max(BoundingBoxResizeMath.minHeight, min(1600, round(targetW / max(0.01, aspect))))
+        let updatedTx: InlineImageTransform
+        if let naturalSize = PlainTextInlineImageStore.shared.naturalSize(for: entry.identifier, documentURL: docURL),
+           naturalSize.width > 0, naturalSize.height > 0
+        {
+            updatedTx = InlineImageZoomMath.transformForMagnify(
+                current: currentTx,
+                currentDrawSize: entry.drawSize,
+                naturalSize: naturalSize,
+                factor: factor,
+                containerWidth: containerW,
+                maxImageWidth: maxImgW
             )
-            if let naturalSize, naturalSize.width > 0, naturalSize.height > 0 {
-                let optimal = BoundingBoxResizeMath.optimalRestoredSize(
-                    currentSize: candidate,
-                    naturalSize: naturalSize,
-                    maxWidth: maxCardW,
-                    maxHeight: 1600
-                )
-                tx.customWidth = optimal.width
-                tx.customHeight = optimal.height
-            } else {
-                tx.customWidth = candidate.width
-                tx.customHeight = candidate.height
-            }
-            let ratio = (tx.customWidth ?? currentW) / max(1, currentW)
-            tx.scale = max(0.15, min(4.0, tx.scale * ratio))
         } else {
-            tx.scale = max(0.15, min(4.0, tx.scale * factor))
+            var fallback = currentTx
+            fallback.scale = max(InlineImageZoomMath.minScaleFloor, min(InlineImageZoomMath.maxScaleCeiling, currentTx.scale * factor))
+            fallback.customWidth = nil
+            fallback.customHeight = nil
+            updatedTx = fallback.clamped()
         }
         
-        if factor < 1.0, tx.offsetY > 0 {
-            let nextOffsetY = tx.offsetY * factor
-            tx.offsetY = nextOffsetY < 2 ? 0 : round(nextOffsetY)
-        }
-        
-        PlainTextInlineImageStore.shared.setTransform(tx, for: entry.identifier, documentURL: docURL)
-        self.liveInlineImageHUDText = "\(Int((tx.scale * 100).rounded()))%"
-        self.applyInlineImageLayoutUpdate()
+        PlainTextInlineImageStore.shared.setTransform(updatedTx, for: entry.identifier, documentURL: docURL)
+        self.liveInlineImageHUDText = "\(Int((updatedTx.scale * 100).rounded()))%"
+        self.applyInlineImageLayoutUpdate(in: entry.tokenRange)
         
         if event.phase == .ended || event.phase == .cancelled {
             self.liveInlineImageHUDText = nil
             self.needsDisplay = true
         }
         return true
+    }
+    
+    
+    /// Handles two-finger double-tap on an inline image to toggle between `100%` and fit-width.
+    func handleInlineImageSmartMagnify(with event: NSEvent) -> Bool {
+        
+        guard self.isEditable,
+              (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true else {
+            return false
+        }
+        let point = self.convert(event.locationInWindow, from: nil)
+        let targetEntry = self.inlineImageCardEntries.first(where: { $0.hitTestImage(point: point) })
+            ?? self.selectedInlineImageEntry()
+        guard let entry = targetEntry else {
+            return false
+        }
+        
+        let docURL = self.currentInlineImageDocURL
+        guard let naturalSize = PlainTextInlineImageStore.shared.naturalSize(for: entry.identifier, documentURL: docURL),
+              naturalSize.width > 0, naturalSize.height > 0
+        else { return false }
+        
+        let containerW = self.effectiveInlineImageContainerWidth
+        let maxImgW = PlainTextInlineImageStore.effectiveMaxImageWidth(containerWidth: containerW, glyphX: 0)
+        let bounds = InlineImageZoomMath.scaleBounds(
+            naturalSize: naturalSize,
+            containerWidth: containerW,
+            maxImageWidth: maxImgW
+        )
+        let currentScale = InlineImageZoomMath.effectiveScale(
+            drawWidth: entry.drawSize.width,
+            naturalSize: naturalSize,
+            maxImageWidth: maxImgW
+        )
+        let nextScale: CGFloat = (abs(currentScale - 1.0) < 0.08 && bounds.upperBound > 1.08)
+            ? bounds.upperBound
+            : 1.0
+        
+        self.applyInlineImageSteplessScale(nextScale, for: entry.identifier, tokenRange: entry.tokenRange)
+        NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
+        return true
+    }
+    
+    
+    /// Applies a stepless target scale to an inline image, keeping `scale` and `customWidth`/`customHeight` synchronized.
+    @discardableResult
+    func applyInlineImageSteplessScale(
+        _ requestedScale: CGFloat,
+        for identifier: String,
+        tokenRange: NSRange? = nil
+    ) -> InlineImageTransform {
+        
+        let docURL = self.currentInlineImageDocURL
+        let currentTx = PlainTextInlineImageStore.shared.transform(for: identifier, documentURL: docURL)
+        let containerW = self.effectiveInlineImageContainerWidth
+        let maxImgW = PlainTextInlineImageStore.effectiveMaxImageWidth(containerWidth: containerW, glyphX: 0)
+        
+        let resolved: InlineImageTransform
+        if let naturalSize = PlainTextInlineImageStore.shared.naturalSize(for: identifier, documentURL: docURL),
+           naturalSize.width > 0, naturalSize.height > 0
+        {
+            resolved = InlineImageZoomMath.transformForTargetScale(
+                requestedScale,
+                baseTransform: currentTx,
+                naturalSize: naturalSize,
+                containerWidth: containerW,
+                maxImageWidth: maxImgW
+            )
+        } else {
+            var copy = currentTx
+            copy.scale = max(InlineImageZoomMath.minScaleFloor, min(InlineImageZoomMath.maxScaleCeiling, requestedScale))
+            copy.customWidth = nil
+            copy.customHeight = nil
+            resolved = copy.clamped()
+        }
+        
+        PlainTextInlineImageStore.shared.setTransform(resolved, for: identifier, documentURL: docURL)
+        self.selectedInlineImageIdentifier = identifier
+        self.applyInlineImageLayoutUpdate(in: tokenRange)
+        return resolved
     }
     
     
@@ -3045,6 +3261,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     private var currentInlineImageDocURL: URL? {
         self.textStorage.flatMap { self.documentViewController?.document(for: $0)?.fileURL }
+            ?? (self.layoutManager as? LayoutManager)?.inlineImageDocumentURL
     }
     
     
@@ -3054,11 +3271,15 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
-    private func applyInlineImageLayoutUpdate() {
+    private func applyInlineImageLayoutUpdate(in tokenRange: NSRange? = nil) {
         if let lm = self.layoutManager as? LayoutManager {
-            lm.invalidateInlineImageLayout()
+            lm.invalidateInlineImageLayout(in: tokenRange)
             if let tc = self.textContainer {
-                lm.ensureLayout(for: tc)
+                if tokenRange != nil, !self.visibleRect.isEmpty {
+                    lm.ensureLayout(forBoundingRect: self.visibleRect, in: tc)
+                } else {
+                    lm.ensureLayout(for: tc)
+                }
             }
         }
         self.sizeToFit()
@@ -3241,8 +3462,14 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                     maxHeight: 1600
                 )
                 let prevHeight = self.inlineImageCardEntries.first(where: { $0.identifier == identifier })?.drawSize.height
+                let maxImgW = PlainTextInlineImageStore.effectiveMaxImageWidth(containerWidth: containerWidth, glyphX: 0)
                 tx.customWidth = optimal.width
                 tx.customHeight = optimal.height
+                tx.scale = InlineImageZoomMath.effectiveScale(
+                    drawWidth: optimal.width,
+                    naturalSize: natural,
+                    maxImageWidth: maxImgW
+                )
                 if let prevHeight, prevHeight > 0, optimal.height < prevHeight, tx.offsetY > 0 {
                     let scaled = tx.offsetY * (optimal.height / prevHeight)
                     tx.offsetY = scaled < 2 ? 0 : round(scaled)
@@ -3331,9 +3558,11 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             height: entry.drawSize.height
         )
         let containerWidth = self.effectiveInlineImageContainerWidth
+        let maxImgW = PlainTextInlineImageStore.effectiveMaxImageWidth(containerWidth: containerWidth, glyphX: 0)
         let minXBound = self.textContainerOrigin.x + 8
         let maxXBound = self.textContainerOrigin.x + max(180, containerWidth) - 8
-        let minYBound = startImageFrame.minY - 1600
+        let minYBound = startImageFrame.minY - InlineImageZoomMath.maxCardHeight
+        let maxYBound = startImageFrame.minY + InlineImageZoomMath.maxCardHeight
         let naturalSize = PlainTextInlineImageStore.shared.naturalSize(for: entry.identifier, documentURL: docURL)
         let naturalAspectRatio: CGFloat = {
             if let naturalSize, naturalSize.height > 0 {
@@ -3388,12 +3617,19 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 minXBound: minXBound,
                 minYBound: minYBound,
                 maxXBound: maxXBound,
-                maxYBound: minYBound + 1600
+                maxYBound: maxYBound
             )
             
             var updated = startTx
             updated.customWidth = nextFrame.width
             updated.customHeight = nextFrame.height
+            if let naturalSize, naturalSize.width > 0, naturalSize.height > 0 {
+                updated.scale = InlineImageZoomMath.effectiveScale(
+                    drawWidth: nextFrame.width,
+                    naturalSize: naturalSize,
+                    maxImageWidth: maxImgW
+                )
+            }
             updated.offsetX = startTx.offsetX + (nextFrame.minX - startImageFrame.minX)
             updated.offsetY = Self.resolvedOffsetYAfterResize(
                 startOffsetY: startTx.offsetY,
@@ -3402,16 +3638,18 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 handle: handle
             )
             PlainTextInlineImageStore.shared.setTransform(updated, for: entry.identifier, documentURL: docURL)
+            self.liveInlineImageHUDText = "\(Int((updated.scale * 100).rounded()))%"
             
             self.stepResizeSprings()
-            self.applyInlineImageLayoutUpdate()
+            self.applyInlineImageLayoutUpdate(in: entry.tokenRange)
             
             if event.type == .leftMouseUp { break }
         }
         
+        self.liveInlineImageHUDText = nil
         if wasCancelled {
             PlainTextInlineImageStore.shared.setTransform(startTx, for: entry.identifier, documentURL: docURL)
-            self.applyInlineImageLayoutUpdate()
+            self.applyInlineImageLayoutUpdate(in: entry.tokenRange)
         }
         
         self.activeDraggingResizeHandle = nil
@@ -3458,7 +3696,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             updated.rotationDegrees = deg
             PlainTextInlineImageStore.shared.setTransform(updated, for: entry.identifier, documentURL: docURL)
             self.liveInlineImageHUDText = String(format: "%.1f°", deg)
-            self.applyInlineImageLayoutUpdate()
+            self.applyInlineImageLayoutUpdate(in: entry.tokenRange)
             
             if event.type == .leftMouseUp { break }
         }
@@ -3495,7 +3733,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 updated.offsetY = max(0, min(200, startTx.offsetY + dy))
                 PlainTextInlineImageStore.shared.setTransform(updated, for: entry.identifier, documentURL: docURL)
                 self.liveInlineImageHUDText = "X:\(Int(updated.offsetX.rounded())) Y:\(Int(updated.offsetY.rounded()))"
-                self.applyInlineImageLayoutUpdate()
+                self.applyInlineImageLayoutUpdate(in: entry.tokenRange)
             }
             
             if event.type == .leftMouseUp { break }
@@ -3507,12 +3745,15 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
-    /// Builds the dedicated right-click menu for inline images (zoom preview + stepless adjust + presets).
+    /// Builds the dedicated right-click menu for inline images (action dock + live stepless zoom rail + categorized geometry/file actions).
     func makeInlineImageContextMenu(for identifier: String, tokenRange: NSRange) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
+        menu.minimumWidth = EditorContextMenuMetrics.menuWidth
         let docURL = self.currentInlineImageDocURL
         let currentTx = PlainTextInlineImageStore.shared.transform(for: identifier, documentURL: docURL)
+        let editable = self.isEditable
+        let payload = InlineImageMenuPayload(identifier: identifier, tokenRange: tokenRange)
         
         func item(
             _ title: String,
@@ -3525,30 +3766,119 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             m.target = self
             m.tag = tag
             m.isEnabled = enabled
-            m.representedObject = InlineImageMenuPayload(identifier: identifier, tokenRange: tokenRange)
+            m.representedObject = payload
             if let systemImage {
-                m.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: title)
+                m.image = Self.contextMenuSymbol(systemImage)
             }
             return m
         }
         
-        let editable = self.isEditable
-        menu.addItem(.sectionHeader(title: AppLanguage.text("图片预览与调整", en: "Preview & Transform")))
+        // 1. Hero Top 4-Tile Image Action Dock
+        let dockItem = NSMenuItem(title: AppLanguage.text("查看大图", en: "Zoom Preview"), action: nil, keyEquivalent: "")
+        dockItem.view = ContextMenuActionDockView(actions: [
+            ContextMenuDockAction(
+                title: AppLanguage.text("大图", en: "Zoom"),
+                symbolName: "arrow.up.left.and.arrow.down.right",
+                toolTip: AppLanguage.text("查看大图", en: "Zoom Preview")
+            ) { [weak self, weak menu] in
+                menu?.cancelTracking()
+                guard let self, let entry = self.entry(for: payload) else { return }
+                self.presentInlineImagePopover(for: entry)
+            },
+            ContextMenuDockAction(
+                title: AppLanguage.text("拷贝", en: "Copy"),
+                symbolName: "doc.on.doc",
+                toolTip: AppLanguage.text("拷贝图片", en: "Copy Image")
+            ) { [weak self, weak menu] in
+                menu?.cancelTracking()
+                guard let self,
+                      let image = PlainTextInlineImageStore.shared.image(for: identifier, documentURL: self.currentInlineImageDocURL)
+                else { return }
+                let pboard = NSPasteboard.general
+                pboard.clearContents()
+                pboard.writeObjects([image])
+            },
+            ContextMenuDockAction(
+                title: "OCR",
+                symbolName: "text.viewfinder",
+                toolTip: AppLanguage.text("OCR 识别文字", en: "OCR & AI Polish")
+            ) { [weak self, weak menu] in
+                menu?.cancelTracking()
+                guard let self,
+                      let image = PlainTextInlineImageStore.shared.image(for: identifier, documentURL: self.currentInlineImageDocURL),
+                      let window = self.window
+                else { return }
+                self.documentViewController?.processOCR(image: image, on: window)
+            },
+            ContextMenuDockAction(
+                title: AppLanguage.text("删除", en: "Delete"),
+                symbolName: "trash",
+                toolTip: AppLanguage.text("删除图片", en: "Delete Image"),
+                isEnabled: editable,
+                isDestructive: true
+            ) { [weak self, weak menu] in
+                menu?.cancelTracking()
+                self?.deleteInlineImageToken(range: tokenRange, identifier: identifier)
+            },
+        ])
+        menu.addItem(dockItem)
+        
+        // 2. Live Stepless Zoom Rail (continuous slider + quick scale presets)
+        if editable {
+            let containerW = self.effectiveInlineImageContainerWidth
+            let maxImgW = PlainTextInlineImageStore.effectiveMaxImageWidth(containerWidth: containerW, glyphX: 0)
+            let naturalSize = PlainTextInlineImageStore.shared.naturalSize(for: identifier, documentURL: docURL)
+                ?? self.inlineImageCardEntries.first(where: { $0.identifier == identifier })?.drawSize
+                ?? NSSize(width: 320, height: 200)
+            let scaleBounds = InlineImageZoomMath.scaleBounds(
+                naturalSize: naturalSize,
+                containerWidth: containerW,
+                maxImageWidth: maxImgW
+            )
+            let currentDrawW = self.inlineImageCardEntries.first(where: { $0.identifier == identifier })?.drawSize.width
+                ?? PlainTextInlineImageStore.shared.displayGeometry(
+                    for: identifier,
+                    documentURL: docURL,
+                    containerWidth: containerW,
+                    maxImageWidth: maxImgW
+                )?.drawSize.width
+                ?? naturalSize.width
+            let effectiveScale = InlineImageZoomMath.effectiveScale(
+                drawWidth: currentDrawW,
+                naturalSize: naturalSize,
+                maxImageWidth: maxImgW
+            )
+            
+            menu.addItem(.separator())
+            menu.addItem(.sectionHeader(title: AppLanguage.text("无极缩放", en: "Stepless Zoom")))
+            let zoomItem = NSMenuItem(title: AppLanguage.text("无极缩放", en: "Stepless Zoom"), action: nil, keyEquivalent: "")
+            zoomItem.view = ContextMenuInlineImageZoomView(
+                initialScale: effectiveScale,
+                scaleBounds: scaleBounds,
+                isIdentity: currentTx.isIdentity,
+                onScaleChange: { [weak self] targetScale in
+                    guard let self else { return currentTx }
+                    return self.applyInlineImageSteplessScale(targetScale, for: identifier, tokenRange: tokenRange)
+                },
+                onReset: { [weak self] in
+                    guard let self else { return }
+                    PlainTextInlineImageStore.shared.resetTransform(for: identifier, documentURL: self.currentInlineImageDocURL)
+                    self.applyInlineImageLayoutUpdate(in: tokenRange)
+                }
+            )
+            menu.addItem(zoomItem)
+        }
+        
+        // 3. Geometry & Layout
+        menu.addItem(.separator())
+        menu.addItem(.sectionHeader(title: AppLanguage.text("几何与排版", en: "Transform & Layout")))
+        
         menu.addItem(item(
-            AppLanguage.text("查看大图", en: "Zoom Preview"),
-            systemImage: "arrow.up.left.and.arrow.down.right",
-            action: #selector(inlineImageContextZoomPreview(_:))
-        ))
-        menu.addItem(item(
-            AppLanguage.text("调整大小、位置与旋转", en: "Adjust Size, Position & Rotation"),
+            AppLanguage.text("调整大小、位置与角度…", en: "Adjust Size, Position & Angle…"),
             systemImage: "slider.horizontal.3",
             action: #selector(inlineImageContextOpenTransformPanel(_:)),
             enabled: editable
         ))
-        
-        menu.addItem(.separator())
-        menu.addItem(.sectionHeader(title: AppLanguage.text("几何与排版", en: "Layout")))
-        
         menu.addItem(item(
             AppLanguage.text("向左旋转 90°", en: "Rotate Left 90°"),
             systemImage: "rotate.left",
@@ -3570,11 +3900,11 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         alignMenu.addItem(item(AppLanguage.text("水平居中", en: "Align Center"), systemImage: "align.horizontal.center", action: #selector(inlineImageContextAlignByTag(_:)), tag: 1, enabled: editable))
         alignMenu.addItem(item(AppLanguage.text("靠右对齐", en: "Align Right"), systemImage: "align.horizontal.right", action: #selector(inlineImageContextAlignByTag(_:)), tag: 2, enabled: editable))
         let alignParent = NSMenuItem(
-            title: AppLanguage.text("图片位置对齐", en: "Align Position"),
+            title: AppLanguage.text("水平对齐", en: "Align Position"),
             action: nil,
             keyEquivalent: ""
         )
-        alignParent.image = NSImage(systemSymbolName: "rectangle.center.inset.filled", accessibilityDescription: nil)
+        alignParent.image = Self.contextMenuSymbol("rectangle.center.inset.filled")
         alignParent.submenu = alignMenu
         alignParent.isEnabled = editable
         menu.addItem(alignParent)
@@ -3586,33 +3916,14 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             enabled: editable && !currentTx.isIdentity
         ))
         
+        // 4. File
         menu.addItem(.separator())
-        
-        menu.addItem(item(
-            AppLanguage.text("OCR 识别文字", en: "OCR & AI Polish"),
-            systemImage: "text.viewfinder",
-            action: #selector(inlineImageContextRunOCR(_:))
-        ))
-        menu.addItem(item(
-            AppLanguage.text("拷贝图片", en: "Copy Image"),
-            systemImage: "doc.on.doc",
-            action: #selector(inlineImageContextCopy(_:))
-        ))
         let fileURL = PlainTextInlineImageStore.shared.imageURL(for: identifier, documentURL: docURL)
         menu.addItem(item(
             AppLanguage.text("在访达中显示", en: "Reveal in Finder"),
             systemImage: "folder",
             action: #selector(inlineImageContextRevealInFinder(_:)),
             enabled: fileURL != nil
-        ))
-        
-        menu.addItem(.separator())
-        
-        menu.addItem(item(
-            AppLanguage.text("删除图片", en: "Delete Image"),
-            systemImage: "trash",
-            action: #selector(inlineImageContextDelete(_:)),
-            enabled: editable
         ))
         
         return menu
@@ -3642,7 +3953,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         tx.rotationDegrees += CGFloat(sender.tag)
         PlainTextInlineImageStore.shared.setTransform(tx, for: payload.identifier, documentURL: docURL)
         self.selectedInlineImageIdentifier = payload.identifier
-        self.applyInlineImageLayoutUpdate()
+        self.applyInlineImageLayoutUpdate(in: payload.tokenRange)
     }
     
     
@@ -3661,14 +3972,14 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         }
         PlainTextInlineImageStore.shared.setTransform(tx, for: payload.identifier, documentURL: docURL)
         self.selectedInlineImageIdentifier = payload.identifier
-        self.applyInlineImageLayoutUpdate()
+        self.applyInlineImageLayoutUpdate(in: payload.tokenRange)
     }
     
     
     @objc private func inlineImageContextResetTransform(_ sender: NSMenuItem) {
         guard let payload = sender.representedObject as? InlineImageMenuPayload else { return }
         PlainTextInlineImageStore.shared.resetTransform(for: payload.identifier, documentURL: self.currentInlineImageDocURL)
-        self.applyInlineImageLayoutUpdate()
+        self.applyInlineImageLayoutUpdate(in: payload.tokenRange)
     }
     
     
@@ -3742,8 +4053,21 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         self.imagePreviewPopover?.performClose(nil)
         
         let docURL = self.currentInlineImageDocURL
-        let current = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
+        var current = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
         let containerWidth = self.effectiveInlineImageContainerWidth
+        let maxImgW = PlainTextInlineImageStore.effectiveMaxImageWidth(containerWidth: containerWidth, glyphX: 0)
+        let naturalSize = PlainTextInlineImageStore.shared.naturalSize(for: entry.identifier, documentURL: docURL) ?? entry.drawSize
+        let scaleBounds = InlineImageZoomMath.scaleBounds(
+            naturalSize: naturalSize,
+            containerWidth: containerWidth,
+            maxImageWidth: maxImgW
+        )
+        let effectiveInitialScale = InlineImageZoomMath.effectiveScale(
+            drawWidth: entry.drawSize.width,
+            naturalSize: naturalSize,
+            maxImageWidth: maxImgW
+        )
+        current.scale = max(scaleBounds.lowerBound, min(scaleBounds.upperBound, effectiveInitialScale))
         let maxOffset = max(120, (self.textContainerOrigin.x + containerWidth - entry.rect.width - 8) - entry.baseAnchorX)
         
         let popover = NSPopover()
@@ -3751,31 +4075,42 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         let view = InlineImageTransformPopoverView(
             initialTransform: current,
+            naturalSize: naturalSize,
+            containerWidth: containerWidth,
+            maxImageWidth: maxImgW,
+            scaleBounds: Double(scaleBounds.lowerBound)...Double(scaleBounds.upperBound),
             maxOffsetX: maxOffset,
-            onChange: { [weak self] nextTransform in
+            onChange: { [weak self] nextTransform, scaleDidChange in
                 guard let self else { return }
-                var resolved = nextTransform
                 let prev = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
-                if abs(resolved.scale - prev.scale) > 0.001 {
-                    resolved.customWidth = nil
-                    resolved.customHeight = nil
-                    if resolved.scale < prev.scale, abs(resolved.offsetY - prev.offsetY) < 0.001, prev.offsetY > 0 {
-                        let scaled = prev.offsetY * (resolved.scale / max(0.05, prev.scale))
-                        resolved.offsetY = scaled < 2 ? 0 : round(scaled)
+                var resolved: InlineImageTransform
+                if scaleDidChange {
+                    resolved = InlineImageZoomMath.transformForTargetScale(
+                        nextTransform.scale,
+                        baseTransform: prev,
+                        naturalSize: naturalSize,
+                        containerWidth: containerWidth,
+                        maxImageWidth: maxImgW
+                    )
+                    resolved.offsetX = nextTransform.offsetX
+                    resolved.rotationDegrees = nextTransform.rotationDegrees
+                    if abs(nextTransform.offsetY - prev.offsetY) > 0.001 {
+                        resolved.offsetY = nextTransform.offsetY
                     }
                 } else {
+                    resolved = nextTransform
                     resolved.customWidth = prev.customWidth
                     resolved.customHeight = prev.customHeight
                 }
                 PlainTextInlineImageStore.shared.setTransform(resolved, for: entry.identifier, documentURL: docURL)
                 self.selectedInlineImageIdentifier = entry.identifier
-                self.applyInlineImageLayoutUpdate()
+                self.applyInlineImageLayoutUpdate(in: entry.tokenRange)
             },
             onReset: { [weak self] in
                 guard let self else { return }
                 PlainTextInlineImageStore.shared.resetTransform(for: entry.identifier, documentURL: docURL)
                 self.selectedInlineImageIdentifier = entry.identifier
-                self.applyInlineImageLayoutUpdate()
+                self.applyInlineImageLayoutUpdate(in: entry.tokenRange)
             },
             onClose: { [weak popover] in
                 popover?.performClose(nil)
@@ -4138,10 +4473,11 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         switch item.action {
             case #selector(paste):
-                let rendersPlainText = (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true
-                let isMarkdown = self.textStorage.flatMap { self.documentViewController?.document(for: $0)?.syntaxName } == "Markdown"
-                if self.isEditable, (rendersPlainText || isMarkdown),
-                   PlainTextInlineImageStore.shared.extractImage(from: NSPasteboard.general) != nil
+                let rendersInlineImages = (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true
+                let syntaxName = self.textStorage.flatMap { self.documentViewController?.document(for: $0)?.syntaxName } ?? ""
+                let supportsInlineImages = rendersInlineImages || PlainTextInlineImageStore.supportsInlineImages(syntaxName: syntaxName)
+                if self.isEditable, supportsInlineImages,
+                   PlainTextInlineImageStore.hasPasteableImage(in: NSPasteboard.general)
                 {
                     return true
                 }
@@ -5540,7 +5876,7 @@ extension EditorTextView {
               nsString.range(of: "⟧", options: .literal, range: lineRange).location != NSNotFound
         else { return nil }
         
-        let docURL = self.textStorage.flatMap { self.documentViewController?.document(for: $0)?.fileURL }
+        let docURL = self.currentInlineImageDocURL
         for token in PlainTextInlineImageStore.shared.findTokens(in: nsString, range: lineRange) {
             guard location > token.range.location, location < token.range.upperBound,
                   PlainTextInlineImageStore.shared.image(for: token.identifier, documentURL: docURL) != nil
@@ -5566,7 +5902,7 @@ extension EditorTextView {
               nsString.range(of: "⟧", options: .literal, range: lineRange).location != NSNotFound
         else { return nil }
         
-        let docURL = self.textStorage.flatMap { self.documentViewController?.document(for: $0)?.fileURL }
+        let docURL = self.currentInlineImageDocURL
         for token in PlainTextInlineImageStore.shared.findTokens(in: nsString, range: lineRange) {
             guard PlainTextInlineImageStore.shared.image(for: token.identifier, documentURL: docURL) != nil else { continue }
             if backward {
@@ -5787,48 +6123,93 @@ private struct InlineImageTransformPopoverView: View {
     @State private var offsetY: Double
     @State private var rotationDegrees: Double
     
+    let naturalSize: NSSize
+    let containerWidth: CGFloat
+    let maxImageWidth: CGFloat
+    let scaleBounds: ClosedRange<Double>
     let maxOffsetX: CGFloat
-    let onChange: (InlineImageTransform) -> Void
+    let onChange: (InlineImageTransform, Bool) -> Void
     let onReset: () -> Void
     let onClose: () -> Void
     
     
     init(
         initialTransform: InlineImageTransform,
+        naturalSize: NSSize,
+        containerWidth: CGFloat,
+        maxImageWidth: CGFloat,
+        scaleBounds: ClosedRange<Double>,
         maxOffsetX: CGFloat,
-        onChange: @escaping (InlineImageTransform) -> Void,
+        onChange: @escaping (InlineImageTransform, Bool) -> Void,
         onReset: @escaping () -> Void,
         onClose: @escaping () -> Void
     ) {
-        self._scale = State(initialValue: Double(initialTransform.scale))
-        self._offsetX = State(initialValue: Double(initialTransform.offsetX))
-        self._offsetY = State(initialValue: Double(initialTransform.offsetY))
-        self._rotationDegrees = State(initialValue: Double(initialTransform.rotationDegrees))
-        self.maxOffsetX = max(120, maxOffsetX)
+        let clampedOffsetMax = max(120, maxOffsetX)
+        let clampedScale = max(scaleBounds.lowerBound, min(scaleBounds.upperBound, Double(initialTransform.scale)))
+        let clampedX = max(0, min(Double(clampedOffsetMax), Double(initialTransform.offsetX)))
+        let clampedY = max(0, min(160, Double(initialTransform.offsetY)))
+        let clampedRot = max(-180, min(180, Double(initialTransform.rotationDegrees)))
+        
+        self._scale = State(initialValue: clampedScale)
+        self._offsetX = State(initialValue: clampedX)
+        self._offsetY = State(initialValue: clampedY)
+        self._rotationDegrees = State(initialValue: clampedRot)
+        self.naturalSize = naturalSize
+        self.containerWidth = containerWidth
+        self.maxImageWidth = maxImageWidth
+        self.scaleBounds = scaleBounds
+        self.maxOffsetX = clampedOffsetMax
         self.onChange = onChange
         self.onReset = onReset
         self.onClose = onClose
     }
     
     
-    private func emitChange() {
-        self.onChange(InlineImageTransform(
-            scale: CGFloat(self.scale),
-            offsetX: CGFloat(self.offsetX),
-            offsetY: CGFloat(self.offsetY),
-            rotationDegrees: CGFloat(self.rotationDegrees)
-        ))
+    private var liveDimensionsText: String {
+        let base = InlineImageZoomMath.baseDrawSize(
+            naturalSize: self.naturalSize,
+            maxImageWidth: self.maxImageWidth
+        )
+        let maxW = InlineImageZoomMath.canvasMaxWidth(
+            containerWidth: self.containerWidth,
+            maxImageWidth: self.maxImageWidth
+        )
+        let size = InlineImageZoomMath.clampedAspectSize(
+            desiredWidth: base.width * CGFloat(self.scale),
+            naturalSize: self.naturalSize,
+            maxWidth: maxW
+        )
+        return "\(Int(round(size.width))) × \(Int(round(size.height))) pt"
+    }
+    
+    
+    private func emitChange(scaleDidChange: Bool) {
+        self.onChange(
+            InlineImageTransform(
+                scale: CGFloat(self.scale),
+                offsetX: CGFloat(self.offsetX),
+                offsetY: CGFloat(self.offsetY),
+                rotationDegrees: CGFloat(self.rotationDegrees)
+            ),
+            scaleDidChange
+        )
     }
     
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(AppLanguage.text("无极精调图片", en: "Transform Image"))
+            HStack(spacing: 8) {
+                Text(AppLanguage.text("无极精调", en: "Transform"))
                     .font(.system(size: 13, weight: .semibold))
+                Text(self.liveDimensionsText)
+                    .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.primary.opacity(0.06), in: Capsule())
                 Spacer()
                 Button(AppLanguage.text("重置", en: "Reset")) {
-                    self.scale = 1.0
+                    self.scale = max(self.scaleBounds.lowerBound, min(self.scaleBounds.upperBound, 1.0))
                     self.offsetX = 0.0
                     self.offsetY = 0.0
                     self.rotationDegrees = 0.0
@@ -5846,9 +6227,9 @@ private struct InlineImageTransformPopoverView: View {
                     Text(AppLanguage.text("无极缩放", en: "Scale"))
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
-                    Slider(value: self.$scale, in: 0.2...3.5)
+                    Slider(value: self.$scale, in: self.scaleBounds)
                         .frame(width: 170)
-                        .onChange(of: self.scale) { _, _ in self.emitChange() }
+                        .onChange(of: self.scale) { _, _ in self.emitChange(scaleDidChange: true) }
                     Text("\(Int((self.scale * 100).rounded()))%")
                         .font(.system(size: 11.5).monospacedDigit())
                         .frame(width: 44, alignment: .trailing)
@@ -5860,7 +6241,7 @@ private struct InlineImageTransformPopoverView: View {
                         .foregroundStyle(.secondary)
                     Slider(value: self.$offsetX, in: 0...Double(self.maxOffsetX))
                         .frame(width: 170)
-                        .onChange(of: self.offsetX) { _, _ in self.emitChange() }
+                        .onChange(of: self.offsetX) { _, _ in self.emitChange(scaleDidChange: false) }
                     Text("\(Int(self.offsetX.rounded())) pt")
                         .font(.system(size: 11.5).monospacedDigit())
                         .frame(width: 44, alignment: .trailing)
@@ -5872,7 +6253,7 @@ private struct InlineImageTransformPopoverView: View {
                         .foregroundStyle(.secondary)
                     Slider(value: self.$offsetY, in: 0...160)
                         .frame(width: 170)
-                        .onChange(of: self.offsetY) { _, _ in self.emitChange() }
+                        .onChange(of: self.offsetY) { _, _ in self.emitChange(scaleDidChange: false) }
                     Text("\(Int(self.offsetY.rounded())) pt")
                         .font(.system(size: 11.5).monospacedDigit())
                         .frame(width: 44, alignment: .trailing)
@@ -5884,328 +6265,39 @@ private struct InlineImageTransformPopoverView: View {
                         .foregroundStyle(.secondary)
                     Slider(value: self.$rotationDegrees, in: -180...180)
                         .frame(width: 170)
-                        .onChange(of: self.rotationDegrees) { _, _ in self.emitChange() }
+                        .onChange(of: self.rotationDegrees) { _, _ in self.emitChange(scaleDidChange: false) }
                     Text("\(Int(self.rotationDegrees.rounded()))°")
                         .font(.system(size: 11.5).monospacedDigit())
                         .frame(width: 44, alignment: .trailing)
                 }
             }
             
-            HStack(spacing: 6) {
-                ForEach([-90.0, -45.0, 0.0, 45.0, 90.0], id: \.self) { deg in
-                    Button("\(Int(deg))°") {
-                        self.rotationDegrees = deg
-                        self.emitChange()
+            HStack(spacing: 5) {
+                let presets = InlineImageZoomMath.quickScalePresets(
+                    for: CGFloat(self.scaleBounds.lowerBound)...CGFloat(self.scaleBounds.upperBound),
+                    fitLabel: AppLanguage.text("适配宽", en: "Fit")
+                )
+                ForEach(Array(presets.enumerated()), id: \.offset) { _, preset in
+                    Button(preset.label) {
+                        self.scale = Double(preset.scale)
+                        self.emitChange(scaleDidChange: true)
                     }
                     .controlSize(.small)
                 }
                 Spacer()
                 Button(AppLanguage.text("居左", en: "Left")) {
                     self.offsetX = 0
-                    self.emitChange()
+                    self.emitChange(scaleDidChange: false)
                 }
                 .controlSize(.small)
                 Button(AppLanguage.text("居中", en: "Center")) {
                     self.offsetX = Double(self.maxOffsetX) * 0.5
-                    self.emitChange()
+                    self.emitChange(scaleDidChange: false)
                 }
                 .controlSize(.small)
             }
         }
         .padding(14)
-        .frame(width: 320)
-    }
-}
-
-
-// MARK: - Inline 1-Click Highlight Swatch Row for Context Menu
-
-/// Deterministic layout geometry for `ContextMenuQuickHighlightRowView`, guaranteeing
-/// zero icon clipping, uniform spacing, and generous clearance around the vertical divider.
-nonisolated enum QuickHighlightRowMetrics {
-    
-    static let maxQuickSwatches: Int = 7
-    static let height: CGFloat = 34
-    static let leadingPadding: CGFloat = 14
-    static let leadingIconWidth: CGFloat = 16
-    static let iconToSwatchesGap: CGFloat = 10
-    static let swatchSize: CGFloat = 18
-    static let swatchSpacing: CGFloat = 3
-    static let swatchesToSeparatorMinGap: CGFloat = 10
-    static let separatorWidth: CGFloat = 1
-    static let separatorHeight: CGFloat = 14
-    static let separatorToToolsGap: CGFloat = 8
-    static let toolButtonSize: CGFloat = 20
-    static let toolsSpacing: CGFloat = 2
-    static let trailingPadding: CGFloat = 12
-    
-    static func minimumWidth(swatchCount: Int) -> CGFloat {
-        let count = max(0, min(self.maxQuickSwatches, swatchCount))
-        let swatchesW = count > 0
-            ? CGFloat(count) * self.swatchSize + CGFloat(max(0, count - 1)) * self.swatchSpacing
-            : 0
-        return self.leadingPadding
-            + self.leadingIconWidth
-            + self.iconToSwatchesGap
-            + swatchesW
-            + self.swatchesToSeparatorMinGap
-            + self.separatorWidth
-            + self.separatorToToolsGap
-            + self.toolButtonSize
-            + self.toolsSpacing
-            + self.toolButtonSize
-            + self.trailingPadding
-    }
-}
-
-
-private final class ContextMenuQuickHighlightRowView: NSView {
-    
-    private let onSelectColorIndex: (Int) -> Void
-    private let onOpenPalette: () -> Void
-    private let onClearHighlight: () -> Void
-    
-    init(
-        target: AnyObject?,
-        onSelectColorIndex: @escaping (Int) -> Void,
-        onOpenPalette: @escaping () -> Void,
-        onClearHighlight: @escaping () -> Void
-    ) {
-        self.onSelectColorIndex = onSelectColorIndex
-        self.onOpenPalette = onOpenPalette
-        self.onClearHighlight = onClearHighlight
-        
-        let presets = Array(HighlightColor.allCases.prefix(QuickHighlightRowMetrics.maxQuickSwatches))
-        let minWidth = QuickHighlightRowMetrics.minimumWidth(swatchCount: presets.count)
-        super.init(frame: NSRect(x: 0, y: 0, width: ceil(minWidth), height: QuickHighlightRowMetrics.height))
-        self.autoresizingMask = [.width]
-        
-        let iconView = NSImageView()
-        let symCfg = NSImage.SymbolConfiguration(pointSize: 12.5, weight: .medium)
-        iconView.image = NSImage(systemSymbolName: "highlighter", accessibilityDescription: nil)?
-            .withSymbolConfiguration(symCfg)
-        iconView.contentTintColor = .secondaryLabelColor
-        iconView.imageScaling = .scaleNone
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-        
-        var swatchButtons: [NSView] = []
-        swatchButtons.reserveCapacity(presets.count)
-        for (idx, color) in presets.enumerated() {
-            let btn = QuickSwatchDotButton(color: color.swatchColor, toolTipText: color.localizedName) { [weak self] in
-                self?.onSelectColorIndex(idx)
-            }
-            swatchButtons.append(btn)
-        }
-        
-        let swatchStack = NSStackView(views: swatchButtons)
-        swatchStack.orientation = .horizontal
-        swatchStack.alignment = .centerY
-        swatchStack.spacing = QuickHighlightRowMetrics.swatchSpacing
-        swatchStack.translatesAutoresizingMaskIntoConstraints = false
-        
-        let separator = QuickMenuHairlineDividerView()
-        separator.translatesAutoresizingMaskIntoConstraints = false
-        
-        let paletteBtn = QuickMenuIconButton(
-            symbolName: "paintpalette",
-            toolTipText: AppLanguage.text("自定义颜色…", en: "Custom Color…")
-        ) { [weak self] in
-            self?.onOpenPalette()
-        }
-        
-        let clearBtn = QuickMenuIconButton(
-            symbolName: "eraser",
-            toolTipText: AppLanguage.text("清除高亮", en: "Clear Highlight")
-        ) { [weak self] in
-            self?.onClearHighlight()
-        }
-        
-        let toolsStack = NSStackView(views: [paletteBtn, clearBtn])
-        toolsStack.orientation = .horizontal
-        toolsStack.alignment = .centerY
-        toolsStack.spacing = QuickHighlightRowMetrics.toolsSpacing
-        toolsStack.translatesAutoresizingMaskIntoConstraints = false
-        
-        self.addSubview(iconView)
-        self.addSubview(swatchStack)
-        self.addSubview(separator)
-        self.addSubview(toolsStack)
-        
-        NSLayoutConstraint.activate([
-            iconView.leadingAnchor.constraint(equalTo: self.leadingAnchor, constant: QuickHighlightRowMetrics.leadingPadding),
-            iconView.centerYAnchor.constraint(equalTo: self.centerYAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: QuickHighlightRowMetrics.leadingIconWidth),
-            iconView.heightAnchor.constraint(equalToConstant: QuickHighlightRowMetrics.leadingIconWidth),
-            
-            swatchStack.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: QuickHighlightRowMetrics.iconToSwatchesGap),
-            swatchStack.centerYAnchor.constraint(equalTo: self.centerYAnchor),
-            
-            separator.leadingAnchor.constraint(greaterThanOrEqualTo: swatchStack.trailingAnchor, constant: QuickHighlightRowMetrics.swatchesToSeparatorMinGap),
-            separator.trailingAnchor.constraint(equalTo: toolsStack.leadingAnchor, constant: -QuickHighlightRowMetrics.separatorToToolsGap),
-            separator.centerYAnchor.constraint(equalTo: self.centerYAnchor),
-            separator.widthAnchor.constraint(equalToConstant: QuickHighlightRowMetrics.separatorWidth),
-            separator.heightAnchor.constraint(equalToConstant: QuickHighlightRowMetrics.separatorHeight),
-            
-            toolsStack.trailingAnchor.constraint(equalTo: self.trailingAnchor, constant: -QuickHighlightRowMetrics.trailingPadding),
-            toolsStack.centerYAnchor.constraint(equalTo: self.centerYAnchor),
-        ])
-        _ = target
-    }
-    
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-}
-
-
-private final class QuickMenuHairlineDividerView: NSView {
-    
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor.separatorColor.withAlphaComponent(0.75).setFill()
-        NSBezierPath(roundedRect: self.bounds, xRadius: 0.5, yRadius: 0.5).fill()
-    }
-}
-
-
-private final class QuickMenuIconButton: NSControl {
-    
-    private let iconImage: NSImage?
-    private let onClick: () -> Void
-    private var isHovered = false
-    
-    init(symbolName: String, toolTipText: String, onClick: @escaping () -> Void) {
-        let cfg = NSImage.SymbolConfiguration(pointSize: 12, weight: .medium)
-        self.iconImage = NSImage(systemSymbolName: symbolName, accessibilityDescription: toolTipText)?
-            .withSymbolConfiguration(cfg)
-        self.iconImage?.isTemplate = true
-        self.onClick = onClick
-        let side = QuickHighlightRowMetrics.toolButtonSize
-        super.init(frame: NSRect(x: 0, y: 0, width: side, height: side))
-        self.toolTip = toolTipText
-        self.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            self.widthAnchor.constraint(equalToConstant: side),
-            self.heightAnchor.constraint(equalToConstant: side),
-        ])
-        self.addTrackingArea(NSTrackingArea(
-            rect: .zero,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        ))
-    }
-    
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-    
-    override func mouseEntered(with event: NSEvent) {
-        self.isHovered = true
-        self.needsDisplay = true
-    }
-    
-    override func mouseExited(with event: NSEvent) {
-        self.isHovered = false
-        self.needsDisplay = true
-    }
-    
-    override func mouseUp(with event: NSEvent) {
-        let local = self.convert(event.locationInWindow, from: nil)
-        if self.bounds.contains(local) {
-            self.onClick()
-        }
-    }
-    
-    override func draw(_ dirtyRect: NSRect) {
-        if self.isHovered {
-            NSColor.labelColor.withAlphaComponent(0.085).setFill()
-            NSBezierPath(roundedRect: self.bounds, xRadius: 5.5, yRadius: 5.5).fill()
-        }
-        guard let image = self.iconImage else { return }
-        let tint: NSColor = self.isHovered ? .labelColor : .secondaryLabelColor
-        let imgSize = image.size
-        let drawRect = NSRect(
-            x: (self.bounds.width - imgSize.width) * 0.5,
-            y: (self.bounds.height - imgSize.height) * 0.5,
-            width: imgSize.width,
-            height: imgSize.height
-        )
-        let tinted = NSImage(size: imgSize, flipped: false) { rect in
-            image.draw(in: rect)
-            tint.set()
-            rect.fill(using: .sourceAtop)
-            return true
-        }
-        tinted.draw(in: drawRect)
-    }
-}
-
-
-private final class QuickSwatchDotButton: NSControl {
-    
-    private let swatchColor: NSColor
-    private let onClick: () -> Void
-    private var isHovered = false
-    
-    init(color: NSColor, toolTipText: String, onClick: @escaping () -> Void) {
-        self.swatchColor = color
-        self.onClick = onClick
-        let side = QuickHighlightRowMetrics.swatchSize
-        super.init(frame: NSRect(x: 0, y: 0, width: side, height: side))
-        self.toolTip = toolTipText
-        self.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
-            self.widthAnchor.constraint(equalToConstant: side),
-            self.heightAnchor.constraint(equalToConstant: side),
-        ])
-        self.addTrackingArea(NSTrackingArea(
-            rect: .zero,
-            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        ))
-    }
-    
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-    
-    override func mouseEntered(with event: NSEvent) {
-        self.isHovered = true
-        self.needsDisplay = true
-    }
-    
-    override func mouseExited(with event: NSEvent) {
-        self.isHovered = false
-        self.needsDisplay = true
-    }
-    
-    override func mouseUp(with event: NSEvent) {
-        let local = self.convert(event.locationInWindow, from: nil)
-        if self.bounds.contains(local) {
-            self.onClick()
-        }
-    }
-    
-    override func draw(_ dirtyRect: NSRect) {
-        if self.isHovered {
-            let ringRect = self.bounds.insetBy(dx: 1.0, dy: 1.0)
-            let ringPath = NSBezierPath(ovalIn: ringRect)
-            ringPath.lineWidth = 1.15
-            NSColor.labelColor.withAlphaComponent(0.32).setStroke()
-            ringPath.stroke()
-        }
-        let dotRect = self.bounds.insetBy(dx: 3.0, dy: 3.0)
-        let dotPath = NSBezierPath(ovalIn: dotRect)
-        self.swatchColor.setFill()
-        dotPath.fill()
-        
-        let isDark = self.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        (isDark ? NSColor.white.withAlphaComponent(0.18) : NSColor.black.withAlphaComponent(0.16)).setStroke()
-        dotPath.lineWidth = 0.5
-        dotPath.stroke()
+        .frame(width: 332)
     }
 }

@@ -2972,7 +2972,7 @@ private struct SidebarEditingSettingsPane: View {
                         .controlSize(.small)
                 }
                 SettingsRowDivider()
-                SettingsItemRow(label: "纯文本内嵌贴图") {
+                SettingsItemRow(label: "纯文本 / Markdown 内嵌贴图") {
                     Toggle("", isOn: self.$plainTextImagesEnabled)
                         .labelsHidden()
                         .toggleStyle(.switch)

@@ -1421,7 +1421,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     }
     
     
-    /// Inserts an image into a Plain Text document as an inline `⟦🖼 ...⟧` card.
+    /// Inserts an image into a Plain Text or Markdown document as an inline `⟦🖼 ...⟧` card.
     @IBAction func insertPlainTextImage(_ sender: Any?) {
         
         guard let textView = self.focusedTextView, let window = textView.window, textView.isEditable else {
@@ -1439,14 +1439,17 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         
         let openPanel = NSOpenPanel()
         openPanel.allowedContentTypes = [.image, .png, .jpeg]
-        openPanel.allowsMultipleSelection = false
+        openPanel.allowsMultipleSelection = true
         openPanel.beginSheetModal(for: window) { [weak textView] response in
-            guard response == .OK, let url = openPanel.url else { return }
+            guard response == .OK, !openPanel.urls.isEmpty else { return }
+            let selectedURLs = openPanel.urls
             Task { @MainActor in
-                guard let textView, textView.isEditable,
-                      let stored = PlainTextInlineImageStore.shared.storeImageFile(at: url, for: docURL)
-                else { return }
-                textView.insertInlineImageTokenCleanly(stored.token)
+                guard let textView, textView.isEditable else { return }
+                for url in selectedURLs {
+                    if let stored = PlainTextInlineImageStore.shared.storeImageFile(at: url, for: docURL) {
+                        textView.insertInlineImageTokenCleanly(stored.token)
+                    }
+                }
             }
         }
     }

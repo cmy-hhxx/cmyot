@@ -388,12 +388,27 @@ class LayoutManager: NSLayoutManager, InvisibleDrawing, ValidationIgnorable {
     
     // MARK: Inline Image Layout Invalidation
     
-    func invalidateInlineImageLayout() {
+    func invalidateInlineImageLayout(in characterRange: NSRange? = nil) {
+        
+        let length = self.textStorage?.length ?? self.attributedString().length
+        guard length > 0 else {
+            self.hasResolvedInlineImageGlyphs = false
+            return
+        }
+        
+        if let characterRange {
+            let nsString = self.backingNSString
+            let safeLoc = min(max(0, characterRange.location), max(0, length - 1))
+            let safeLen = min(max(0, characterRange.length), max(0, length - safeLoc))
+            let lineRange = nsString.lineRange(for: NSRange(location: safeLoc, length: safeLen))
+            self.invalidateGlyphs(forCharacterRange: lineRange, changeInLength: 0, actualCharacterRange: nil)
+            self.invalidateLayout(forCharacterRange: lineRange, actualCharacterRange: nil)
+            let displayRange = NSRange(location: lineRange.location, length: max(0, length - lineRange.location))
+            self.invalidateDisplay(forCharacterRange: displayRange)
+            return
+        }
         
         self.hasResolvedInlineImageGlyphs = false
-        let length = self.textStorage?.length ?? self.attributedString().length
-        guard length > 0 else { return }
-        
         let wholeRange = NSRange(location: 0, length: length)
         self.invalidateGlyphs(forCharacterRange: wholeRange, changeInLength: 0, actualCharacterRange: nil)
         self.invalidateLayout(forCharacterRange: wholeRange, actualCharacterRange: nil)

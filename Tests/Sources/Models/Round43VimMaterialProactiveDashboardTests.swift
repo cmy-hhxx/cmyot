@@ -1155,4 +1155,243 @@ struct Round43VimMaterialProactiveDashboardTests {
         #expect(!controller.isOpen)
         #expect(controller.mountedID == nil)
     }
+    
+    
+    // MARK: 14. Inline Image Stepless Zoom, Plain Text + Markdown Support & Categorized Context Menus
+    
+    @Test func inlineImagesSupportPlainTextAndMarkdownAndSteplessZoomHasZeroDeadZone() throws {
+        // 1. Both Plain Text and Markdown allow inline images; unrelated code syntaxes stay excluded.
+        #expect(PlainTextInlineImageStore.supportsInlineImages(syntaxName: SyntaxName.none) == true)
+        #expect(PlainTextInlineImageStore.supportsInlineImages(syntaxName: "Plain Text") == true)
+        #expect(PlainTextInlineImageStore.supportsInlineImages(syntaxName: "Markdown") == true)
+        #expect(PlainTextInlineImageStore.supportsInlineImages(syntaxName: "markdown") == true)
+        #expect(PlainTextInlineImageStore.supportsInlineImages(syntaxName: "Swift") == false)
+        #expect(PlainTextInlineImageStore.supportsInlineImages(syntaxName: "Python") == false)
+        #expect(PlainTextInlineImageStore.supportsInlineImages(syntaxName: "JSON") == false)
+        
+        // 2. Stepless zoom math: zero dead zone on pinch saturation & exact aspect preservation across ratios.
+        let wideNatural = NSSize(width: 1200, height: 800)
+        let bounds = InlineImageZoomMath.scaleBounds(naturalSize: wideNatural, containerWidth: 900)
+        #expect(bounds.lowerBound < 0.5)
+        #expect(bounds.upperBound > 1.8)
+        
+        // Over-pinch clamps scale strictly to achieved width ratio so the very first pinch-in shrinks immediately.
+        let saturated = InlineImageZoomMath.transformForTargetScale(
+            4.0,
+            baseTransform: .identity,
+            naturalSize: wideNatural,
+            containerWidth: 900
+        )
+        #expect(abs(saturated.scale - bounds.upperBound) < 0.03)
+        let saturatedW = try #require(saturated.customWidth)
+        let afterOnePinchIn = InlineImageZoomMath.transformForMagnify(
+            current: saturated,
+            currentDrawSize: NSSize(width: saturatedW, height: saturated.customHeight ?? 400),
+            naturalSize: wideNatural,
+            factor: 0.9,
+            containerWidth: 900
+        )
+        #expect((afterOnePinchIn.customWidth ?? saturatedW) < saturatedW)
+        #expect(afterOnePinchIn.scale < saturated.scale)
+        
+        // Portrait & ultra-wide images preserve aspect ratio when scaled down without squishing.
+        let portraitSize = InlineImageZoomMath.clampedAspectSize(
+            desiredWidth: 90,
+            naturalSize: NSSize(width: 300, height: 900),
+            maxWidth: 800
+        )
+        #expect(abs((portraitSize.width / portraitSize.height) - (300.0 / 900.0)) < 0.02)
+        
+        let ultraWideSize = InlineImageZoomMath.clampedAspectSize(
+            desiredWidth: 200,
+            naturalSize: NSSize(width: 2000, height: 300),
+            maxWidth: 800
+        )
+        #expect(abs((ultraWideSize.width / ultraWideSize.height) - (2000.0 / 300.0)) < 0.15)
+        
+        // Quick scale presets never emit duplicate labels even in tight panes.
+        let tightBounds = InlineImageZoomMath.scaleBounds(naturalSize: wideNatural, containerWidth: 420)
+        let tightPresets = InlineImageZoomMath.quickScalePresets(for: tightBounds, fitLabel: "适配宽")
+        #expect(Set(tightPresets.map(\.label)).count == tightPresets.count)
+        
+        // 3. South-handle drag resize expands freely (regression for `maxYBound == startFrame.minY` collapse bug).
+        let startFrame = NSRect(x: 20, y: 120, width: 300, height: 200)
+        let expandedFrame = BoundingBoxResizeMath.aspectPreservingResizedFrame(
+            startFrame: startFrame,
+            naturalAspectRatio: 1.5,
+            handle: .bottomRight,
+            delta: NSPoint(x: 150, y: 100),
+            minXBound: 8,
+            minYBound: startFrame.minY - InlineImageZoomMath.maxCardHeight,
+            maxXBound: 860,
+            maxYBound: startFrame.minY + InlineImageZoomMath.maxCardHeight
+        )
+        #expect(expandedFrame.width > 420)
+        #expect(expandedFrame.height > 280)
+        
+        // 4. End-to-end live stepless scale + inline image context menu zoom rail on EditorTextView.
+        let tempDir = FileManager.default.temporaryDirectory
+            .appending(path: "cot_r43_inline_zoom_\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let mdURL = tempDir.appending(path: "notes.md")
+        try Data().write(to: mdURL)
+        
+        let img = NSImage(size: NSSize(width: 320, height: 200))
+        img.lockFocus()
+        NSColor.systemIndigo.setFill()
+        NSRect(x: 0, y: 0, width: 320, height: 200).fill()
+        img.unlockFocus()
+        let stored = try #require(PlainTextInlineImageStore.shared.store(image: img, for: mdURL))
+        let identifier = stored.token
+            .replacingOccurrences(of: "⟦🖼 ", with: "")
+            .replacingOccurrences(of: "⟧", with: "")
+        
+        let doc = Document()
+        doc.fileURL = mdURL
+        doc.setSyntax(name: "Markdown")
+        let textView = EditorTextView(frame: NSRect(x: 0, y: 0, width: 820, height: 500), textStorage: doc.textStorage, lineEndingScanner: doc.lineEndingScanner)
+        (textView.layoutManager as? LayoutManager)?.inlineImageDocumentURL = mdURL
+        (textView.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages = true
+        textView.insertInlineImageTokenCleanly(stored.token)
+        
+        let tokenRange = NSRange(location: 0, length: (stored.token as NSString).length)
+        let scaled = textView.applyInlineImageSteplessScale(1.75, for: identifier, tokenRange: tokenRange)
+        #expect(scaled.scale > 1.65)
+        #expect((scaled.customWidth ?? 0) > 500)
+        
+        let reset = textView.applyInlineImageSteplessScale(1.0, for: identifier, tokenRange: tokenRange)
+        #expect(reset.isIdentity == true)
+        
+        let imgMenu = textView.makeInlineImageContextMenu(for: identifier, tokenRange: tokenRange)
+        #expect(imgMenu.items.contains(where: { $0.view is ContextMenuActionDockView }))
+        #expect(imgMenu.items.contains(where: { $0.view is ContextMenuInlineImageZoomView }))
+        
+        // Read-only editor hides the editable live zoom rail cleanly.
+        textView.isEditable = false
+        let readOnlyImgMenu = textView.makeInlineImageContextMenu(for: identifier, tokenRange: tokenRange)
+        #expect(!readOnlyImgMenu.items.contains(where: { $0.view is ContextMenuInlineImageZoomView }))
+    }
+    
+    
+    @Test func categorizedEditorContextMenuRespectsAllEdgeCasesAndMountsCleanly() {
+        // Empty document edge case
+        let emptyState = EditorContextMenuState(
+            isEditable: true,
+            isEmptyDocument: true,
+            hasSelection: false,
+            selectedCharacterCount: 0,
+            canHighlightSelection: false,
+            hasClipboardText: false,
+            hasClipboardImage: false,
+            supportsInlineImages: true,
+            hasTable: false,
+            splitPaneCount: 1,
+            showsLineNumber: true,
+            hasDocumentController: true
+        )
+        #expect(emptyState.canCut == false)
+        #expect(emptyState.canCopy == false)
+        #expect(emptyState.canPaste == false)
+        #expect(emptyState.canSelectAll == false)
+        #expect(emptyState.canCleanStructure == false)
+        #expect(emptyState.canSemanticRestructure == false)
+        #expect(emptyState.canInsertInlineImage == true)
+        #expect(emptyState.butlerContextBadge(isEnglish: false) == "空文档")
+        
+        // Read-only document with active selection
+        let readOnlySelected = EditorContextMenuState(
+            isEditable: false,
+            isEmptyDocument: false,
+            hasSelection: true,
+            selectedCharacterCount: 18,
+            canHighlightSelection: true,
+            hasClipboardText: true,
+            hasClipboardImage: true,
+            supportsInlineImages: true,
+            hasTable: true,
+            splitPaneCount: 2,
+            showsLineNumber: false,
+            hasDocumentController: true
+        )
+        #expect(readOnlySelected.canCut == false)
+        #expect(readOnlySelected.canCopy == true)
+        #expect(readOnlySelected.canPaste == false)
+        #expect(readOnlySelected.showsHighlightBar == false)
+        #expect(readOnlySelected.canCleanStructure == false)
+        #expect(readOnlySelected.canSemanticRestructure == true)
+        #expect(readOnlySelected.canInsertInlineImage == false)
+        #expect(readOnlySelected.butlerContextBadge(isEnglish: false) == "18 字")
+        
+        // Clipboard image enables paste ONLY when inline images are supported (Plain Text / Markdown)
+        let mdClipboardImg = EditorContextMenuState(
+            isEditable: true,
+            isEmptyDocument: true,
+            hasSelection: false,
+            selectedCharacterCount: 0,
+            canHighlightSelection: false,
+            hasClipboardText: false,
+            hasClipboardImage: true,
+            supportsInlineImages: true,
+            hasTable: false,
+            splitPaneCount: 1,
+            showsLineNumber: true,
+            hasDocumentController: true
+        )
+        #expect(mdClipboardImg.canPaste == true)
+        #expect(mdClipboardImg.showsClipboardImageHint == true)
+        
+        let swiftClipboardImg = EditorContextMenuState(
+            isEditable: true,
+            isEmptyDocument: true,
+            hasSelection: false,
+            selectedCharacterCount: 0,
+            canHighlightSelection: false,
+            hasClipboardText: false,
+            hasClipboardImage: true,
+            supportsInlineImages: false,
+            hasTable: false,
+            splitPaneCount: 1,
+            showsLineNumber: true,
+            hasDocumentController: true
+        )
+        #expect(swiftClipboardImg.canPaste == false)
+        #expect(swiftClipboardImg.canInsertInlineImage == false)
+        
+        // Mount & lay out all custom context menu rows cleanly with zero geometry collapse
+        let dock = ContextMenuActionDockView(actions: [
+            ContextMenuDockAction(title: "剪切", symbolName: "scissors", toolTip: "⌘X", isEnabled: true) {},
+            ContextMenuDockAction(title: "拷贝", symbolName: "doc.on.doc", toolTip: "⌘C", isEnabled: true) {},
+            ContextMenuDockAction(title: "粘贴", symbolName: "doc.on.clipboard", toolTip: "⌘V", isEnabled: true) {},
+            ContextMenuDockAction(title: "全选", symbolName: "selection.pin.in.out", toolTip: "⌘A", isEnabled: true) {},
+        ])
+        dock.layoutSubtreeIfNeeded()
+        #expect(dock.bounds.width == EditorContextMenuMetrics.menuWidth)
+        #expect(dock.bounds.height == EditorContextMenuMetrics.dockHeight)
+        
+        let butlerRow = ContextMenuFeaturedActionRowView(
+            title: "问总管",
+            symbolName: "bubble.left.and.text.bubble.right",
+            badgeText: "18 字"
+        ) {}
+        butlerRow.layoutSubtreeIfNeeded()
+        #expect(butlerRow.bounds.height == EditorContextMenuMetrics.featuredRowHeight)
+        
+        let chips = ContextMenuChipStripView(chips: [
+            ContextMenuChipAction(title: "翻译", symbolName: "character.bubble", isEnabled: true) {},
+            ContextMenuChipAction(title: "总结", symbolName: "text.alignleft", isEnabled: true) {},
+            ContextMenuChipAction(title: "解释", symbolName: "lightbulb", isEnabled: true) {},
+        ])
+        chips.layoutSubtreeIfNeeded()
+        #expect(chips.bounds.height == EditorContextMenuMetrics.chipStripHeight)
+        
+        let doc = Document()
+        let textView = EditorTextView(textStorage: doc.textStorage, lineEndingScanner: doc.lineEndingScanner)
+        textView.string = "Alpha\nBeta\n"
+        textView.setSelectedRange(NSRange(location: 0, length: 5))
+        let menu = textView.makeContextMenu()
+        #expect(menu.items.first?.view is ContextMenuActionDockView)
+        #expect(menu.minimumWidth == EditorContextMenuMetrics.menuWidth)
+    }
 }

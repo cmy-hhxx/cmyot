@@ -453,7 +453,7 @@ struct AIPersonaSettingsView: View {
                         UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.vimCursorEffectEnabled)
                     }
                 
-                Toggle("纯文本内嵌图片预览", isOn: self.$plainTextImagesEnabled)
+                Toggle("纯文本 / Markdown 内嵌图片", isOn: self.$plainTextImagesEnabled)
                     .onChange(of: self.plainTextImagesEnabled) { _, val in
                         CotLocalDatabase.shared.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
                         UserDefaults.standard.set(val, forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
@@ -463,7 +463,7 @@ struct AIPersonaSettingsView: View {
                     CustomCursorColorControl()
                 }
             } header: {
-                Label("沉浸交互与视觉反馈", systemImage: "wand.and.stars")
+                Label("沉浸交互与视觉反馈", systemImage: "slider.horizontal.3")
             }
         }
         .task { self.reload() }

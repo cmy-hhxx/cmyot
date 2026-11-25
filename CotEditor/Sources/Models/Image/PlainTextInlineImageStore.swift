@@ -74,9 +74,230 @@ nonisolated struct InlineImageDisplayGeometry: Equatable, Sendable {
 }
 
 
-/// Manages images embedded inside a Plain Text document (`SyntaxName.none`).
+/// Pure, deterministic stepless zoom geometry math shared across pinch, 8-handle drag, sliders, and layout.
+nonisolated enum InlineImageZoomMath {
+    
+    static let minScaleFloor: CGFloat = 0.15
+    static let maxScaleCeiling: CGFloat = 4.0
+    static let maxCardHeight: CGFloat = 1600
+    
+    
+    /// Computes the baseline `100%` display size before user transforms.
+    static func baseDrawSize(
+        naturalSize: NSSize,
+        maxImageWidth: CGFloat = 460,
+        maxImageHeight: CGFloat = 260
+    ) -> NSSize {
+        guard naturalSize.width > 0, naturalSize.height > 0 else {
+            return NSSize(width: BoundingBoxResizeMath.minWidth, height: BoundingBoxResizeMath.minHeight)
+        }
+        let baseScale = min(maxImageWidth / naturalSize.width, maxImageHeight / naturalSize.height, 1.0)
+        return NSSize(
+            width: max(1, round(naturalSize.width * baseScale)),
+            height: max(1, round(naturalSize.height * baseScale))
+        )
+    }
+    
+    
+    /// Maximum usable horizontal width for an explicitly scaled inline image inside the editor container.
+    static func canvasMaxWidth(containerWidth: CGFloat, maxImageWidth: CGFloat = 460) -> CGFloat {
+        let finiteContainerW = (containerWidth.isFinite && containerWidth > 0 && containerWidth <= 100_000)
+            ? containerWidth
+            : maxImageWidth
+        return max(maxImageWidth, max(160, finiteContainerW - 24))
+    }
+    
+    
+    /// Clamps `desiredWidth` strictly preserving `naturalSize` aspect ratio within usable width/height bounds.
+    static func clampedAspectSize(
+        desiredWidth: CGFloat,
+        naturalSize: NSSize,
+        maxWidth: CGFloat,
+        maxHeight: CGFloat = InlineImageZoomMath.maxCardHeight
+    ) -> NSSize {
+        guard naturalSize.width > 0, naturalSize.height > 0 else {
+            let safeW = max(BoundingBoxResizeMath.minWidth, min(maxWidth, round(desiredWidth)))
+            return NSSize(width: safeW, height: BoundingBoxResizeMath.minHeight)
+        }
+        
+        let aspect = naturalSize.width / naturalSize.height
+        let safeMaxW = max(BoundingBoxResizeMath.minWidth, maxWidth)
+        let safeMaxH = max(BoundingBoxResizeMath.minHeight, maxHeight)
+        
+        // Enforce aspect-safe minimum width without over-blocking ultra-wide banners.
+        let minHeightFloor: CGFloat = aspect > 2.5 ? 28 : BoundingBoxResizeMath.minHeight
+        let minWForMinH = min(safeMaxW, ceil(minHeightFloor * aspect))
+        let effectiveMinW = min(safeMaxW, max(BoundingBoxResizeMath.minWidth, minWForMinH))
+        let maxWForMaxH = max(effectiveMinW, floor(safeMaxH * aspect))
+        let effectiveMaxW = max(effectiveMinW, min(safeMaxW, maxWForMaxH))
+        
+        let w = max(effectiveMinW, min(effectiveMaxW, round(desiredWidth)))
+        let h = max(1, min(safeMaxH, round(w / aspect)))
+        return NSSize(width: w, height: h)
+    }
+    
+    
+    /// Returns the exact reachable `[min, max]` scale range relative to `baseDrawSize`, eliminating slider dead zones.
+    static func scaleBounds(
+        naturalSize: NSSize,
+        containerWidth: CGFloat,
+        maxImageWidth: CGFloat = 460,
+        maxImageHeight: CGFloat = 260
+    ) -> ClosedRange<CGFloat> {
+        let base = self.baseDrawSize(
+            naturalSize: naturalSize,
+            maxImageWidth: maxImageWidth,
+            maxImageHeight: maxImageHeight
+        )
+        let canvasMaxW = self.canvasMaxWidth(containerWidth: containerWidth, maxImageWidth: maxImageWidth)
+        let minSize = self.clampedAspectSize(
+            desiredWidth: max(1, base.width * self.minScaleFloor),
+            naturalSize: naturalSize,
+            maxWidth: canvasMaxW
+        )
+        let maxSize = self.clampedAspectSize(
+            desiredWidth: base.width * self.maxScaleCeiling,
+            naturalSize: naturalSize,
+            maxWidth: canvasMaxW
+        )
+        let lower = max(self.minScaleFloor, min(1.0, minSize.width / max(1, base.width)))
+        let upper = max(max(lower + 0.05, 1.0), min(self.maxScaleCeiling, maxSize.width / max(1, base.width)))
+        return lower...upper
+    }
+    
+    
+    /// Computes the true effective scale factor represented by `drawWidth` relative to baseline `100%`.
+    static func effectiveScale(
+        drawWidth: CGFloat,
+        naturalSize: NSSize,
+        maxImageWidth: CGFloat = 460,
+        maxImageHeight: CGFloat = 260
+    ) -> CGFloat {
+        let base = self.baseDrawSize(
+            naturalSize: naturalSize,
+            maxImageWidth: maxImageWidth,
+            maxImageHeight: maxImageHeight
+        )
+        let raw = drawWidth / max(1, base.width)
+        return max(self.minScaleFloor, min(self.maxScaleCeiling, raw))
+    }
+    
+    
+    /// Produces a synchronized transform for an explicit target `scale` (keeping `scale`, `customWidth`, and `customHeight` aligned).
+    static func transformForTargetScale(
+        _ requestedScale: CGFloat,
+        baseTransform: InlineImageTransform,
+        naturalSize: NSSize,
+        containerWidth: CGFloat,
+        maxImageWidth: CGFloat = 460,
+        maxImageHeight: CGFloat = 260
+    ) -> InlineImageTransform {
+        let base = self.baseDrawSize(
+            naturalSize: naturalSize,
+            maxImageWidth: maxImageWidth,
+            maxImageHeight: maxImageHeight
+        )
+        let bounds = self.scaleBounds(
+            naturalSize: naturalSize,
+            containerWidth: containerWidth,
+            maxImageWidth: maxImageWidth,
+            maxImageHeight: maxImageHeight
+        )
+        let clampedScale = max(bounds.lowerBound, min(bounds.upperBound, requestedScale))
+        let canvasMaxW = self.canvasMaxWidth(containerWidth: containerWidth, maxImageWidth: maxImageWidth)
+        let prevSize = self.clampedAspectSize(
+            desiredWidth: baseTransform.customWidth ?? (base.width * baseTransform.scale),
+            naturalSize: naturalSize,
+            maxWidth: canvasMaxW
+        )
+        let nextSize = self.clampedAspectSize(
+            desiredWidth: base.width * clampedScale,
+            naturalSize: naturalSize,
+            maxWidth: canvasMaxW
+        )
+        let achievedScale = self.effectiveScale(
+            drawWidth: nextSize.width,
+            naturalSize: naturalSize,
+            maxImageWidth: maxImageWidth,
+            maxImageHeight: maxImageHeight
+        )
+        
+        var updated = baseTransform
+        if abs(achievedScale - 1.0) < 0.015 {
+            updated.scale = 1.0
+            updated.customWidth = nil
+            updated.customHeight = nil
+        } else {
+            updated.scale = achievedScale
+            updated.customWidth = nextSize.width
+            updated.customHeight = nextSize.height
+        }
+        
+        if nextSize.height < prevSize.height, updated.offsetY > 0 {
+            let scaledOffset = updated.offsetY * (nextSize.height / max(1, prevSize.height))
+            updated.offsetY = scaledOffset < 2 ? 0 : round(scaledOffset)
+        }
+        return updated.clamped()
+    }
+    
+    
+    /// Returns deduplicated quick-scale presets tailored to `bounds` so UI pills never repeat values.
+    static func quickScalePresets(
+        for bounds: ClosedRange<CGFloat>,
+        fitLabel: String
+    ) -> [(label: String, scale: CGFloat)] {
+        var candidates: [(label: String, scale: CGFloat)] = []
+        let standard: [CGFloat] = [0.5, 1.0, 1.5]
+        for target in standard {
+            let clamped = max(bounds.lowerBound, min(bounds.upperBound, target))
+            let pct = Int((clamped * 100).rounded())
+            if !candidates.contains(where: { abs($0.scale - clamped) < 0.04 }) {
+                candidates.append(("\(pct)%", clamped))
+            }
+        }
+        let fitScale = bounds.upperBound
+        if !candidates.contains(where: { abs($0.scale - fitScale) < 0.04 }) {
+            candidates.append((fitLabel, fitScale))
+        } else if let idx = candidates.lastIndex(where: { abs($0.scale - fitScale) < 0.04 }), fitScale > 1.08 {
+            candidates[idx] = (fitLabel, fitScale)
+        }
+        return candidates
+    }
+    
+    
+    /// Produces a synchronized, zero-dead-zone transform step for trackpad pinch magnification.
+    static func transformForMagnify(
+        current: InlineImageTransform,
+        currentDrawSize: NSSize,
+        naturalSize: NSSize,
+        factor: CGFloat,
+        containerWidth: CGFloat,
+        maxImageWidth: CGFloat = 460,
+        maxImageHeight: CGFloat = 260
+    ) -> InlineImageTransform {
+        let clampedFactor = max(0.5, min(2.0, factor))
+        let base = self.baseDrawSize(
+            naturalSize: naturalSize,
+            maxImageWidth: maxImageWidth,
+            maxImageHeight: maxImageHeight
+        )
+        let currentW = max(1, currentDrawSize.width > 0 ? currentDrawSize.width : (current.customWidth ?? base.width * current.scale))
+        let targetScale = (currentW * clampedFactor) / max(1, base.width)
+        return self.transformForTargetScale(
+            targetScale,
+            baseTransform: current,
+            naturalSize: naturalSize,
+            containerWidth: containerWidth,
+            maxImageWidth: maxImageWidth,
+            maxImageHeight: maxImageHeight
+        )
+    }
+}
+
+
+/// Manages images embedded inside Plain Text (`SyntaxName.none`) and Markdown documents.
 ///
-/// The text file stays 100% pure plain text by storing a compact token `⟦🖼 <filename>⟧`
+/// The text file stays clean by storing a compact token `⟦🖼 <filename>⟧`
 /// while the image file itself lives in a hidden `.cot-assets/` folder beside the document
 /// (or in `~/Library/Application Support/Cot/InlineImages/` for untitled documents).
 /// In the editor, `EditorTextView` and `LayoutManager` render a sleek inline card right under
@@ -84,6 +305,45 @@ nonisolated struct InlineImageDisplayGeometry: Equatable, Sendable {
 nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
     
     static let shared = PlainTextInlineImageStore()
+    
+    
+    /// Returns whether inline image cards, drag-drop, and clipboard image paste are enabled for `syntaxName`.
+    static func supportsInlineImages(syntaxName: String) -> Bool {
+        let normalized = syntaxName.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return syntaxName == SyntaxName.none
+            || normalized.isEmpty
+            || normalized == "plain text"
+            || normalized == "none"
+            || normalized == "markdown"
+    }
+    
+    
+    /// Fast, zero-decode metadata check used by context menus & UI validation (`< 0.05ms`).
+    static func hasPasteableImage(in pasteboard: NSPasteboard) -> Bool {
+        let types = pasteboard.types ?? []
+        if types.contains(where: { Self.imagePasteboardTypes.contains($0) }) {
+            if let plainText = pasteboard.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !plainText.isEmpty
+            {
+                let html = pasteboard.string(forType: .html) ?? ""
+                let looksLikeHTMLImage = html.localizedCaseInsensitiveContains("<img")
+                let looksLikeSingleLineURLOrFilename = !plainText.contains("\n")
+                    && (plainText.hasPrefix("http://") || plainText.hasPrefix("https://") || plainText.hasPrefix("file://")
+                        || Self.imageExtensions.contains(URL(filePath: plainText).pathExtension.lowercased()))
+                if !looksLikeHTMLImage && !looksLikeSingleLineURLOrFilename {
+                    return false
+                }
+            }
+            return true
+        }
+        if types.contains(.fileURL),
+           let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL],
+           urls.contains(where: { Self.imageExtensions.contains($0.pathExtension.lowercased()) })
+        {
+            return true
+        }
+        return false
+    }
     
     private static let tokenRegex = try! NSRegularExpression(pattern: "⟦🖼\\s*([^⟧]+?)⟧")
     private static let imagePasteboardTypes: [NSPasteboard.PasteboardType] = [
@@ -421,47 +681,40 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
               imgSize.width > 0, imgSize.height > 0
         else { return nil }
         
-        let baseScale = min(maxImageWidth / imgSize.width, maxImageHeight / imgSize.height, 1.0)
-        let baseDrawW = max(1, round(imgSize.width * baseScale))
-        let baseDrawH = max(1, round(imgSize.height * baseScale))
+        let base = InlineImageZoomMath.baseDrawSize(
+            naturalSize: imgSize,
+            maxImageWidth: maxImageWidth,
+            maxImageHeight: maxImageHeight
+        )
         let transform = self.transform(for: identifier, documentURL: documentURL)
         
         if transform.isIdentity {
-            let drawSize = NSSize(width: baseDrawW, height: baseDrawH)
             return InlineImageDisplayGeometry(
-                drawSize: drawSize,
-                rotatedBoxSize: drawSize,
-                cardSize: NSSize(width: baseDrawW + 8, height: baseDrawH + 8),
+                drawSize: base,
+                rotatedBoxSize: base,
+                cardSize: NSSize(width: base.width + 8, height: base.height + 8),
                 transform: .identity
             )
         }
         
         // When user explicitly resizes or scales (> 1.0), break past the 460pt thumbnail cap up to full editor canvas width.
-        let finiteContainerW = (containerWidth.isFinite && containerWidth > 0 && containerWidth <= 100_000)
-            ? containerWidth
-            : maxImageWidth
-        let canvasMaxW = max(maxImageWidth, max(160, finiteContainerW - 24))
-        let aspect = imgSize.height / imgSize.width
-        let clampedW: CGFloat
-        let clampedH: CGFloat
-        if transform.customWidth != nil || transform.customHeight != nil {
-            let fallbackW = round(baseDrawW * transform.scale)
-            let fallbackH = round(baseDrawH * transform.scale)
-            let rawW = max(64, min(canvasMaxW, round(transform.customWidth ?? fallbackW)))
-            let rawH = max(48, min(1600, round(transform.customHeight ?? fallbackH)))
-            let optimal = BoundingBoxResizeMath.optimalRestoredSize(
-                currentSize: NSSize(width: rawW, height: rawH),
-                naturalSize: imgSize,
-                maxWidth: canvasMaxW,
-                maxHeight: 1600
-            )
-            clampedW = optimal.width
-            clampedH = optimal.height
+        let canvasMaxW = InlineImageZoomMath.canvasMaxWidth(containerWidth: containerWidth, maxImageWidth: maxImageWidth)
+        let aspect = imgSize.width / imgSize.height
+        let desiredW: CGFloat
+        if let customW = transform.customWidth {
+            desiredW = customW
+        } else if let customH = transform.customHeight {
+            desiredW = customH * aspect
         } else {
-            let rawScaledW = baseDrawW * transform.scale
-            clampedW = max(64, min(canvasMaxW, round(rawScaledW)))
-            clampedH = max(48, round(clampedW * aspect))
+            desiredW = base.width * transform.scale
         }
+        let clamped = InlineImageZoomMath.clampedAspectSize(
+            desiredWidth: desiredW,
+            naturalSize: imgSize,
+            maxWidth: canvasMaxW
+        )
+        let clampedW = clamped.width
+        let clampedH = clamped.height
         
         let rad = abs(transform.rotationDegrees) * .pi / 180.0
         let cosA = abs(cos(rad))

@@ -504,13 +504,13 @@ final class EditorTextViewController: NSViewController, NSServicesMenuRequestor,
         self.textView.quoteDelimiters = syntax.stringDelimiters + syntax.characterDelimiters
         self.textView.syntaxCompletionWords = syntax.completionWords
         
-        let isPlainText = (self.document.syntaxName == SyntaxName.none || self.document.syntaxName == "Plain Text")
+        let supportsInlineImages = PlainTextInlineImageStore.supportsInlineImages(syntaxName: self.document.syntaxName)
         let inlineImagesPref = UserDefaults.standard.object(forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled) == nil
             ? true
             : UserDefaults.standard.bool(forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
         let layoutManager = self.textView.layoutManager as? LayoutManager
         layoutManager?.inlineImageDocumentURL = self.document.fileURL
-        layoutManager?.rendersPlainTextInlineImages = isPlainText && inlineImagesPref
+        layoutManager?.rendersPlainTextInlineImages = supportsInlineImages && inlineImagesPref
         self.textView.needsDisplay = true
     }
     
@@ -614,11 +614,32 @@ extension EditorTextViewController: EditorTextView.Delegate {
         guard !urls.isEmpty else { return false }
         
         let fileDropItems = UserDefaults.standard[.fileDropArray].map(FileDropItem.init(dictionary:))
+        let inlineImagesPref = UserDefaults.standard.object(forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: CotLocalDatabase.ConfigKey.plainTextInlineImagesEnabled)
+        let supportsInlineImages = inlineImagesPref
+            && PlainTextInlineImageStore.supportsInlineImages(syntaxName: self.document.syntaxName)
+        let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "tif", "bmp"]
+        let hasDroppableInlineImage = supportsInlineImages
+            && urls.contains(where: { imageExtensions.contains($0.pathExtension.lowercased()) })
         
-        guard !fileDropItems.isEmpty else { return false }
+        guard !fileDropItems.isEmpty || hasDroppableInlineImage else { return false }
         
-        let isPlainText = (self.document.syntaxName == SyntaxName.none || self.document.syntaxName == "Plain Text")
-        let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff", "bmp"]
+        // If all dropped items are images in Plain Text or Markdown, insert cleanly on dedicated lines.
+        if supportsInlineImages,
+           urls.allSatisfy({ imageExtensions.contains($0.pathExtension.lowercased()) })
+        {
+            var insertedAny = false
+            for url in urls {
+                if let stored = PlainTextInlineImageStore.shared.storeImageFile(at: url, for: self.document.fileURL) {
+                    textView.insertInlineImageTokenCleanly(stored.token)
+                    insertedAny = true
+                }
+            }
+            if insertedAny {
+                return true
+            }
+        }
         
         let replacementString = urls.reduce(into: "") { string, url in
             if url.pathExtension == TextClipping.pathExtension, let textClipping = try? TextClipping(contentsOf: url) {
@@ -626,8 +647,8 @@ extension EditorTextViewController: EditorTextView.Delegate {
                 return
             }
             
-            // In Plain Text mode, embed dropped images seamlessly as inline image tokens
-            if isPlainText,
+            // In Plain Text and Markdown modes, embed dropped images seamlessly as inline image tokens
+            if supportsInlineImages,
                imageExtensions.contains(url.pathExtension.lowercased()),
                let stored = PlainTextInlineImageStore.shared.storeImageFile(at: url, for: self.document.fileURL)
             {
