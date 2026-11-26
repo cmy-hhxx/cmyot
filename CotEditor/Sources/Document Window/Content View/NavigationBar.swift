@@ -173,6 +173,7 @@ private final class PaneNavigationBarBackgroundView: NSView {
     }
     
     private let separatorLayer = CALayer()
+    private var wallpaperObserver: (any NSObjectProtocol)?
     
     override var mouseDownCanMoveWindow: Bool { false }
     override var wantsUpdateLayer: Bool { true }
@@ -183,6 +184,22 @@ private final class PaneNavigationBarBackgroundView: NSView {
         super.init(frame: frameRect)
         self.wantsLayer = true
         self.layer?.addSublayer(self.separatorLayer)
+        self.wallpaperObserver = NotificationCenter.default.addObserver(
+            forName: WallpaperManager.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.needsDisplay = true
+            }
+        }
+    }
+    
+    
+    isolated deinit {
+        if let observer = self.wallpaperObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
     
     
@@ -196,7 +213,17 @@ private final class PaneNavigationBarBackgroundView: NSView {
     override func updateLayer() {
         
         self.effectiveAppearance.performAsCurrentDrawingAppearance {
-            if let palette = self.chromePalette {
+            let wallpaperActive = WallpaperManager.shared.spec.isEnabled
+            let isDark = self.chromePalette?.isDark ?? self.effectiveAppearance.isDark
+            if wallpaperActive {
+                // Seamless translucent wash over the continuous EditorWallpaperBackdropView
+                self.layer?.backgroundColor = (isDark
+                    ? NSColor.black.withAlphaComponent(0.04)
+                    : NSColor.white.withAlphaComponent(0.05)).cgColor
+                self.separatorLayer.backgroundColor = (isDark
+                    ? NSColor.white.withAlphaComponent(0.08)
+                    : NSColor.black.withAlphaComponent(0.055)).cgColor
+            } else if let palette = self.chromePalette {
                 self.layer?.backgroundColor = palette.tabBarBackground.cgColor
                 self.separatorLayer.backgroundColor = palette.tabBarSeparator.cgColor
             } else {

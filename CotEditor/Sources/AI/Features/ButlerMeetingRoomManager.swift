@@ -122,6 +122,25 @@ nonisolated enum MeetingRoomRouter {
     }
     
     
+    private static let progressCheckKeywords: [String] = [
+        "进展", "进度", "汇报", "复盘", "总结", "站会", "日报", "周报",
+        "统计", "数据", "干了啥", "干了什么", "做了什么", "做了啥", "工作",
+        "待办", "整理", "文档", "刷新", "更新", "同步", "今天", "本周",
+        "standup", "report", "progress", "summary", "status", "todo", "stats",
+    ]
+    
+    
+    /// Distinguishes explicit work/progress inquiries from casual group-chat banter or greetings.
+    static func isProgressCheckIntent(_ rawPrompt: String) -> Bool {
+        let trimmed = rawPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return true
+        }
+        let lower = trimmed.lowercased()
+        return Self.progressCheckKeywords.contains { lower.contains($0) }
+    }
+    
+    
     /// Parses a Meeting Room user prompt into a clean hub-and-spoke dispatch plan.
     static func parsePrompt(
         _ rawPrompt: String,
@@ -445,9 +464,16 @@ final class ButlerMeetingRoomManager {
     ) async {
         switch plan.mode {
             case .allHandsStandup(let participants):
+                let isProgressCheck = MeetingRoomRouter.isProgressCheckIntent(plan.cleanedPrompt)
+                let butlerConfig = botStore.resolvedConfiguration(for: .butler)
+                let remoteEnabled = allowRemoteAI && AIService.shared.isConfigured && !butlerConfig.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 var reports: [(botID: AIBotID, name: String, text: String)] = []
                 for botID in participants {
                     guard self.activeGeneration == generation, !Task.isCancelled else { return }
+                    // In casual group banter (e.g. "嗨", "好累"), cap spontaneous replies to 2 voices like a real chat.
+                    if !isProgressCheck && remoteEnabled && reports.count >= 2 {
+                        break
+                    }
                     let report = await self.runBotReportTurn(
                         botID: botID,
                         userPrompt: plan.cleanedPrompt,
@@ -456,6 +482,7 @@ final class ButlerMeetingRoomManager {
                         delegatedFromButler: false,
                         isMentioned: false,
                         isButlerSynthesis: false,
+                        isProgressCheck: isProgressCheck,
                         subordinateReports: [],
                         generation: generation,
                         allowRemoteAI: allowRemoteAI,
@@ -466,14 +493,16 @@ final class ButlerMeetingRoomManager {
                     }
                 }
                 guard self.activeGeneration == generation, !Task.isCancelled else { return }
+                let runAsSynthesis = isProgressCheck || !remoteEnabled || reports.isEmpty
                 _ = await self.runBotReportTurn(
                     botID: .butler,
                     userPrompt: plan.cleanedPrompt,
                     telemetry: telemetryMap[.butler],
                     shouldRefresh: false,
                     delegatedFromButler: false,
-                    isMentioned: true,
-                    isButlerSynthesis: true,
+                    isMentioned: runAsSynthesis,
+                    isButlerSynthesis: runAsSynthesis,
+                    isProgressCheck: isProgressCheck,
                     subordinateReports: reports,
                     generation: generation,
                     allowRemoteAI: allowRemoteAI,
@@ -481,6 +510,7 @@ final class ButlerMeetingRoomManager {
                 )
                 
             case .directCallout(let targets, let shouldRefresh):
+                let isProgressCheck = shouldRefresh || MeetingRoomRouter.isProgressCheckIntent(plan.cleanedPrompt)
                 for botID in targets {
                     guard self.activeGeneration == generation, !Task.isCancelled else { return }
                     _ = await self.runBotReportTurn(
@@ -491,6 +521,7 @@ final class ButlerMeetingRoomManager {
                         delegatedFromButler: false,
                         isMentioned: true,
                         isButlerSynthesis: false,
+                        isProgressCheck: isProgressCheck,
                         subordinateReports: [],
                         generation: generation,
                         allowRemoteAI: allowRemoteAI,
@@ -512,6 +543,7 @@ final class ButlerMeetingRoomManager {
                         delegatedFromButler: true,
                         isMentioned: mustReply,
                         isButlerSynthesis: false,
+                        isProgressCheck: true,
                         subordinateReports: [],
                         generation: generation,
                         allowRemoteAI: allowRemoteAI,
@@ -530,6 +562,7 @@ final class ButlerMeetingRoomManager {
                     delegatedFromButler: false,
                     isMentioned: true,
                     isButlerSynthesis: true,
+                    isProgressCheck: true,
                     subordinateReports: reports,
                     generation: generation,
                     allowRemoteAI: allowRemoteAI,
@@ -547,6 +580,7 @@ final class ButlerMeetingRoomManager {
         delegatedFromButler: Bool,
         isMentioned: Bool,
         isButlerSynthesis: Bool,
+        isProgressCheck: Bool,
         subordinateReports: [(botID: AIBotID, name: String, text: String)],
         generation: UInt64,
         allowRemoteAI: Bool,
@@ -605,6 +639,7 @@ final class ButlerMeetingRoomManager {
             telemetry: refreshedTelemetry,
             isMentioned: isMentioned,
             isButlerSynthesis: isButlerSynthesis,
+            isProgressCheck: isProgressCheck,
             subordinateReports: subordinateReports,
             receipts: receipts,
             placeholderID: msgID,
@@ -639,6 +674,7 @@ final class ButlerMeetingRoomManager {
         telemetry: MeetingBotDailyTelemetry?,
         isMentioned: Bool,
         isButlerSynthesis: Bool,
+        isProgressCheck: Bool,
         subordinateReports: [(botID: AIBotID, name: String, text: String)],
         receipts: [String],
         placeholderID: String,
@@ -648,7 +684,7 @@ final class ButlerMeetingRoomManager {
         let evidence = telemetry?.evidenceSummary ?? AppLanguage.text("今日暂无额外记录。", en: "No additional records today.")
         var config = botStore.resolvedConfiguration(for: botID)
         if botStore.config(for: botID).temperature == nil {
-            config.temperature = 0.85
+            config.temperature = 0.92
         }
         let canCallRemote = allowRemoteAI && AIService.shared.isConfigured && !config.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         
@@ -668,14 +704,20 @@ final class ButlerMeetingRoomManager {
             name: botName,
             isMentioned: isMentioned,
             isButlerSynthesis: isButlerSynthesis,
-            customPersona: botStore.config(for: botID).customPersona
+            customPersona: botStore.config(for: botID).customPersona,
+            isProgressCheck: isProgressCheck
         )
         
         let recentChat = self.recentGroupChatContext(excludingMessageID: placeholderID, limit: 10)
+        let isShortGreeting = !isProgressCheck && userPrompt.trimmingCharacters(in: .whitespacesAndNewlines).count <= 8
         var contextLines: [String] = [
             "【用户刚说】\(userPrompt)",
-            "【你的真实本地数据】\n\(evidence)",
         ]
+        if isProgressCheck {
+            contextLines.append("【你的本地背景（挑最值得说的一点聊，不要念流水账）】\n\(evidence)")
+        } else if !isShortGreeting {
+            contextLines.append("【静默背景（仅当话题直接相关时参考，严禁主动报数字）】\n\(evidence)")
+        }
         if !recentChat.isEmpty {
             contextLines.append("【群聊最近消息】\n\(recentChat)")
         }
@@ -684,7 +726,7 @@ final class ButlerMeetingRoomManager {
         }
         if !subordinateReports.isEmpty {
             let merged = subordinateReports.map { "\($0.name)：\($0.text)" }.joined(separator: "\n")
-            contextLines.append("【刚才有发言的同事】\n\(merged)")
+            contextLines.append("【刚才同事已经发在群里的话（严禁复述或照抄里面的数字）】\n\(merged)")
         }
         let userContext = contextLines.joined(separator: "\n\n")
         

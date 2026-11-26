@@ -772,11 +772,11 @@ final class StudioPaletteManager {
                 toolbarPillText: activeText
             )
         } else {
-            let tabBarBg = Self.blend(editorBg, with: themeText, ratio: 0.032)
-            let activeTabFill = Self.blend(editorBg, with: .white, ratio: 0.85)
-            let activeTabBorder = themeText.withAlphaComponent(0.09)
-            let hoveredTabFill = themeText.withAlphaComponent(0.05)
-            let separator = themeText.withAlphaComponent(0.08)
+            let tabBarBg = Self.blend(editorBg, with: themeText, ratio: 0.012)
+            let activeTabFill = Self.blend(editorBg, with: .white, ratio: 0.88)
+            let activeTabBorder = themeText.withAlphaComponent(0.075)
+            let hoveredTabFill = themeText.withAlphaComponent(0.045)
+            let separator = themeText.withAlphaComponent(0.06)
             let activeText = themeText.withAlphaComponent(0.92)
             let inactiveText = themeText.withAlphaComponent(0.54)
             let accent = Self.ensureLightModeTextContrast(rawAccent, against: activeTabFill)

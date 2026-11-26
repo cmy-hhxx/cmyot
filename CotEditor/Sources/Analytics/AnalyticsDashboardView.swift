@@ -4023,60 +4023,66 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
         elapsed: TimeInterval,
         hasPhoto: Bool
     ) -> some View {
-        let laneCount = (!self.compact && size.height >= 104) ? 3 : 2
-        let lanePitch: CGFloat = max(28, size.height / CGFloat(laneCount))
-        let pillHeight: CGFloat = self.compact ? 24 : 26
+        let pillHeight: CGFloat = self.compact ? 22 : 24
+        let laneGap: CGFloat = 8
+        let minLanePitch: CGFloat = pillHeight + laneGap
+        let laneCount = max(1, min(3, Int(floor((size.height + laneGap) / minLanePitch))))
+        let totalTrackH = CGFloat(laneCount) * pillHeight + CGFloat(max(0, laneCount - 1)) * laneGap
+        let topOrigin = max(0, (size.height - totalTrackH) * 0.5)
         let maxW = items.map { DashboardHeroDanmakuScheduler.estimatedPillSize(for: $0.text).width }.max() ?? 116
-        let step = maxW + 44
-        let cycle = max(size.width + maxW + 64, CGFloat(max(1, items.count)) * step / CGFloat(laneCount))
+        let step = maxW + 52
+        let perLaneCount = max(1, Int(ceil(Double(items.count) / Double(laneCount))))
+        let cycle = max(size.width + maxW + 72, CGFloat(perLaneCount) * step)
         
         return ZStack(alignment: .topLeading) {
-            ForEach(Array(items.enumerated()), id: \.element.id) { idx, item in
-                let lane = idx % laneCount
-                let pillSize = DashboardHeroDanmakuScheduler.estimatedPillSize(for: item.text)
-                let speed: CGFloat = switch lane {
-                    case 0: 21.0
-                    case 1: 16.5
-                    default: 24.5
-                }
-                let phaseOffset = CGFloat(lane) * (step * 0.42)
-                let raw = CGFloat(elapsed) * speed + CGFloat(idx / laneCount) * step + phaseOffset
-                let travel = raw.truncatingRemainder(dividingBy: cycle)
-                let centerX = (size.width + maxW * 0.5) - travel
-                let centerY = (CGFloat(lane) + 0.5) * lanePitch
-                let edgeDist = min(centerX - pillSize.width * 0.5, size.width - (centerX + pillSize.width * 0.5))
-                let fade = min(1.0, max(0.0, Double(edgeDist / 34.0)))
-                if fade > 0.02 {
-                    // Sample the exact horizontal column behind this pill right now so its glass & ink adapt continuously!
-                    let normalizedX = Double(centerX / max(1, size.width))
-                    let localBgTone = self.toneSnapshot.danmakuTone(atNormalizedX: normalizedX)
-                    let pillGlass = HeroAdaptiveGlassTokens.resolve(
-                        for: localBgTone,
-                        hasPhoto: hasPhoto,
-                        hovered: false,
-                        palette: self.palette
-                    )
-                    let dotColor = HeroAdaptiveGlassTokens.danmakuAccentDot(
-                        for: item.tone,
-                        background: localBgTone,
-                        palette: self.palette
-                    )
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(dotColor)
-                            .frame(width: 5, height: 5)
-                        Text(item.text)
-                            .font(.system(size: self.compact ? 11.5 : 12, weight: .medium))
-                            .foregroundStyle(pillGlass.ink)
-                            .lineLimit(1)
+            if size.height >= pillHeight {
+                ForEach(Array(items.enumerated()), id: \.element.id) { idx, item in
+                    let lane = idx % laneCount
+                    let pillSize = DashboardHeroDanmakuScheduler.estimatedPillSize(for: item.text)
+                    let speed: CGFloat = switch lane {
+                        case 0: 21.0
+                        case 1: 16.5
+                        default: 24.5
                     }
-                    .padding(.horizontal, 11)
-                    .frame(height: pillHeight)
-                    .background {
-                        self.adaptiveGlassCapsule(glass: pillGlass)
+                    let phaseOffset = CGFloat(lane) * (step * 0.46)
+                    let raw = CGFloat(elapsed) * speed + CGFloat(idx / laneCount) * step + phaseOffset
+                    let travel = raw.truncatingRemainder(dividingBy: cycle)
+                    let centerX = (size.width + maxW * 0.5) - travel
+                    let centerY = topOrigin + CGFloat(lane) * minLanePitch + pillHeight * 0.5
+                    let edgeDist = min(centerX - pillSize.width * 0.5, size.width - (centerX + pillSize.width * 0.5))
+                    let fade = min(1.0, max(0.0, Double(edgeDist / 34.0)))
+                    if fade > 0.02 {
+                        let normalizedX = Double(centerX / max(1, size.width))
+                        let localBgTone = self.toneSnapshot.danmakuTone(atNormalizedX: normalizedX)
+                        let pillGlass = HeroAdaptiveGlassTokens.resolve(
+                            for: localBgTone,
+                            hasPhoto: hasPhoto,
+                            hovered: false,
+                            palette: self.palette
+                        )
+                        let dotColor = HeroAdaptiveGlassTokens.danmakuAccentDot(
+                            for: item.tone,
+                            background: localBgTone,
+                            palette: self.palette
+                        )
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(dotColor)
+                                .frame(width: 5, height: 5)
+                            Text(item.text)
+                                .font(.system(size: self.compact ? 11.5 : 12, weight: .medium))
+                                .foregroundStyle(pillGlass.ink)
+                                .lineLimit(1)
+                        }
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.horizontal, 11)
+                        .frame(height: pillHeight)
+                        .background {
+                            self.adaptiveGlassCapsule(glass: pillGlass)
+                        }
+                        .position(x: centerX, y: centerY)
+                        .opacity(fade)
                     }
-                    .position(x: centerX, y: centerY)
-                    .opacity(fade)
                 }
             }
         }
@@ -5544,7 +5550,7 @@ private struct DashboardAIUsageWideCard: View {
         
         Button(action: self.onTap) {
             GeometryReader { cardGeo in
-                let ringSide = min(104, max(72, floor(cardGeo.size.height - 26)))
+                let ringSide = min(116, max(82, floor(cardGeo.size.height - 18)))
                 let showModelBreakdown = cardGeo.size.height >= 116 && !topModels.isEmpty
                 
                 HStack(spacing: 16) {
@@ -6078,12 +6084,21 @@ private struct SunburstRenderArc: Equatable, Identifiable {
     let nodeID: String
     let parentID: String?
     let ring: EvalSunburstLayoutEngine.Ring
+    let isMark: Bool
     let a0: Double
     let a1: Double
     let r0Ratio: CGFloat
     let r1Ratio: CGFloat
-    let hueIndex: Int
-    let shadeStep: Int
+    let toneKey: ToneKey
+    
+    enum ToneKey: Equatable {
+        case openActive
+        case sibling
+        case otherInner
+        case outerIndexed(index: Int, count: Int)
+        case otherOuter
+        case outputMark
+    }
     
     var id: String { self.key }
 }
@@ -6102,18 +6117,19 @@ private struct SunburstDialCanvas: View, Equatable {
             && lhs.hoveredNodeID == rhs.hoveredNodeID
             && lhs.detailed == rhs.detailed
             && lhs.isDark == rhs.isDark
+            && lhs.palette == rhs.palette
     }
     
     var body: some View {
         let hoveredParentID = self.hoveredNodeID.flatMap { hid in
-            self.renderArcs.first(where: { $0.nodeID == hid })?.parentID
+            self.renderArcs.first(where: { $0.nodeID == hid && !$0.isMark })?.parentID
         }
         
         Canvas(opaque: false, colorMode: .nonLinear, rendersAsynchronously: true) { context, canvasSize in
             guard canvasSize.width.isFinite, canvasSize.height.isFinite,
                   canvasSize.width > 8, canvasSize.height > 8 else { return }
             let center = CGPoint(x: canvasSize.width * 0.5, y: canvasSize.height * 0.5)
-            let radius = max(16, min(canvasSize.width, canvasSize.height) * 0.5 - (self.detailed ? 4 : 2))
+            let radius = max(16, min(canvasSize.width, canvasSize.height) * 0.5 - (self.detailed ? 3 : 2))
             let hasHover = (self.hoveredNodeID != nil)
             
             for arc in self.renderArcs {
@@ -6139,17 +6155,20 @@ private struct SunburstDialCanvas: View, Equatable {
                 let isRelated = isDirectlyHovered
                     || (self.hoveredNodeID != nil && (arc.parentID == self.hoveredNodeID || arc.nodeID == hoveredParentID))
                 let baseColor = AIUsageSunburstChartView.color(
-                    hueIndex: arc.hueIndex,
-                    shadeStep: arc.shadeStep,
+                    for: arc.toneKey,
                     isDark: self.isDark,
                     palette: self.palette
                 )
-                let opacityMod: Double = (!hasHover || isRelated) ? (isDirectlyHovered ? 1.0 : 0.94) : 0.72
+                let baseAlpha: Double = arc.isMark ? 0.88 : 1.0
+                let opacityMod: Double = (!hasHover || isRelated) ? baseAlpha : (baseAlpha * 0.42)
                 context.fill(path, with: .color(baseColor.opacity(opacityMod)))
                 context.stroke(
                     path,
                     with: .color(self.palette.card),
-                    style: StrokeStyle(lineWidth: self.detailed ? 1.5 : 1.0, lineJoin: .round)
+                    style: StrokeStyle(
+                        lineWidth: arc.isMark ? 0.75 : (self.detailed ? 1.5 : 1.2),
+                        lineJoin: .round
+                    )
                 )
             }
         }
@@ -6164,7 +6183,9 @@ private struct SunburstLedgerRowView: View, Equatable {
     let name: String
     let compactValue: String
     let percentText: String
-    let hueIndex: Int
+    let toneKey: SunburstRenderArc.ToneKey
+    let isOpenHeader: Bool
+    let isSubRow: Bool
     let isHovered: Bool
     let isDark: Bool
     let palette: DashPalette
@@ -6176,26 +6197,28 @@ private struct SunburstLedgerRowView: View, Equatable {
             && lhs.name == rhs.name
             && lhs.compactValue == rhs.compactValue
             && lhs.percentText == rhs.percentText
-            && lhs.hueIndex == rhs.hueIndex
+            && lhs.toneKey == rhs.toneKey
+            && lhs.isOpenHeader == rhs.isOpenHeader
+            && lhs.isSubRow == rhs.isSubRow
             && lhs.isHovered == rhs.isHovered
             && lhs.isDark == rhs.isDark
+            && lhs.palette == rhs.palette
     }
     
     var body: some View {
         Button(action: self.onTap) {
             HStack(spacing: 8) {
-                RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                Circle()
                     .fill(AIUsageSunburstChartView.color(
-                        hueIndex: self.hueIndex,
-                        shadeStep: 0,
+                        for: self.toneKey,
                         isDark: self.isDark,
                         palette: self.palette
                     ))
-                    .frame(width: 9, height: 9)
+                    .frame(width: 8, height: 8)
                 
                 Text(self.name)
-                    .font(.system(size: 12.5, weight: self.isHovered ? .semibold : .regular))
-                    .foregroundStyle(self.palette.pine)
+                    .font(.system(size: 12.5, weight: (self.isOpenHeader || self.isHovered) ? .semibold : .regular))
+                    .foregroundStyle(self.isSubRow ? self.palette.secondaryInk : self.palette.pine)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 
@@ -6209,8 +6232,9 @@ private struct SunburstLedgerRowView: View, Equatable {
                     .foregroundStyle(self.palette.secondaryInk)
                     .frame(width: 42, alignment: .trailing)
             }
-            .padding(.horizontal, 9)
-            .frame(minHeight: 28)
+            .padding(.leading, self.isSubRow ? 22 : 9)
+            .padding(.trailing, 9)
+            .frame(minHeight: 26)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(self.isHovered ? self.palette.insetHover : Color.clear)
@@ -6233,98 +6257,111 @@ private struct AIUsageSunburstChartView: View {
     var onHoverDetail: ((String?) -> Void)? = nil
     
     @State private var focusID: String = "root"
+    @State private var openID: String?
     @State private var hoveredNodeID: String?
     @State private var isCenterHovered = false
     @State private var dialReveal: CGFloat = DashMotion.isReducedMotion ? 1.0 : 0.0
     @State private var drillPulseScale: CGFloat = 1.0
     
     @State private var cachedFocus: EvalSunburstLayoutEngine.Node?
+    @State private var cachedOpen: EvalSunburstLayoutEngine.Node?
     @State private var cachedArcs: [EvalSunburstLayoutEngine.ArcItem] = []
     @State private var cachedRenderArcs: [SunburstRenderArc] = []
     @State private var cachedRows: [EvalSunburstLayoutEngine.LedgerRow] = []
-    @State private var cachedHueMap: [String: Int] = [:]
     
     
-    fileprivate static func multiHuePalette(isDark: Bool) -> [Color] {
-        if isDark {
-            return [
-                Color(red: 0.357, green: 0.541, blue: 1.000), // Cobalt
-                Color(red: 0.176, green: 0.769, blue: 0.596), // Emerald
-                Color(red: 0.949, green: 0.639, blue: 0.263), // Amber
-                Color(red: 0.600, green: 0.498, blue: 0.980), // Iris
-                Color(red: 0.949, green: 0.439, blue: 0.533), // Rose Coral
-                Color(red: 0.227, green: 0.706, blue: 0.831), // Cerulean
-                Color(red: 0.545, green: 0.635, blue: 0.957), // Indigo Mist
-            ]
+    fileprivate static func mapTone(_ tone: EvalSunburstLayoutEngine.ArcItem.ToneKind) -> SunburstRenderArc.ToneKey {
+        switch tone {
+            case .openActive: .openActive
+            case .sibling: .sibling
+            case .otherInner: .otherInner
+            case .outerIndexed(let index, let count): .outerIndexed(index: index, count: count)
+            case .otherOuter: .otherOuter
+            case .outputMark: .outputMark
         }
-        return [
-            Color(red: 0.231, green: 0.431, blue: 0.965), // Cobalt
-            Color(red: 0.071, green: 0.647, blue: 0.478), // Emerald
-            Color(red: 0.863, green: 0.525, blue: 0.149), // Amber
-            Color(red: 0.471, green: 0.349, blue: 0.961), // Iris
-            Color(red: 0.863, green: 0.302, blue: 0.408), // Rose Coral
-            Color(red: 0.086, green: 0.573, blue: 0.698), // Cerulean
-            Color(red: 0.329, green: 0.420, blue: 0.820), // Indigo
-        ]
     }
     
     
-    fileprivate static func color(hueIndex: Int, shadeStep: Int, isDark: Bool, palette: DashPalette) -> Color {
-        guard hueIndex >= 0 else {
-            return palette.pine.opacity(shadeStep > 0 ? 0.20 : 0.28)
+    /// Faithful color language from `eval_data_server/dashboard/static/js/sunburst.js`:
+    /// active inner arc in `--accent`, siblings in muted slate `--t2`, outer rail in stepped `color-mix(accent, card)`,
+    /// and outer hairline mark in `--sev-1` contrast tone.
+    fileprivate static func color(
+        for tone: SunburstRenderArc.ToneKey,
+        isDark: Bool,
+        palette: DashPalette
+    ) -> Color {
+        switch tone {
+            case .openActive:
+                return palette.accentFill
+            case .sibling:
+                return isDark
+                    ? Color.white.opacity(0.24)
+                    : Color(red: 0.72, green: 0.76, blue: 0.82)
+            case .otherInner:
+                return isDark
+                    ? Color.white.opacity(0.14)
+                    : Color(red: 0.83, green: 0.86, blue: 0.90)
+            case .outerIndexed(let index, let count):
+                let pct = count > 1
+                    ? max(0.36, 0.92 - (Double(index) * 0.56) / Double(count - 1))
+                    : 0.92
+                return palette.accentFill.opacity(pct)
+            case .otherOuter:
+                return isDark
+                    ? Color.white.opacity(0.12)
+                    : Color(red: 0.86, green: 0.88, blue: 0.92)
+            case .outputMark:
+                return isDark
+                    ? Color(red: 0.94, green: 0.52, blue: 0.42)
+                    : Color(red: 0.86, green: 0.36, blue: 0.28)
         }
-        let hues = Self.multiHuePalette(isDark: isDark)
-        let base = hues[hueIndex % hues.count]
-        guard shadeStep > 0 else { return base }
-        let alpha = max(0.38, 0.82 - Double(shadeStep - 1) * 0.14)
-        return base.opacity(alpha)
     }
     
     
-    private func buildState(focusID: String) -> (
+    private func buildState(focusID: String, openID: String?) -> (
         focus: EvalSunburstLayoutEngine.Node,
+        open: EvalSunburstLayoutEngine.Node?,
         arcs: [EvalSunburstLayoutEngine.ArcItem],
         renderArcs: [SunburstRenderArc],
-        rows: [EvalSunburstLayoutEngine.LedgerRow],
-        hueMap: [String: Int]
+        rows: [EvalSunburstLayoutEngine.LedgerRow]
     ) {
         let root = self.snapshot.sunburstRoot
         let map = self.snapshot.sunburstIndex
         var focus = map[focusID] ?? root
+        var resolvedOpen = openID.flatMap { map[$0] }
         if focus.children.isEmpty, let parent = focus.parent {
+            resolvedOpen = focus
             focus = parent
         }
-        let laid = EvalSunburstLayoutEngine.radialLayout(focus: focus)
+        if resolvedOpen == nil || resolvedOpen?.parent?.id != focus.id {
+            resolvedOpen = EvalSunburstLayoutEngine.biggestNonOtherChild(of: focus)
+        }
+        let laid = EvalSunburstLayoutEngine.layout(focus: focus, open: resolvedOpen)
         let renderArcs = laid.arcs.map { arc in
-            let shade: Int = switch arc.tone {
-                case .outerIndexed(let idx, _): idx + 1
-                case .otherOuter: 4
-                default: 0
-            }
-            return SunburstRenderArc(
+            SunburstRenderArc(
                 key: arc.key,
                 nodeID: arc.node.id,
                 parentID: arc.node.parent?.id,
                 ring: arc.ring,
+                isMark: arc.isMark,
                 a0: arc.a0,
                 a1: arc.a1,
                 r0Ratio: arc.r0Ratio,
                 r1Ratio: arc.r1Ratio,
-                hueIndex: laid.hueMap[arc.node.id] ?? -1,
-                shadeStep: shade
+                toneKey: Self.mapTone(arc.tone)
             )
         }
-        return (focus, laid.arcs, renderArcs, laid.rows, laid.hueMap)
+        return (focus, resolvedOpen, laid.arcs, renderArcs, laid.rows)
     }
     
     
     private func syncLayout() {
-        let state = self.buildState(focusID: self.focusID)
+        let state = self.buildState(focusID: self.focusID, openID: self.openID)
         self.cachedFocus = state.focus
+        self.cachedOpen = state.open
         self.cachedArcs = state.arcs
         self.cachedRenderArcs = state.renderArcs
         self.cachedRows = state.rows
-        self.cachedHueMap = state.hueMap
     }
     
     
@@ -6345,12 +6382,12 @@ private struct AIUsageSunburstChartView: View {
     
     
     var body: some View {
-        let fallback = self.cachedFocus == nil ? self.buildState(focusID: self.focusID) : nil
+        let fallback = self.cachedFocus == nil ? self.buildState(focusID: self.focusID, openID: self.openID) : nil
         let focus = self.cachedFocus ?? fallback?.focus ?? self.snapshot.sunburstRoot
+        let openNode = self.cachedFocus != nil ? self.cachedOpen : fallback?.open
         let renderArcs = self.cachedFocus != nil ? self.cachedRenderArcs : (fallback?.renderArcs ?? [])
         let arcs = self.cachedFocus != nil ? self.cachedArcs : (fallback?.arcs ?? [])
         let rows = self.cachedFocus != nil ? self.cachedRows : (fallback?.rows ?? [])
-        let hueMap = self.cachedFocus != nil ? self.cachedHueMap : (fallback?.hueMap ?? [:])
         
         Group {
             if !self.detailed {
@@ -6369,12 +6406,12 @@ private struct AIUsageSunburstChartView: View {
                 GeometryReader { geo in
                     let dialSide = min(max(148, geo.size.height - 8), max(148, geo.size.width * 0.44))
                     HStack(alignment: .center, spacing: 18) {
-                        self.sunburstDial(focus: focus, arcs: arcs, renderArcs: renderArcs)
+                        self.sunburstDial(focus: focus, openNode: openNode, arcs: arcs, renderArcs: renderArcs)
                             .frame(width: dialSide, height: dialSide)
                             .scaleEffect((0.92 + 0.08 * self.dialReveal) * self.drillPulseScale)
                             .opacity(self.dialReveal)
                         
-                        self.ledgerView(rows: rows, hueMap: hueMap)
+                        self.ledgerView(rows: rows, openNode: openNode)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -6399,14 +6436,15 @@ private struct AIUsageSunburstChartView: View {
     
     private func sunburstDial(
         focus: EvalSunburstLayoutEngine.Node,
+        openNode: EvalSunburstLayoutEngine.Node?,
         arcs: [EvalSunburstLayoutEngine.ArcItem],
         renderArcs: [SunburstRenderArc]
     ) -> some View {
         GeometryReader { geo in
             let size = geo.size
             let center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
-            let radius = max(16, min(size.width, size.height) * 0.5 - 4)
-            let holeRadius = radius * (53.0 / 110.0)
+            let radius = max(16, min(size.width, size.height) * 0.5 - 3)
+            let holeRadius = radius * (60.0 / 110.0)
             let up = focus.parent
             
             ZStack {
@@ -6473,6 +6511,7 @@ private struct AIUsageSunburstChartView: View {
                 let dist = hypot(pt.x - center.x, pt.y - center.y)
                 if dist <= holeRadius {
                     guard let up else { return }
+                    self.openID = focus.id
                     self.focusID = up.id
                     self.isCenterHovered = false
                     self.updateHover(nil)
@@ -6480,7 +6519,7 @@ private struct AIUsageSunburstChartView: View {
                     return
                 }
                 if let hit = Self.gaplessHitTest(pt, center: center, radius: radius, arcs: arcs) {
-                    self.handleSelect(node: hit.node)
+                    self.handleSelect(node: hit.node, ring: hit.ring, currentOpen: openNode)
                 }
             }
         }
@@ -6498,7 +6537,10 @@ private struct AIUsageSunburstChartView: View {
     }
     
     
-    private func ledgerView(rows: [EvalSunburstLayoutEngine.LedgerRow], hueMap: [String: Int]) -> some View {
+    private func ledgerView(
+        rows: [EvalSunburstLayoutEngine.LedgerRow],
+        openNode: EvalSunburstLayoutEngine.Node?
+    ) -> some View {
         ScrollView(.vertical, showsIndicators: false) {
             LazyVStack(alignment: .leading, spacing: 2) {
                 ForEach(rows) { row in
@@ -6507,12 +6549,14 @@ private struct AIUsageSunburstChartView: View {
                         name: row.node.name,
                         compactValue: Self.compactTokens(Int(row.node.value.rounded())),
                         percentText: Self.percentString(row.fraction),
-                        hueIndex: hueMap[row.node.id] ?? -1,
+                        toneKey: Self.mapTone(row.tone),
+                        isOpenHeader: row.isOpenHeader,
+                        isSubRow: row.isSubRow,
                         isHovered: self.hoveredNodeID == row.node.id,
                         isDark: self.palette.tokens.isDark,
                         palette: self.palette,
                         onTap: {
-                            self.handleSelect(node: row.node)
+                            self.handleSelect(node: row.node, ring: row.ring, currentOpen: openNode)
                         },
                         onHoverChanged: { inside in
                             let nextHover: String? = inside ? row.node.id : (self.hoveredNodeID == row.node.id ? nil : self.hoveredNodeID)
@@ -6527,16 +6571,24 @@ private struct AIUsageSunburstChartView: View {
     }
     
     
-    private func handleSelect(node: EvalSunburstLayoutEngine.Node) {
-        if !node.children.isEmpty {
-            self.focusID = node.id
-            self.updateHover(nil)
-            self.triggerDrillTransition()
-        } else if let parent = node.parent, parent.id != self.focusID, !parent.children.isEmpty {
-            self.focusID = parent.id
-            self.updateHover(nil)
-            self.triggerDrillTransition()
+    private func handleSelect(
+        node: EvalSunburstLayoutEngine.Node,
+        ring: EvalSunburstLayoutEngine.Ring,
+        currentOpen: EvalSunburstLayoutEngine.Node?
+    ) {
+        if ring == .inner {
+            if node.id == currentOpen?.id, !node.children.isEmpty {
+                self.focusID = node.id
+                self.openID = EvalSunburstLayoutEngine.biggestNonOtherChild(of: node)?.id
+            } else {
+                self.openID = node.id
+            }
+        } else if let currentOpen {
+            self.focusID = currentOpen.id
+            self.openID = node.id
         }
+        self.updateHover(nil)
+        self.triggerDrillTransition()
     }
     
     

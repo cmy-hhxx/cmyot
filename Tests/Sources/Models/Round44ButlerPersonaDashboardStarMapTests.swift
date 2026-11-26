@@ -53,7 +53,20 @@ struct Round44ButlerPersonaDashboardStarMapTests {
             isButlerSynthesis: false
         )
         #expect(optionalPrompt.contains("[PASS]"))
-        #expect(optionalPrompt.contains("群聊说话规矩"))
+        #expect(optionalPrompt.contains("群聊说话铁律"))
+        
+        let banterPrompt = MeetingRoomPersona.systemPrompt(
+            bot: .ghost,
+            name: "续写幽灵",
+            isMentioned: false,
+            isButlerSynthesis: false,
+            isProgressCheck: false
+        )
+        #expect(banterPrompt.contains("不是让你汇报工作"))
+        #expect(!MeetingRoomRouter.isProgressCheckIntent("嗨"))
+        #expect(!MeetingRoomRouter.isProgressCheckIntent("有点累了"))
+        #expect(MeetingRoomRouter.isProgressCheckIntent("今天进展怎么样"))
+        #expect(MeetingRoomRouter.isProgressCheckIntent(""))
     }
     
     

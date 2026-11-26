@@ -281,6 +281,14 @@ final class EditorViewController: NSSplitViewController {
     }
     
     
+    override func splitView(_ splitView: NSSplitView, shouldHideDividerAt dividerIndex: Int) -> Bool {
+        
+        // PaneNavigationBarBackgroundView paints its own 1px hairline separator so we avoid
+        // a redundant opaque NSSplitView divider bar cutting across the editor backdrop.
+        true
+    }
+    
+    
     // MARK: Tab Management
     
     /// Adds a document as a new tab and selects it.

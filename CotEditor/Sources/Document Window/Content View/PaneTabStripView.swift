@@ -32,16 +32,11 @@ import AppKit
         didSet {
             guard self.chromePalette != oldValue else { return }
             self.newTabButton.chromePalette = self.chromePalette
-            if let chromePalette = self.chromePalette {
-                self.newTabButton.contentTintColor = chromePalette.inactiveTabText
-            } else {
-                self.newTabButton.contentTintColor = .secondaryLabelColor
-            }
             for itemView in self.tabViews.values {
                 itemView.chromePalette = self.chromePalette
             }
             self.refreshInsertionIndicatorAppearance()
-            self.needsDisplay = true
+            self.refreshWallpaperChrome()
         }
     }
     
@@ -70,6 +65,7 @@ import AppKit
     private var draggingTab: PaneTab?
     private var activeDragTabID: UUID?
     private var dropInsertionIndex: Int?
+    private var wallpaperObserver: (any NSObjectProtocol)?
     
     private static let tabHeight: CGFloat = 24
     private static let tabSpacing: CGFloat = 4
@@ -82,6 +78,15 @@ import AppKit
         
         super.init(frame: frameRect)
         self.setupViews()
+        self.wallpaperObserver = NotificationCenter.default.addObserver(
+            forName: WallpaperManager.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.refreshWallpaperChrome()
+            }
+        }
     }
     
     
@@ -96,6 +101,29 @@ import AppKit
         if let monitor = self.renameOutsideClickMonitor {
             NSEvent.removeMonitor(monitor)
         }
+        if let observer = self.wallpaperObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+    
+    
+    private func refreshWallpaperChrome() {
+        
+        let wallpaperActive = WallpaperManager.shared.spec.isEnabled
+        if wallpaperActive {
+            let isDark = self.chromePalette?.isDark ?? self.effectiveAppearance.isDark
+            self.newTabButton.contentTintColor = isDark
+                ? NSColor.white.withAlphaComponent(0.70)
+                : NSColor.black.withAlphaComponent(0.58)
+        } else if let chromePalette = self.chromePalette {
+            self.newTabButton.contentTintColor = chromePalette.inactiveTabText
+        } else {
+            self.newTabButton.contentTintColor = .secondaryLabelColor
+        }
+        for itemView in self.tabViews.values {
+            itemView.refreshWallpaperAppearance()
+        }
+        self.needsDisplay = true
     }
     
     
@@ -1958,13 +1986,35 @@ private final class TabStripContainerView: NSView {
     }
     
     
+    func refreshWallpaperAppearance() {
+        
+        self.applyChromePaletteTint()
+        self.updateBackground(animated: false)
+    }
+    
+    
     private func applyChromePaletteTint() {
         
         let palette = self.chromePalette
+        let wallpaperActive = WallpaperManager.shared.spec.isEnabled
+        let isDark = palette?.isDark ?? self.effectiveAppearance.isDark
         let isEmphasized = (self.isSelected || self.isHovered)
-        let titleColor = isEmphasized
-            ? (palette?.activeTabText ?? .labelColor)
-            : (palette?.inactiveTabText ?? .secondaryLabelColor)
+        let titleColor: NSColor
+        if wallpaperActive {
+            if isEmphasized {
+                titleColor = isDark
+                    ? NSColor.white.withAlphaComponent(0.95)
+                    : NSColor.black.withAlphaComponent(0.88)
+            } else {
+                titleColor = isDark
+                    ? NSColor.white.withAlphaComponent(0.68)
+                    : NSColor.black.withAlphaComponent(0.58)
+            }
+        } else {
+            titleColor = isEmphasized
+                ? (palette?.activeTabText ?? .labelColor)
+                : (palette?.inactiveTabText ?? .secondaryLabelColor)
+        }
         self.titleLabel.textColor = titleColor
         self.boardIconView.contentTintColor = self.isSelected ? (palette?.accent ?? .controlAccentColor) : titleColor
         self.inlineTextField?.textColor = palette?.activeTabText ?? .labelColor
@@ -1980,6 +2030,8 @@ private final class TabStripContainerView: NSView {
         let ease = CAMediaTimingFunction(controlPoints: 0.2, 0, 0, 1)
         let scale = max(self.window?.backingScaleFactor ?? 2, 1)
         let palette = self.chromePalette
+        let wallpaperActive = WallpaperManager.shared.spec.isEnabled
+        let isDark = palette?.isDark ?? self.effectiveAppearance.isDark
         
         self.effectiveAppearance.performAsCurrentDrawingAppearance {
             let targetFill: CGColor
@@ -1991,9 +2043,11 @@ private final class TabStripContainerView: NSView {
             let targetAccentOpacity: Float
             
             if self.isRenaming {
-                let surface: NSColor = palette?.activeTabFill ?? (self.effectiveAppearance.isDark
-                    ? (NSColor.controlBackgroundColor.blended(withFraction: 0.16, of: .white)?.withAlphaComponent(0.92) ?? .controlBackgroundColor)
-                    : (NSColor.textBackgroundColor.blended(withFraction: 0.18, of: .windowBackgroundColor) ?? .textBackgroundColor))
+                let surface: NSColor = wallpaperActive
+                    ? (isDark ? NSColor.white.withAlphaComponent(0.18) : NSColor.white.withAlphaComponent(0.72))
+                    : (palette?.activeTabFill ?? (self.effectiveAppearance.isDark
+                        ? (NSColor.controlBackgroundColor.blended(withFraction: 0.16, of: .white)?.withAlphaComponent(0.92) ?? .controlBackgroundColor)
+                        : (NSColor.textBackgroundColor.blended(withFraction: 0.18, of: .windowBackgroundColor) ?? .textBackgroundColor)))
                 let renameAccent = palette?.accent ?? .controlAccentColor
                 targetFill = surface.cgColor
                 targetBorderColor = renameAccent.withAlphaComponent(0.68).cgColor
@@ -2004,15 +2058,36 @@ private final class TabStripContainerView: NSView {
                 targetAccentOpacity = 0
             } else {
                 let fill: NSColor
-                if self.isSelected {
-                    fill = palette?.activeTabFill ?? NSColor.labelColor.withAlphaComponent(0.09)
-                } else if self.isHovered {
-                    fill = palette?.hoveredTabFill ?? NSColor.labelColor.withAlphaComponent(0.05)
+                let border: NSColor
+                if wallpaperActive {
+                    if self.isSelected {
+                        fill = isDark
+                            ? NSColor.white.withAlphaComponent(0.14)
+                            : NSColor.white.withAlphaComponent(0.52)
+                        border = isDark
+                            ? NSColor.white.withAlphaComponent(0.18)
+                            : NSColor.white.withAlphaComponent(0.68)
+                    } else if self.isHovered {
+                        fill = isDark
+                            ? NSColor.white.withAlphaComponent(0.08)
+                            : NSColor.black.withAlphaComponent(0.045)
+                        border = .clear
+                    } else {
+                        fill = .clear
+                        border = .clear
+                    }
                 } else {
-                    fill = .clear
+                    if self.isSelected {
+                        fill = palette?.activeTabFill ?? NSColor.labelColor.withAlphaComponent(0.09)
+                    } else if self.isHovered {
+                        fill = palette?.hoveredTabFill ?? NSColor.labelColor.withAlphaComponent(0.05)
+                    } else {
+                        fill = .clear
+                    }
+                    border = palette?.activeTabBorder ?? NSColor.separatorColor
                 }
                 targetFill = fill.cgColor
-                targetBorderColor = (palette?.activeTabBorder ?? NSColor.separatorColor).cgColor
+                targetBorderColor = border.cgColor
                 targetBorderWidth = self.isSelected ? 1 / scale : 0
                 targetShadowColor = NSColor.clear.cgColor
                 targetShadowOpacity = 0
