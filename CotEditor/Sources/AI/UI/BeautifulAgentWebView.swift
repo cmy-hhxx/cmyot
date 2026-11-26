@@ -93,6 +93,9 @@ nonisolated struct BeautifulAgentMessagePayload: Codable, Equatable, Identifiabl
     var delegatedBotID: String? = nil
     var delegatedBotName: String? = nil
     var delegatedModel: String? = nil
+    var stickerID: String? = nil
+    var stickerURL: String? = nil
+    var stickerCaption: String? = nil
 }
 
 
@@ -185,6 +188,33 @@ nonisolated struct MeetingRoomParticipantPayload: Codable, Equatable, Identifiab
     var accentHex: String
     var status: String // "idle" | "speaking" | "done" | "updated"
     var todayBadge: String
+    var moodLabel: String? = nil
+    var avatarURL: String? = nil
+    var isSelected: Bool? = nil
+    var isCustom: Bool? = nil
+}
+
+
+nonisolated struct MeetingRoomSessionPayload: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var title: String
+    var isPinned: Bool
+    var updatedAt: Double
+    var participantIDs: [String]
+}
+
+
+nonisolated struct BeautifulAgentStickerPayload: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var url: String
+    var category: String
+    var ocrText: String
+    var meaning: String
+    var moods: [String]
+    var tags: [String]
+    var isFavorite: Bool
+    var isAnimated: Bool
+    var useCount: Int
 }
 
 
@@ -230,6 +260,11 @@ nonisolated struct BeautifulAgentHostStatePayload: Codable, Equatable, Sendable 
     var meetingRoomIsConvening: Bool? = nil
     var meetingRoomMessages: [MeetingRoomMessage]? = nil
     var meetingRoomBots: [MeetingRoomParticipantPayload]? = nil
+    var meetingRoomSessions: [MeetingRoomSessionPayload]? = nil
+    var activeMeetingSessionID: String? = nil
+    var stickerCatalog: [BeautifulAgentStickerPayload]? = nil
+    var userAvatarURL: String? = nil
+    var onlineStickerExpansionEnabled: Bool? = nil
 }
 
 
@@ -282,8 +317,20 @@ struct BeautifulAgentWebActionCallbacks {
     var onDismissWorker: ((String) -> Void)? = nil
     var onToggleMeetingRoom: ((Bool) -> Void)? = nil
     var onSendMeetingPrompt: ((String, String?) -> Void)? = nil
+    var onSendMeetingPromptRich: ((String, String?, String?) -> Void)? = nil
+    var onSendRichWithSticker: ((String, String, [ButlerDocumentAttachment], String?, String?) -> Void)? = nil
     var onClearMeetingRoom: (() -> Void)? = nil
     var onAbortMeetingRoom: (() -> Void)? = nil
+    var onNewMeetingSession: (() -> Void)? = nil
+    var onSelectMeetingSession: ((String) -> Void)? = nil
+    var onRenameMeetingSession: ((String, String) -> Void)? = nil
+    var onDeleteMeetingSession: ((String) -> Void)? = nil
+    var onTogglePinMeetingSession: ((String) -> Void)? = nil
+    var onToggleMeetingParticipant: ((String) -> Void)? = nil
+    var onUploadSticker: (() -> Void)? = nil
+    var onToggleFavoriteSticker: ((String) -> Void)? = nil
+    var onSearchOnlineStickers: ((String) -> Void)? = nil
+    var onOpenCreateBotSheet: (() -> Void)? = nil
 }
 
 
@@ -488,6 +535,7 @@ struct BeautifulAgentWebView: NSViewRepresentable, Equatable {
         """
         userContent.addUserScript(WKUserScript(source: bootstrapJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         config.userContentController = userContent
+        config.setURLSchemeHandler(CotMediaSchemeHandler(), forURLScheme: CotMediaSchemeHandler.scheme)
         
         let webView = CotAgentWKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
@@ -574,16 +622,21 @@ struct BeautifulAgentWebView: NSViewRepresentable, Equatable {
                 case "send":
                     let text = (dict["text"] as? String) ?? ""
                     let quote = (dict["quote"] as? String) ?? ""
-                    if let onSendRich = self.callbacks.onSendRich {
-                        var docs: [ButlerDocumentAttachment] = []
-                        if let rawDocs = dict["documents"],
-                           let data = try? JSONSerialization.data(withJSONObject: rawDocs),
-                           let decoded = try? JSONDecoder().decode([ButlerDocumentAttachment].self, from: data)
-                        {
-                            docs = decoded
-                        }
-                        let botID = (dict["botId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                        onSendRich(text, quote, docs, (botID?.isEmpty == false) ? botID : nil)
+                    let stickerID = (dict["stickerId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let cleanStickerID = (stickerID?.isEmpty == false) ? stickerID : nil
+                    var docs: [ButlerDocumentAttachment] = []
+                    if let rawDocs = dict["documents"],
+                       let data = try? JSONSerialization.data(withJSONObject: rawDocs),
+                       let decoded = try? JSONDecoder().decode([ButlerDocumentAttachment].self, from: data)
+                    {
+                        docs = decoded
+                    }
+                    let botID = (dict["botId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let cleanBotID = (botID?.isEmpty == false) ? botID : nil
+                    if let onSendRichWithSticker = self.callbacks.onSendRichWithSticker {
+                        onSendRichWithSticker(text, quote, docs, cleanBotID, cleanStickerID)
+                    } else if let onSendRich = self.callbacks.onSendRich {
+                        onSendRich(text, quote, docs, cleanBotID)
                     } else {
                         self.callbacks.onSend(text, quote)
                     }
@@ -775,13 +828,63 @@ struct BeautifulAgentWebView: NSViewRepresentable, Equatable {
                 case "sendMeetingPrompt":
                     let text = (dict["text"] as? String) ?? ""
                     let botID = (dict["botId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                    self.callbacks.onSendMeetingPrompt?(text, (botID?.isEmpty == false) ? botID : nil)
+                    let cleanBotID = (botID?.isEmpty == false) ? botID : nil
+                    let stickerID = (dict["stickerId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let cleanStickerID = (stickerID?.isEmpty == false) ? stickerID : nil
+                    if let onRich = self.callbacks.onSendMeetingPromptRich {
+                        onRich(text, cleanStickerID, cleanBotID)
+                    } else {
+                        self.callbacks.onSendMeetingPrompt?(text, cleanBotID)
+                    }
                     
                 case "clearMeetingRoom":
                     self.callbacks.onClearMeetingRoom?()
                     
                 case "abortMeetingRoom":
                     self.callbacks.onAbortMeetingRoom?()
+                    
+                case "newMeetingSession":
+                    self.callbacks.onNewMeetingSession?()
+                    
+                case "selectMeetingSession":
+                    if let id = dict["id"] as? String, !id.isEmpty {
+                        self.callbacks.onSelectMeetingSession?(id)
+                    }
+                    
+                case "renameMeetingSession":
+                    if let id = dict["id"] as? String, let title = dict["title"] as? String {
+                        self.callbacks.onRenameMeetingSession?(id, title)
+                    }
+                    
+                case "deleteMeetingSession":
+                    if let id = dict["id"] as? String, !id.isEmpty {
+                        self.callbacks.onDeleteMeetingSession?(id)
+                    }
+                    
+                case "togglePinMeetingSession":
+                    if let id = dict["id"] as? String, !id.isEmpty {
+                        self.callbacks.onTogglePinMeetingSession?(id)
+                    }
+                    
+                case "toggleMeetingParticipant":
+                    if let botID = dict["botId"] as? String, !botID.isEmpty {
+                        self.callbacks.onToggleMeetingParticipant?(botID)
+                    }
+                    
+                case "uploadSticker":
+                    self.callbacks.onUploadSticker?()
+                    
+                case "toggleFavoriteSticker":
+                    if let id = dict["id"] as? String, !id.isEmpty {
+                        self.callbacks.onToggleFavoriteSticker?(id)
+                    }
+                    
+                case "searchOnlineStickers":
+                    let query = (dict["query"] as? String) ?? ""
+                    self.callbacks.onSearchOnlineStickers?(query)
+                    
+                case "openCreateBotSheet":
+                    self.callbacks.onOpenCreateBotSheet?()
                     
                 default:
                     break

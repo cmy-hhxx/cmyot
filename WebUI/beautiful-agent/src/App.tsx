@@ -61,11 +61,15 @@ const UserBubble = memo(function UserBubble({
   quoteContext,
   attachedDocuments,
   delegatedBotName,
+  stickerURL,
+  stickerCaption,
 }: {
   text: string;
   quoteContext?: string;
   attachedDocuments?: string[];
   delegatedBotName?: string;
+  stickerURL?: string | null;
+  stickerCaption?: string | null;
 }) {
   const hasAttachments = Boolean((attachedDocuments && attachedDocuments.length > 0) || delegatedBotName);
   return (
@@ -99,9 +103,18 @@ const UserBubble = memo(function UserBubble({
           <span className="line-clamp-2">{quoteContext}</span>
         </div>
       )}
-      <div className="max-w-[92%] select-text whitespace-pre-wrap break-words rounded-[13px] bg-field px-3.5 py-2.5 text-[14px] leading-relaxed text-ink shadow-hairline">
-        {text}
-      </div>
+      {text.trim().length > 0 && (
+        <div className="max-w-[92%] select-text whitespace-pre-wrap break-words rounded-[13px] bg-field px-3.5 py-2.5 text-[14px] leading-relaxed text-ink shadow-hairline">
+          {text}
+        </div>
+      )}
+      {stickerURL && (
+        <img
+          src={stickerURL}
+          alt={stickerCaption || "Sticker"}
+          className="max-h-[144px] max-w-[144px] rounded-[10px] object-contain"
+        />
+      )}
     </div>
   );
 });
@@ -192,6 +205,16 @@ const AssistantMessageBlock = memo(function AssistantMessageBlock({
           )}
 
           {message.toolChips && message.toolChips.length > 0 && <ToolChips items={message.toolChips} />}
+
+          {message.stickerURL && (
+            <div className="mt-2">
+              <img
+                src={message.stickerURL}
+                alt={message.stickerCaption || "Sticker"}
+                className="max-h-[148px] max-w-[148px] rounded-[10px] object-contain"
+              />
+            </div>
+          )}
 
           {/* Quiet Beautiful UI action row */}
           {!message.isStreaming && hasText && !message.isError && (
@@ -303,6 +326,8 @@ const ChatMessageList = memo(function ChatMessageList({
             quoteContext={msg.quoteContext}
             attachedDocuments={msg.attachedDocuments}
             delegatedBotName={msg.delegatedBotName}
+            stickerURL={msg.stickerURL}
+            stickerCaption={msg.stickerCaption}
           />
         ) : (
           <AssistantMessageBlock
@@ -813,7 +838,7 @@ export default function App() {
     };
   }, [hasMessages, state.activeSessionID]);
 
-  const handleSend = useCallback((text: string, documents: AttachedDocumentRef[] = [], botId: string | null = null) => {
+  const handleSend = useCallback((text: string, documents: AttachedDocumentRef[] = [], botId: string | null = null, stickerId: string | null = null) => {
     const quote = effectiveQuote;
     setLocalQuote(null);
     postToNative("send", {
@@ -821,6 +846,7 @@ export default function App() {
       quote: quote ?? "",
       documents,
       botId: botId ?? "",
+      stickerId: stickerId ?? "",
     });
   }, [effectiveQuote]);
 
@@ -899,8 +925,20 @@ export default function App() {
     postToNative("toggleMeetingRoom", { active: true });
   }, []);
 
-  const handleMeetingSend = useCallback((text: string, botId?: string | null) => {
-    postToNative("sendMeetingPrompt", { text, botId: botId ?? "" });
+  const handleMeetingSend = useCallback((text: string, botId?: string | null, stickerId?: string | null) => {
+    postToNative("sendMeetingPrompt", { text, botId: botId ?? "", stickerId: stickerId ?? "" });
+  }, []);
+
+  const handleUploadSticker = useCallback(() => {
+    postToNative("uploadSticker");
+  }, []);
+
+  const handleToggleFavoriteSticker = useCallback((id: string) => {
+    postToNative("toggleFavoriteSticker", { id });
+  }, []);
+
+  const handleSearchOnlineStickers = useCallback((query: string) => {
+    postToNative("searchOnlineStickers", { query });
   }, []);
 
   const handleMeetingAbort = useCallback(() => {
@@ -968,7 +1006,14 @@ export default function App() {
           onOpenSettings={handleOpenBotSettings}
           meetingRoomActive={isMeetingRoom}
           meetingRoomIsConvening={Boolean(state.meetingRoomIsConvening)}
+          meetingRoomSessions={state.meetingRoomSessions ?? []}
+          activeMeetingSessionID={state.activeMeetingSessionID ?? ""}
           onOpenMeetingRoom={handleOpenMeetingRoom}
+          onNewMeetingSession={() => postToNative("newMeetingSession")}
+          onSelectMeetingSession={(id) => postToNative("selectMeetingSession", { id })}
+          onRenameMeetingSession={(id, title) => postToNative("renameMeetingSession", { id, title })}
+          onDeleteMeetingSession={(id) => postToNative("deleteMeetingSession", { id })}
+          onTogglePinMeetingSession={(id) => postToNative("togglePinMeetingSession", { id })}
         />
       )}
 
@@ -990,7 +1035,8 @@ export default function App() {
               </span>
             ) : isMeetingRoom ? (
               <span className="truncate text-[14px] font-semibold text-ink">
-                {state.locale === "zh" ? "会议室" : "Meeting Room"}
+                {(state.meetingRoomSessions ?? []).find((s) => s.id === state.activeMeetingSessionID)?.title ||
+                  (state.locale === "zh" ? "会议室" : "Meeting Room")}
               </span>
             ) : (
               <>
@@ -1204,10 +1250,17 @@ export default function App() {
             availableModels={state.availableModels}
             selectedModelID={state.selectedModelID}
             selectedModelTitle={state.selectedModelTitle}
+            stickers={state.stickerCatalog ?? []}
+            userAvatarURL={state.userAvatarURL}
             onSend={handleMeetingSend}
             onAbort={handleMeetingAbort}
             onSelectModel={handleSelectModel}
             onOpenSettings={handleOpenBotSettings}
+            onToggleParticipant={(botId) => postToNative("toggleMeetingParticipant", { botId })}
+            onOpenCreateBot={() => postToNative("openCreateBotSheet")}
+            onUploadSticker={handleUploadSticker}
+            onToggleFavoriteSticker={handleToggleFavoriteSticker}
+            onSearchOnlineStickers={handleSearchOnlineStickers}
           />
         ) : !hasMessages ? (
           <div className="bui-scroll flex min-h-0 flex-1 flex-col justify-center overflow-y-auto px-5 py-6">
@@ -1234,6 +1287,7 @@ export default function App() {
                   slashCommands={state.slashCommands}
                   availableDocuments={availableDocuments}
                   availableBots={availableBots}
+                  stickers={state.stickerCatalog ?? []}
                   quotedExcerpt={effectiveQuote}
                   effort={state.effort}
                   showEffort={false}
@@ -1244,6 +1298,9 @@ export default function App() {
                   onSelectModel={(m) => postToNative("selectModel", { model: m })}
                   onSelectEffort={(e) => postToNative("selectEffort", { effort: e })}
                   onOpenSettings={() => postToNative("openSettings", { target: "gateway" })}
+                  onUploadSticker={handleUploadSticker}
+                  onToggleFavoriteSticker={handleToggleFavoriteSticker}
+                  onSearchOnlineStickers={handleSearchOnlineStickers}
                   onSend={handleSend}
                   onAbort={() => postToNative("abort")}
                 />
@@ -1296,6 +1353,7 @@ export default function App() {
                   slashCommands={state.slashCommands}
                   availableDocuments={availableDocuments}
                   availableBots={availableBots}
+                  stickers={state.stickerCatalog ?? []}
                   quotedExcerpt={effectiveQuote}
                   effort={state.effort}
                   showEffort={false}
@@ -1306,6 +1364,9 @@ export default function App() {
                   onSelectModel={(m) => postToNative("selectModel", { model: m })}
                   onSelectEffort={(e) => postToNative("selectEffort", { effort: e })}
                   onOpenSettings={() => postToNative("openSettings", { target: "gateway" })}
+                  onUploadSticker={handleUploadSticker}
+                  onToggleFavoriteSticker={handleToggleFavoriteSticker}
+                  onSearchOnlineStickers={handleSearchOnlineStickers}
                   onSend={handleSend}
                   onAbort={() => postToNative("abort")}
                 />

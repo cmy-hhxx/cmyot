@@ -125,6 +125,7 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
     /// The split view items hidden by the zoom, restored when zooming out.
     private var itemsCollapsedByZoom: [NSSplitViewItem] = []
     private var aiResultPanel: AIResultPanelController?
+    private var flowPresentationController: FlowPresentationWindowController?
     private let textRestructureSession = TextRestructureSessionController()
     
     private var themeName: String?
@@ -1310,6 +1311,27 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             sweepRange: newRange,
             message: AppLanguage.text("已对齐表格", en: "Table Aligned")
         )
+    }
+    
+    
+    /// Opens a standalone Keynote-grade interactive flow presentation window for the selected text.
+    @IBAction func generateFlowPresentation(_ sender: Any?) {
+        guard let textView = self.focusedTextView else {
+            NSSound.beep()
+            return
+        }
+        let sourceText = textView.selectedRange().length > 0 ? textView.selectedString : textView.string
+        guard !sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            NSSound.beep()
+            return
+        }
+        let controller = FlowPresentationWindowController(
+            sourceText: sourceText,
+            appearance: textView.window?.effectiveAppearance
+        )
+        self.flowPresentationController = controller
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
     }
     
     

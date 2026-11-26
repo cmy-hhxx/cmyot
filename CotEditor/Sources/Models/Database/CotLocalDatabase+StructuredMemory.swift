@@ -479,6 +479,7 @@ extension CotLocalDatabase {
         
         self.seedStarterWatchlistIfNeeded()
         self.seedUserFocusStocksIfNeeded()
+        self.createStickersAndBotsTablesIfNeeded()
     }
     
     

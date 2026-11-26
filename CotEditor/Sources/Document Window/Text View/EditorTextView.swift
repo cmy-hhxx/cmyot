@@ -2413,6 +2413,14 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             },
         ])
         menu.addItem(chipsItem)
+        
+        menu.addItem(self.makeContextMenuItem(
+            title: AppLanguage.text("一键 Pre 流程图", en: "Interactive Flow Pre"),
+            symbol: "rectangle.3.group",
+            action: #selector(DocumentViewController.generateFlowPresentation(_:)),
+            target: controller,
+            enabled: state.canFlowPresentation
+        ))
     }
     
     

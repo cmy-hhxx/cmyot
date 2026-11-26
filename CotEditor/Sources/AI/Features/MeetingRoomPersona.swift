@@ -21,6 +21,110 @@
 
 import Foundation
 
+/// Parsed reply directives emitted by a Bot (clean display text + optional mood/sticker/online search).
+nonisolated struct ParsedBotReply: Equatable, Sendable {
+    var text: String
+    var stickerID: String?
+    var searchStickerQuery: String?
+    var mood: BotMood?
+    
+    var isStickerOnly: Bool {
+        self.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (self.stickerID != nil || self.searchStickerQuery != nil)
+    }
+}
+
+
+/// Pure deterministic parser enforcing the 3-layer sticker gate and mood/search tag extraction.
+nonisolated enum BotReplyDirectiveParser {
+    
+    private static let stickerRegex = try! NSRegularExpression(
+        pattern: #"\[STICKER:\s*([A-Za-z0-9_\-]+)\s*\]"#,
+        options: [.caseInsensitive]
+    )
+    private static let searchStickerRegex = try! NSRegularExpression(
+        pattern: #"\[SEARCH_STICKER:\s*([^\]]+?)\s*\]"#,
+        options: [.caseInsensitive]
+    )
+    private static let moodRegex = try! NSRegularExpression(
+        pattern: #"\[MOOD:\s*([^\]]+?)\s*\]"#,
+        options: [.caseInsensitive]
+    )
+    
+    
+    static func parse(
+        raw: String,
+        allowedStickerIDs: Set<String>,
+        allowStickerOnly: Bool,
+        stickerOnlyCountInTurn: Int,
+        maxStickerOnlyPerTurn: Int = 2,
+        allowOnlineSearch: Bool = true
+    ) -> ParsedBotReply {
+        var working = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        var detectedMood: BotMood? = nil
+        if let moodStr = Self.firstMatchGroup(Self.moodRegex, in: working) {
+            detectedMood = BotMood.fromModelTag(moodStr)
+        }
+        working = Self.removingMatches(Self.moodRegex, in: working)
+        
+        var selectedStickerID: String? = nil
+        if let rawSticker = Self.firstMatchGroup(Self.stickerRegex, in: working),
+           allowedStickerIDs.contains(rawSticker)
+        {
+            selectedStickerID = rawSticker
+        }
+        working = Self.removingMatches(Self.stickerRegex, in: working)
+        
+        var searchQuery: String? = nil
+        if selectedStickerID == nil, allowOnlineSearch,
+           let rawSearch = Self.firstMatchGroup(Self.searchStickerRegex, in: working)
+        {
+            let cleanQ = rawSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cleanQ.isEmpty && cleanQ.count <= 24 {
+                searchQuery = cleanQ
+            }
+        }
+        working = Self.removingMatches(Self.searchStickerRegex, in: working)
+        
+        let cleanText = working.trimmingCharacters(in: .whitespacesAndNewlines)
+        let wantsStickerOnly = cleanText.isEmpty && (selectedStickerID != nil || searchQuery != nil)
+        if wantsStickerOnly && (!allowStickerOnly || stickerOnlyCountInTurn >= maxStickerOnlyPerTurn) {
+            // Layer 3 safety gate: never allow silent empty bubble if sticker-only is disallowed/capped.
+            return ParsedBotReply(
+                text: AppLanguage.text("收到，先看着。", en: "Noted."),
+                stickerID: selectedStickerID,
+                searchStickerQuery: searchQuery,
+                mood: detectedMood
+            )
+        }
+        
+        return ParsedBotReply(
+            text: cleanText,
+            stickerID: selectedStickerID,
+            searchStickerQuery: searchQuery,
+            mood: detectedMood
+        )
+    }
+    
+    
+    private static func firstMatchGroup(_ regex: NSRegularExpression, in text: String) -> String? {
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, options: [], range: range),
+              match.numberOfRanges > 1,
+              let groupRange = Range(match.range(at: 1), in: text)
+        else { return nil }
+        return String(text[groupRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
+    
+    private static func removingMatches(_ regex: NSRegularExpression, in text: String) -> String {
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
+    }
+}
+
+
 /// Pure persona definitions and group-chat prompt builder for the Butler Meeting Room.
 nonisolated enum MeetingRoomPersona {
     
@@ -69,17 +173,18 @@ nonisolated enum MeetingRoomPersona {
     
     
     static func systemPrompt(
-        bot: AIBotID,
-        name: String,
+        bot: UnifiedBotDescriptor,
         isMentioned: Bool,
         isButlerSynthesis: Bool,
-        customPersona: String = "",
-        isProgressCheck: Bool = true
+        isProgressCheck: Bool = true,
+        stickerCandidates: [StickerAsset] = [],
+        allowStickerOnly: Bool = true,
+        allowOnlineSearch: Bool = true
     ) -> String {
         var parts: [String] = []
         
         if isButlerSynthesis {
-            parts.append("你是群里的总管「\(name)」。")
+            parts.append("你是群里的总管「\(bot.name)」。")
             parts.append(self.voice(for: .butler))
             parts.append("""
             本次发言要求：
@@ -87,9 +192,17 @@ nonisolated enum MeetingRoomPersona {
             - 直接接着大家刚才的聊天气氛，给一句有态度、有人味的话收个尾，或者顺口提一个当下最顺手的小主意，不超过 55 字。
             - 不要给所有同事点名报菜名，不要用“今天节奏挺稳”这种套话。
             """)
+        } else if let builtIn = bot.builtInID {
+            parts.append("你是群聊里的「\(bot.name)」（日常负责：\(builtIn.tagline)）。")
+            parts.append(self.voice(for: builtIn))
         } else {
-            parts.append("你是群聊里的「\(name)」（日常负责：\(bot.tagline)）。")
-            parts.append(self.voice(for: bot))
+            parts.append("你是群聊里的成员「\(bot.name)」。")
+            if !bot.personaPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                parts.append("你的性格与说话风格：\(bot.personaPrompt)")
+            }
+        }
+        
+        if !isButlerSynthesis {
             if isMentioned {
                 parts.append("用户点名了你，必须回答，不能 PASS。直接针对用户的话，用你自己的口吻自然回一句。")
             } else if !isProgressCheck {
@@ -99,14 +212,82 @@ nonisolated enum MeetingRoomPersona {
             }
         }
         
+        parts.append("你的性格底色与实时情绪：\(bot.emotion.baseline.promptDirective) 当前实时心情是「\(bot.emotion.mood.displayLabel)」（能量 \(bot.emotion.energy)/100），\(bot.emotion.mood.toneDirective)")
+        parts.append(Self.buildStickerProtocolBlock(
+            candidates: stickerCandidates,
+            allowStickerOnly: allowStickerOnly,
+            allowOnlineSearch: allowOnlineSearch
+        ))
         parts.append(self.sharedRules)
         
-        let trimmedCustom = customPersona.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedCustom.isEmpty {
+        let trimmedCustom = bot.personaPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if bot.isBuiltIn && !trimmedCustom.isEmpty {
             parts.append("用户给你的额外性格设定：\(trimmedCustom)")
         }
         
         return parts.joined(separator: "\n\n")
+    }
+    
+    
+    static func systemPrompt(
+        bot: AIBotID,
+        name: String,
+        isMentioned: Bool,
+        isButlerSynthesis: Bool,
+        customPersona: String = "",
+        isProgressCheck: Bool = true
+    ) -> String {
+        let descriptor = UnifiedBotDescriptor(
+            id: bot.rawValue,
+            isBuiltIn: true,
+            builtInID: bot,
+            customProfile: nil,
+            name: name,
+            nickname: bot.defaultNickname,
+            handle: bot.handle,
+            roleLabel: bot.defaultNickname,
+            accentHex: bot.accentHex,
+            personaPrompt: customPersona,
+            preferredStickerCategories: [],
+            emotion: BotEmotionEngine.initialState(botID: bot.rawValue, baseline: BotEmotionEngine.defaultBaseline(for: bot)),
+            isEnabled: true
+        )
+        return self.systemPrompt(
+            bot: descriptor,
+            isMentioned: isMentioned,
+            isButlerSynthesis: isButlerSynthesis,
+            isProgressCheck: isProgressCheck,
+            stickerCandidates: [],
+            allowStickerOnly: false,
+            allowOnlineSearch: false
+        )
+    }
+    
+    
+    static func buildStickerProtocolBlock(
+        candidates: [StickerAsset],
+        allowStickerOnly: Bool,
+        allowOnlineSearch: Bool
+    ) -> String {
+        var lines: [String] = [
+            "表情包与情绪表达规则（仅在真的贴切时使用，不要每句硬发）：",
+            "- 可在回复末尾附带一次实时心情标记（可选）：[MOOD:calm|happy|excited|focused|slacking|speechless|aggrieved]",
+        ]
+        if !candidates.isEmpty {
+            let listText = candidates.prefix(10).map { item in
+                "- \(item.id) | \(item.promptDescription)"
+            }.joined(separator: "\n")
+            lines.append("- 如果下面候选表情包里有**真正贴合你想表达观点/情绪**的图，可在回复末尾加上 [STICKER:表情ID]（只能从下方候选 ID 里选，严禁编造 ID）：\n\(listText)")
+            if allowStickerOnly {
+                lines.append("- 如果某张候选图的画面/文字已经完全能替你表态、无需废话，允许**只输出这一个标签** [STICKER:表情ID]（不写多余文字）。若候选里没有准确表达你观点的图，就正常说话，不要硬凑。")
+            } else {
+                lines.append("- 当前属于正经进度/工作讨论，必须先用文字讲清重点，表情包最多只能作为辅助配图放在末尾。")
+            }
+        }
+        if allowOnlineSearch {
+            lines.append("- 如果本地候选表情包都不贴切、且你非常需要一张特定梗图来表态，可输出 [SEARCH_STICKER:简短中文关键词] 自动搜索一张入库并发送。")
+        }
+        return lines.joined(separator: "\n")
     }
     
     
@@ -119,7 +300,6 @@ nonisolated enum MeetingRoomPersona {
         if upper == "PASS" || upper == "[PASS]" {
             return true
         }
-        // Treat responses that begin with the pass token as pass even if trailing punctuation slipped in.
         if upper.hasPrefix("[PASS]") && upper.count <= 16 {
             return true
         }

@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { createShader, playSweep, accentChain, ACCENTS } from "glimm";
+import StickerPickerPopover from "./StickerPickerPopover";
 import type {
   AttachedDocumentRef,
   BotMentionItem,
@@ -17,6 +18,7 @@ import type {
   EffortLevel,
   ModelOption,
   SlashCommandItem,
+  StickerItem,
 } from "../types";
 
 /* ─────────────────────────────────────────────────────────
@@ -123,6 +125,7 @@ type PromptBarProps = {
   slashCommands: SlashCommandItem[];
   availableDocuments?: DocumentMentionItem[];
   availableBots?: BotMentionItem[];
+  stickers?: StickerItem[];
   quotedExcerpt?: string | null;
   effort?: EffortLevel;
   showEffort?: boolean;
@@ -130,7 +133,10 @@ type PromptBarProps = {
   onSelectModel: (model: ModelOption) => void;
   onSelectEffort?: (effort: EffortLevel) => void;
   onOpenSettings: () => void;
-  onSend: (text: string, documents: AttachedDocumentRef[], botId: string | null) => void;
+  onUploadSticker?: () => void;
+  onToggleFavoriteSticker?: (id: string) => void;
+  onSearchOnlineStickers?: (query: string) => void;
+  onSend: (text: string, documents: AttachedDocumentRef[], botId: string | null, stickerId?: string | null) => void;
   onAbort: () => void;
 };
 
@@ -147,6 +153,7 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
     slashCommands,
     availableDocuments = [],
     availableBots = [],
+    stickers = [],
     quotedExcerpt,
     effort = "balanced",
     showEffort = false,
@@ -154,6 +161,9 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
     onSelectModel,
     onSelectEffort,
     onOpenSettings,
+    onUploadSticker,
+    onToggleFavoriteSticker,
+    onSearchOnlineStickers,
     onSend,
     onAbort,
   },
@@ -162,6 +172,8 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
   const [draft, setDraft] = useState("");
   const [attachedDocs, setAttachedDocs] = useState<AttachedDocumentRef[]>([]);
   const [selectedBot, setSelectedBot] = useState<BotMentionItem | null>(null);
+  const [selectedSticker, setSelectedSticker] = useState<StickerItem | null>(null);
+  const [stickerOpen, setStickerOpen] = useState(false);
   const [dismissed, setDismissed] = useState(false);
   const [manualAtTab, setManualAtTab] = useState<MentionTab | null>(null);
   const [activeTab, setActiveTab] = useState<MentionTab>("all");
@@ -364,20 +376,22 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
   }, [draft, tall]);
 
   useEffect(() => {
-    if (!modelOpen && manualAtTab === null) return;
+    if (!modelOpen && manualAtTab === null && !stickerOpen) return;
     const close = (event: PointerEvent) => {
       if (!(event.target as Element).closest("[data-promptbar]")) {
         setModelOpen(false);
         setManualAtTab(null);
+        setStickerOpen(false);
       }
     };
     document.addEventListener("pointerdown", close);
     return () => document.removeEventListener("pointerdown", close);
-  }, [modelOpen, manualAtTab]);
+  }, [modelOpen, manualAtTab, stickerOpen]);
 
   const closeMenus = () => {
     setManualAtTab(null);
     setModelOpen(false);
+    setStickerOpen(false);
   };
 
   const pickRow = (row: MentionRow) => {
@@ -419,17 +433,31 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
     }
   };
 
-  const canSend = !isStreaming && (draft.trim().length > 0 || attachedDocs.length > 0 || selectedBot !== null);
+  const canSend = !isStreaming && (draft.trim().length > 0 || attachedDocs.length > 0 || selectedBot !== null || selectedSticker !== null);
   const submit = () => {
     if (!canSend) return;
     const text = draft.trim();
     const docsSnapshot = attachedDocs.slice();
     const botSnapshot = selectedBot?.id ?? null;
+    const stickerSnapshot = selectedSticker?.id ?? null;
     setDraft("");
     setAttachedDocs([]);
     setSelectedBot(null);
+    setSelectedSticker(null);
     closeMenus();
-    onSend(text, docsSnapshot, botSnapshot);
+    onSend(text, docsSnapshot, botSnapshot, stickerSnapshot);
+  };
+
+  const handleSelectSticker = (stk: StickerItem) => {
+    setStickerOpen(false);
+    if (!draft.trim() && attachedDocs.length === 0 && !isStreaming) {
+      const botSnapshot = selectedBot?.id ?? null;
+      setSelectedBot(null);
+      onSend("", [], botSnapshot, stk.id);
+      return;
+    }
+    setSelectedSticker(stk);
+    inputRef.current?.focus();
   };
 
   const cycleEffort = () => {
@@ -701,6 +729,18 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
           </div>
         )}
 
+        {stickerOpen && (
+          <StickerPickerPopover
+            locale={locale}
+            stickers={stickers}
+            onSelectSticker={handleSelectSticker}
+            onToggleFavorite={(id) => onToggleFavoriteSticker?.(id)}
+            onUploadSticker={() => onUploadSticker?.()}
+            onSearchOnline={(q) => onSearchOnlineStickers?.(q)}
+            onClose={() => setStickerOpen(false)}
+          />
+        )}
+
         {/* ── composer shell ─────────────────────────────── */}
         <div
           className={`relative isolate flex flex-col overflow-hidden border border-line bg-surface shadow-card transition-[border-color] duration-150 focus-within:border-line-strong ${
@@ -714,9 +754,24 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
             style={{ borderRadius: "inherit" }}
           />
 
-          {/* Attached @Documents + @Bot delegation chips */}
-          {(attachedDocs.length > 0 || selectedBot) && (
+          {/* Attached @Documents + @Bot delegation + Sticker chips */}
+          {(attachedDocs.length > 0 || selectedBot || selectedSticker) && (
             <div className="flex flex-wrap items-center gap-1.5">
+              {selectedSticker && (
+                <div className="relative inline-flex items-center gap-1.5 rounded-[8px] bg-inset p-1 pr-2 shadow-hairline">
+                  <img src={selectedSticker.url} alt={selectedSticker.meaning || "Sticker"} className="size-8 rounded-[5px] object-contain" />
+                  <button
+                    type="button"
+                    aria-label="Remove sticker"
+                    onClick={() => setSelectedSticker(null)}
+                    className="flex size-5 items-center justify-center rounded-[5px] text-ink-3 hover:bg-hover-2 hover:text-ink"
+                  >
+                    <Icon size={11} strokeWidth={2.4}>
+                      <path d="M18 6L6 18M6 6l12 12" />
+                    </Icon>
+                  </button>
+                </div>
+              )}
               {attachedDocs.map((doc) => (
                 <span
                   key={doc.id}
@@ -888,6 +943,26 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
                 </Icon>
               </button>
             ) : null}
+
+            {onUploadSticker && (
+              <button
+                type="button"
+                aria-label="Stickers"
+                onClick={() => {
+                  setModelOpen(false);
+                  setManualAtTab(null);
+                  setStickerOpen((v) => !v);
+                }}
+                className={`flex size-7.5 shrink-0 items-center justify-center rounded-[8px] transition-colors duration-150 ${
+                  stickerOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
+                }`}
+              >
+                <Icon size={15.5} strokeWidth={1.85}>
+                  <circle cx="12" cy="12" r="9.5" />
+                  <path d="M9 10h.01M15 10h.01M8.5 14.5a4 4 0 0 0 7 0" />
+                </Icon>
+              </button>
+            )}
 
             {/* model selector (hidden when delegated bot is active, since bot uses its own configured model) */}
             {!selectedBot && (

@@ -1094,10 +1094,14 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
     ]
     
     private(set) var configs: [String: AIBotConfig] = [:]
+    var customBots: [CustomBotProfile] = []
+    var emotionStates: [String: BotEmotionState] = [:]
     private(set) var avatarRevision: Int = 0
+    var customBotsRevision: Int = 0
     private var customAvatarCache: [AIBotID: NSImage] = [:]
     private var customAvatarRawStrings: [AIBotID: String] = [:]
-    private let database: CotLocalDatabase
+    var customBotAvatarCache: [String: NSImage] = [:]
+    let database: CotLocalDatabase
     
     
     init(database: CotLocalDatabase = .shared) {
@@ -1116,14 +1120,15 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
             }
         }
         let raw = self.database.string(forKey: CotLocalDatabase.ConfigKey.aiBotsConfigJSON)
-        guard !raw.isEmpty,
-              let data = raw.data(using: .utf8),
-              let decoded = try? JSONDecoder().decode([String: AIBotConfig].self, from: data)
-        else {
+        if !raw.isEmpty,
+           let data = raw.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode([String: AIBotConfig].self, from: data)
+        {
+            self.configs = decoded
+        } else {
             self.configs = [:]
-            return
         }
-        self.configs = decoded
+        self.reloadCustomBotsAndEmotions()
     }
     
     

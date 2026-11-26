@@ -418,6 +418,13 @@ extension Logger {
     }
     
     
+    /// Opens the Bots Settings pane directly with the custom Bot creation sheet.
+    func openCreateCustomBotSettings() {
+        
+        self.settingsWindowController.openCreateCustomBot()
+    }
+    
+    
     /// Opens the settings window at the AI pane.
     ///
     /// - Parameter sender: The action sender.

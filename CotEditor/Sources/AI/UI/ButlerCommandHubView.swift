@@ -22,6 +22,7 @@
 import AppKit
 import Defaults
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - Top Toolbar Capsule Button + Resizable Pinnable Floating Panel
 
@@ -522,6 +523,7 @@ struct ButlerCommandHubView: View {
     @State private var userProfile = UserProfileManager.shared
     @State private var proactiveEngine = CotButlerProactiveEngine.shared
     @State private var meetingRoom = ButlerMeetingRoomManager.shared
+    @State private var stickerStore = CotStickerLibraryStore.shared
     @State private var webController = BeautifulAgentWebController()
     @State private var availableModels: [BeautifulAgentModelPayload] = []
     @State private var quotedExcerpt: String? = nil
@@ -674,7 +676,10 @@ struct ButlerCommandHubView: View {
                 attachedDocuments: meta.attachedDocuments.isEmpty ? nil : meta.attachedDocuments,
                 delegatedBotID: meta.delegatedBotID,
                 delegatedBotName: meta.delegatedBotName,
-                delegatedModel: meta.delegatedModel
+                delegatedModel: meta.delegatedModel,
+                stickerID: meta.stickerID,
+                stickerURL: meta.stickerURL,
+                stickerCaption: meta.stickerCaption
             )
         }
         
@@ -776,8 +781,33 @@ struct ButlerCommandHubView: View {
         let surfaces = self.resolvedThemeSurfaces(isDark: isDark)
         let _ = self.proactiveEngine.revision
         let _ = self.meetingRoom.revision
+        let _ = self.stickerStore.revision
+        let _ = self.botStore.customBotsRevision
         let workers = self.proactiveEngine.workers
         let meetingBots = self.meetingRoom.participantRoster(botStore: self.botStore)
+        let meetingSessions = self.meetingRoom.sessions.map {
+            MeetingRoomSessionPayload(
+                id: $0.id,
+                title: $0.title,
+                isPinned: $0.isPinned,
+                updatedAt: $0.updatedAtMs,
+                participantIDs: $0.participantIDs
+            )
+        }
+        let stickerCatalog: [BeautifulAgentStickerPayload] = self.stickerStore.stickers.prefix(600).map { stk in
+            BeautifulAgentStickerPayload(
+                id: stk.id,
+                url: CotMediaSchemeHandler.stickerURLString(id: stk.id),
+                category: stk.category,
+                ocrText: stk.ocrText,
+                meaning: stk.meaning,
+                moods: stk.moods,
+                tags: stk.tags,
+                isFavorite: stk.isFavorite,
+                isAnimated: stk.isAnimated,
+                useCount: stk.useCount
+            )
+        }
         
         return BeautifulAgentHostStatePayload(
             mode: "butler",
@@ -820,7 +850,12 @@ struct ButlerCommandHubView: View {
             meetingRoomActive: self.meetingRoom.isActive,
             meetingRoomIsConvening: self.meetingRoom.isConvening,
             meetingRoomMessages: self.meetingRoom.messages,
-            meetingRoomBots: meetingBots
+            meetingRoomBots: meetingBots,
+            meetingRoomSessions: meetingSessions,
+            activeMeetingSessionID: self.meetingRoom.activeSessionID,
+            stickerCatalog: stickerCatalog,
+            userAvatarURL: CotMediaSchemeHandler.userAvatarURLString(),
+            onlineStickerExpansionEnabled: OnlineStickerSearchService.isAutoExpansionEnabled
         )
     }
     
@@ -917,7 +952,7 @@ struct ButlerCommandHubView: View {
             .readingCompanion,
             .persona,
         ]
-        return delegatable.compactMap { botID in
+        var list = delegatable.compactMap { botID -> BeautifulAgentBotMentionPayload? in
             let cfg = self.botStore.config(for: botID)
             guard cfg.isEnabled else { return nil }
             let resolvedModel = cfg.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -931,6 +966,18 @@ struct ButlerCommandHubView: View {
                 model: resolvedModel.isEmpty ? nil : resolvedModel
             )
         }
+        for custom in self.botStore.customBots where custom.isEnabled {
+            list.append(BeautifulAgentBotMentionPayload(
+                id: custom.id,
+                name: custom.name,
+                nickname: custom.nickname,
+                handle: custom.handle,
+                tagline: custom.personaPrompt.isEmpty ? custom.baseline.displayName : custom.personaPrompt,
+                accentHex: custom.accentHex,
+                model: custom.modelOverride.isEmpty ? nil : custom.modelOverride
+            ))
+        }
+        return list
     }
     
     
@@ -973,7 +1020,7 @@ struct ButlerCommandHubView: View {
         // Keep the shared send handler outside `cb` so `cb.onSend` does not capture
         // the mutable `cb` struct by reference box (which creates a retain cycle and
         // causes infinite recursion in SwiftUI's AG::LayoutDescriptor::compare_heap_objects).
-        let handleSendRich: (String, String, [ButlerDocumentAttachment], String?) -> Void = { prompt, quote, attachedDocs, delegatedBotID in
+        let handleSendRichWithSticker: (String, String, [ButlerDocumentAttachment], String?, String?) -> Void = { prompt, quote, attachedDocs, delegatedBotID, stickerID in
             let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed == "/new" {
                 self.meetingRoom.setActive(false)
@@ -987,7 +1034,7 @@ struct ButlerCommandHubView: View {
                 self.meetingRoom.setActive(true)
                 let finalAgenda = agenda.isEmpty ? AppLanguage.text("汇总一下今天的信息", en: "Summarize today's updates") : agenda
                 Task {
-                    await self.meetingRoom.submitPrompt(finalAgenda, explicitBotID: delegatedBotID)
+                    await self.meetingRoom.submitPrompt(finalAgenda, stickerID: stickerID, explicitBotID: delegatedBotID)
                 }
                 return
             }
@@ -1023,13 +1070,17 @@ struct ButlerCommandHubView: View {
                     quote: effectiveQuote,
                     contextSources: contextSources,
                     attachedDocuments: attachedDocs,
-                    delegatedBotID: delegatedBotID
+                    delegatedBotID: delegatedBotID,
+                    stickerID: stickerID
                 )
             }
         }
-        cb.onSendRich = handleSendRich
+        cb.onSendRichWithSticker = handleSendRichWithSticker
+        cb.onSendRich = { prompt, quote, attachedDocs, delegatedBotID in
+            handleSendRichWithSticker(prompt, quote, attachedDocs, delegatedBotID, nil)
+        }
         cb.onSend = { prompt, quote in
-            handleSendRich(prompt, quote, [], nil)
+            handleSendRichWithSticker(prompt, quote, [], nil, nil)
         }
         cb.onAbort = {
             self.butler.abortStreaming()
@@ -1171,11 +1222,69 @@ struct ButlerCommandHubView: View {
                 await self.meetingRoom.submitPrompt(prompt, explicitBotID: botID)
             }
         }
+        cb.onSendMeetingPromptRich = { prompt, stickerID, botID in
+            self.meetingRoom.setActive(true)
+            Task {
+                await self.meetingRoom.submitPrompt(prompt, stickerID: stickerID, explicitBotID: botID)
+            }
+        }
         cb.onClearMeetingRoom = {
             self.meetingRoom.clearMeeting()
         }
         cb.onAbortMeetingRoom = {
             self.meetingRoom.abortMeeting()
+        }
+        cb.onNewMeetingSession = {
+            _ = self.meetingRoom.createSession()
+        }
+        cb.onSelectMeetingSession = { id in
+            self.meetingRoom.selectSession(id)
+        }
+        cb.onRenameMeetingSession = { id, title in
+            self.meetingRoom.renameSession(id, title: title)
+        }
+        cb.onDeleteMeetingSession = { id in
+            self.meetingRoom.deleteSession(id)
+        }
+        cb.onTogglePinMeetingSession = { id in
+            self.meetingRoom.togglePinSession(id)
+        }
+        cb.onToggleMeetingParticipant = { botID in
+            self.meetingRoom.toggleParticipant(botID)
+        }
+        cb.onUploadSticker = {
+            self.onSetSuppressDismiss?(true)
+            let panel = NSOpenPanel()
+            panel.allowedContentTypes = [.image, .png, .jpeg, .gif, .webP, .heic]
+            panel.allowsMultipleSelection = true
+            panel.canChooseDirectories = false
+            let response = panel.runModal()
+            self.onSetSuppressDismiss?(false)
+            if response == .OK, !panel.urls.isEmpty {
+                let urls = panel.urls
+                Task { @MainActor in
+                    _ = await CotStickerLibraryStore.shared.importFiles(urls, defaultCategory: "custom")
+                }
+            }
+        }
+        cb.onToggleFavoriteSticker = { id in
+            CotStickerLibraryStore.shared.toggleFavorite(id: id)
+        }
+        cb.onSearchOnlineStickers = { query in
+            let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !q.isEmpty else { return }
+            Task {
+                let results = await OnlineStickerSearchService.search(query: q, limitPerSource: 3)
+                for candidate in results.prefix(3) {
+                    _ = await OnlineStickerSearchService.downloadAndImport(candidate: candidate)
+                }
+            }
+        }
+        cb.onOpenCreateBotSheet = {
+            if !self.isDockedPane {
+                self.onDismiss()
+            }
+            (NSApp.delegate as? AppDelegate)?.openCreateCustomBotSettings()
         }
         return cb
     }

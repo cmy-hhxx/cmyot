@@ -38,6 +38,9 @@ export type AgentMessage = {
   delegatedBotID?: string;
   delegatedBotName?: string;
   delegatedModel?: string;
+  stickerID?: string | null;
+  stickerURL?: string | null;
+  stickerCaption?: string | null;
 };
 
 export type SessionSummary = {
@@ -146,7 +149,12 @@ export type MeetingRoomMessage = {
   botHandle?: string | null;
   botAccentHex?: string | null;
   botRoleLabel?: string | null;
+  botMoodLabel?: string | null;
+  botAvatarURL?: string | null;
   text: string;
+  stickerID?: string | null;
+  stickerURL?: string | null;
+  stickerCaption?: string | null;
   status: "speaking" | "done" | "error";
   receipts: string[];
   delegatedFromButler: boolean;
@@ -162,6 +170,31 @@ export type MeetingRoomParticipant = {
   accentHex: string;
   status: "idle" | "speaking" | "done" | "updated";
   todayBadge: string;
+  moodLabel?: string | null;
+  avatarURL?: string | null;
+  isSelected?: boolean;
+  isCustom?: boolean;
+};
+
+export type MeetingRoomSessionSummary = {
+  id: string;
+  title: string;
+  isPinned: boolean;
+  updatedAt: number;
+  participantIDs: string[];
+};
+
+export type StickerItem = {
+  id: string;
+  url: string;
+  category: string;
+  ocrText: string;
+  meaning: string;
+  moods: string[];
+  tags: string[];
+  isFavorite: boolean;
+  isAnimated: boolean;
+  useCount: number;
 };
 
 export type HostState = {
@@ -206,6 +239,11 @@ export type HostState = {
   meetingRoomIsConvening?: boolean;
   meetingRoomMessages?: MeetingRoomMessage[];
   meetingRoomBots?: MeetingRoomParticipant[];
+  meetingRoomSessions?: MeetingRoomSessionSummary[];
+  activeMeetingSessionID?: string;
+  stickerCatalog?: StickerItem[];
+  userAvatarURL?: string | null;
+  onlineStickerExpansionEnabled?: boolean;
 };
 
 export type StreamPatch = {

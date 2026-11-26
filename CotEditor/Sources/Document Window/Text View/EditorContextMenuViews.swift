@@ -100,6 +100,7 @@ nonisolated struct EditorContextMenuState: Equatable, Sendable {
     var canSemanticRestructure: Bool { !self.isEmptyDocument }
     var canAlignTable: Bool { self.isEditable && !self.isEmptyDocument }
     var canInteractiveChart: Bool { self.hasSelection || self.hasTable }
+    var canFlowPresentation: Bool { self.hasSelection }
     var canInsertInlineImage: Bool { self.isEditable && self.supportsInlineImages }
     var canEditLines: Bool { self.isEditable && !self.isEmptyDocument }
     var showsClipboardImageHint: Bool { self.isEditable && self.supportsInlineImages && self.hasClipboardImage }

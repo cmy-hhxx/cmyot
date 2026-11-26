@@ -175,10 +175,18 @@ enum UserMediaLibraryImporter {
 
 struct MediaLibrarySettingsView: View {
     
+    enum LibraryTab: String, CaseIterable, Identifiable {
+        case avatar
+        case background
+        case sticker
+        var id: String { self.rawValue }
+    }
+    
     @Environment(\.colorScheme) private var colorScheme
     @State private var library = UserMediaLibraryStore.shared
+    @State private var stickerStore = CotStickerLibraryStore.shared
     @State private var wallpaperManager = WallpaperManager.shared
-    @State private var activeTab: UserMediaKind = .avatar
+    @State private var activeTab: LibraryTab = .avatar
     @State private var isDropTargeted = false
     @State private var hoveredAssetID: String?
     @State private var statusBanner: String?
@@ -247,6 +255,10 @@ struct MediaLibrarySettingsView: View {
                         case .background:
                             self.boardAssignmentsCard
                             self.backgroundLibrarySection
+                        case .sticker:
+                            StickerLibrarySettingsSection { message in
+                                self.showStatus(message)
+                            }
                     }
                 }
                 .padding(.horizontal, 20)
@@ -260,7 +272,7 @@ struct MediaLibrarySettingsView: View {
                     .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .overlay {
                         Text(AppLanguage.text(
-                            "松手导入到\(self.activeTab == .avatar ? "头像库" : "背景库")",
+                            "松手导入到\(self.activeTab == .avatar ? "头像库" : (self.activeTab == .background ? "背景库" : "表情包"))",
                             en: "Drop to Import"
                         ))
                         .font(.system(size: 12.5, weight: .semibold))
@@ -273,7 +285,13 @@ struct MediaLibrarySettingsView: View {
             }
         }
         .onDrop(of: [.fileURL, .image], isTargeted: self.$isDropTargeted) { providers in
-            UserMediaLibraryImporter.handleDrop(providers: providers, preferredKind: self.activeTab) { result in
+            if self.activeTab == .sticker {
+                return Self.handleStickerDrop(providers: providers) { msg in
+                    self.showStatus(msg)
+                }
+            }
+            let kind: UserMediaKind = self.activeTab == .avatar ? .avatar : .background
+            return UserMediaLibraryImporter.handleDrop(providers: providers, preferredKind: kind) { result in
                 self.handleImportCompleted(result)
             }
         }
@@ -291,24 +309,35 @@ struct MediaLibrarySettingsView: View {
     
     
     private var headerControls: some View {
-        HStack(spacing: 10) {
+        let _ = self.stickerStore.revision
+        return HStack(spacing: 10) {
             Picker("", selection: self.$activeTab) {
                 Text(AppLanguage.text("头像 (\(self.library.avatars.count))", en: "Avatars (\(self.library.avatars.count))"))
                     .monospacedDigit()
-                    .tag(UserMediaKind.avatar)
+                    .tag(LibraryTab.avatar)
                 Text(AppLanguage.text("背景 (\(self.library.backgrounds.count))", en: "Backgrounds (\(self.library.backgrounds.count))"))
                     .monospacedDigit()
-                    .tag(UserMediaKind.background)
+                    .tag(LibraryTab.background)
+                Text(AppLanguage.text("表情包 (\(self.stickerStore.stickers.count))", en: "Stickers (\(self.stickerStore.stickers.count))"))
+                    .monospacedDigit()
+                    .tag(LibraryTab.sticker)
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .frame(width: 216)
+            .frame(width: 318)
             
             Spacer(minLength: 8)
             
             Button {
-                UserMediaLibraryImporter.presentFolderPicker(preferredKind: self.activeTab) { result in
-                    self.handleImportCompleted(result)
+                if self.activeTab == .sticker {
+                    StickerLibrarySettingsSection.presentStickerUploadPicker(allowDirectories: true) { msg in
+                        self.showStatus(msg)
+                    }
+                } else {
+                    let kind: UserMediaKind = self.activeTab == .avatar ? .avatar : .background
+                    UserMediaLibraryImporter.presentFolderPicker(preferredKind: kind) { result in
+                        self.handleImportCompleted(result)
+                    }
                 }
             } label: {
                 Label(AppLanguage.text("文件夹", en: "Folder"), systemImage: "folder.badge.plus")
@@ -317,8 +346,15 @@ struct MediaLibrarySettingsView: View {
             .help(AppLanguage.text("导入文件夹", en: "Import Folder"))
             
             Button {
-                UserMediaLibraryImporter.presentImageFilePicker(preferredKind: self.activeTab) { result in
-                    self.handleImportCompleted(result)
+                if self.activeTab == .sticker {
+                    StickerLibrarySettingsSection.presentStickerUploadPicker(allowDirectories: false) { msg in
+                        self.showStatus(msg)
+                    }
+                } else {
+                    let kind: UserMediaKind = self.activeTab == .avatar ? .avatar : .background
+                    UserMediaLibraryImporter.presentImageFilePicker(preferredKind: kind) { result in
+                        self.handleImportCompleted(result)
+                    }
                 }
             } label: {
                 Label(AppLanguage.text("上传", en: "Upload"), systemImage: "plus")
@@ -326,6 +362,38 @@ struct MediaLibrarySettingsView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
         }
+    }
+    
+    
+    private static func handleStickerDrop(
+        providers: [NSItemProvider],
+        onCompleted: @escaping @MainActor (String) -> Void
+    ) -> Bool {
+        let supported = providers.contains {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) || $0.canLoadObject(ofClass: NSImage.self)
+        }
+        guard supported else { return false }
+        Task { @MainActor in
+            let payload = await UserMediaLibraryImporter.extractDroppedURLs(from: providers)
+            var totalAdded = 0
+            if !payload.urls.isEmpty {
+                let res = await CotStickerLibraryStore.shared.importFiles(payload.urls, defaultCategory: "custom")
+                totalAdded += res.addedCount
+            }
+            for image in payload.images {
+                if let tiff = image.tiffRepresentation,
+                   let rep = NSBitmapImageRep(data: tiff),
+                   let png = rep.representation(using: .png, properties: [:]),
+                   await CotStickerLibraryStore.shared.addImageData(png, formatHint: "png", category: "custom") != nil
+                {
+                    totalAdded += 1
+                }
+            }
+            if totalAdded > 0 {
+                onCompleted(AppLanguage.text("已导入 \(totalAdded) 张表情", en: "Added \(totalAdded) stickers"))
+            }
+        }
+        return true
     }
     
     
@@ -826,13 +894,14 @@ struct MediaLibrarySettingsView: View {
     
     
     private func emptyLibraryCard(title: String) -> some View {
-        VStack(spacing: 14) {
+        let kind: UserMediaKind = self.activeTab == .avatar ? .avatar : .background
+        return VStack(spacing: 14) {
             Text(title)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.secondary)
             HStack(spacing: 10) {
                 Button {
-                    UserMediaLibraryImporter.presentFolderPicker(preferredKind: self.activeTab) { result in
+                    UserMediaLibraryImporter.presentFolderPicker(preferredKind: kind) { result in
                         self.handleImportCompleted(result)
                     }
                 } label: {
@@ -841,7 +910,7 @@ struct MediaLibrarySettingsView: View {
                 .controlSize(.regular)
                 
                 Button {
-                    UserMediaLibraryImporter.presentImageFilePicker(preferredKind: self.activeTab) { result in
+                    UserMediaLibraryImporter.presentImageFilePicker(preferredKind: kind) { result in
                         self.handleImportCompleted(result)
                     }
                 } label: {

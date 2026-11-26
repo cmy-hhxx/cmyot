@@ -49,6 +49,9 @@ nonisolated struct ButlerMessageMetadata: Codable, Sendable, Equatable {
     var delegatedBotID: String? = nil
     var delegatedBotName: String? = nil
     var delegatedModel: String? = nil
+    var stickerID: String? = nil
+    var stickerURL: String? = nil
+    var stickerCaption: String? = nil
     
     init(
         receipts: [AppliedActionReceipt] = [],
@@ -62,7 +65,10 @@ nonisolated struct ButlerMessageMetadata: Codable, Sendable, Equatable {
         attachedDocuments: [String] = [],
         delegatedBotID: String? = nil,
         delegatedBotName: String? = nil,
-        delegatedModel: String? = nil
+        delegatedModel: String? = nil,
+        stickerID: String? = nil,
+        stickerURL: String? = nil,
+        stickerCaption: String? = nil
     ) {
         self.receipts = receipts
         self.thinking = thinking
@@ -76,11 +82,15 @@ nonisolated struct ButlerMessageMetadata: Codable, Sendable, Equatable {
         self.delegatedBotID = delegatedBotID
         self.delegatedBotName = delegatedBotName
         self.delegatedModel = delegatedModel
+        self.stickerID = stickerID
+        self.stickerURL = stickerURL
+        self.stickerCaption = stickerCaption
     }
     
     enum CodingKeys: String, CodingKey {
         case receipts, thinking, thinkingDurationMs, steps, toolChips, quoteContext, followUps, errorMessage
         case attachedDocuments, delegatedBotID, delegatedBotName, delegatedModel
+        case stickerID, stickerURL, stickerCaption
     }
     
     init(from decoder: any Decoder) throws {
@@ -97,6 +107,9 @@ nonisolated struct ButlerMessageMetadata: Codable, Sendable, Equatable {
         self.delegatedBotID = try c.decodeIfPresent(String.self, forKey: .delegatedBotID)
         self.delegatedBotName = try c.decodeIfPresent(String.self, forKey: .delegatedBotName)
         self.delegatedModel = try c.decodeIfPresent(String.self, forKey: .delegatedModel)
+        self.stickerID = try c.decodeIfPresent(String.self, forKey: .stickerID)
+        self.stickerURL = try c.decodeIfPresent(String.self, forKey: .stickerURL)
+        self.stickerCaption = try c.decodeIfPresent(String.self, forKey: .stickerCaption)
     }
 }
 
@@ -1033,10 +1046,20 @@ final class CotButlerManager {
         quote: String? = nil,
         contextSources: [String] = [],
         attachedDocuments: [ButlerDocumentAttachment] = [],
-        delegatedBotID: String? = nil
+        delegatedBotID: String? = nil,
+        stickerID: String? = nil
     ) async {
         let trimmedInput = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanStickerID = stickerID?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let userSticker = cleanStickerID.flatMap { CotStickerLibraryStore.shared.sticker(id: $0) }
+        if let userSticker {
+            CotStickerLibraryStore.shared.recordUse(id: userSticker.id)
+        }
+        
         let targetBot = Self.resolveDelegatedBot(in: trimmedInput, explicitBotID: delegatedBotID)
+        let targetCustomBot = targetBot == nil
+            ? Self.resolveDelegatedCustomBot(in: trimmedInput, explicitBotID: delegatedBotID)
+            : nil
         
         if self.activeSessionID.isEmpty {
             self.bootstrapSessionsAndMessages()
@@ -1053,7 +1076,6 @@ final class CotButlerManager {
         )
         let allAttachedDocs = attachedDocuments + inlineDocs
         
-        // Allow sending with empty text when user attached `@文档` and/or `@Bot`
         let text: String = {
             if !trimmedInput.isEmpty { return trimmedInput }
             if let targetBot {
@@ -1064,16 +1086,18 @@ final class CotButlerManager {
                 }
                 return AppLanguage.text("请 @\(botName) 协助处理", en: "Ask @\(botName) to help")
             }
+            if let targetCustomBot {
+                return AppLanguage.text("请 @\(targetCustomBot.name) 聊聊", en: "Chat with @\(targetCustomBot.name)")
+            }
             if !allAttachedDocs.isEmpty {
                 let docList = allAttachedDocs.map { "「\($0.title)」" }.joined(separator: "、")
                 return AppLanguage.text("帮我看看 \(docList)", en: "Review \(docList)")
             }
             return ""
         }()
-        guard !text.isEmpty else { return }
+        guard !text.isEmpty || userSticker != nil else { return }
         
         if self.isStreaming {
-            // Self-heal stale streaming flags or cleanly cancel a background turn on another session.
             if self.activeTurnTask == nil || self.streamingSessionID != self.activeSessionID {
                 self.cancelAndResetStreaming(savePartial: true, resetRPC: false)
             } else {
@@ -1082,16 +1106,18 @@ final class CotButlerManager {
         }
         
         let cleanQuote = quote?.trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        // Refresh live workspace snapshot before every turn so Pi tools read the freshest editor state
         _ = CotAgentCoordinator.shared.captureWorkspaceSnapshot()
         
-        let targetBotName = targetBot.map { AIBotStore.shared.resolvedName(for: $0) }
+        let targetBotName = targetBot.map { AIBotStore.shared.resolvedName(for: $0) } ?? targetCustomBot?.name
+        let effectiveDelegatedID = targetBot?.rawValue ?? targetCustomBot?.id
         let userMeta = ButlerMessageMetadata(
             quoteContext: (cleanQuote?.isEmpty == false) ? cleanQuote : nil,
             attachedDocuments: allAttachedDocs.map(\.title),
-            delegatedBotID: targetBot?.rawValue,
-            delegatedBotName: targetBotName
+            delegatedBotID: effectiveDelegatedID,
+            delegatedBotName: targetBotName,
+            stickerID: userSticker?.id,
+            stickerURL: userSticker.map { CotMediaSchemeHandler.stickerURLString(id: $0.id) },
+            stickerCaption: userSticker?.searchableSummary
         )
         let userMsg = ButlerChatMessage(
             id: UUID().uuidString,
@@ -1108,18 +1134,27 @@ final class CotButlerManager {
             channel: "butler",
             sessionID: targetSessionID,
             workspaceName: sessionWorkspaceName ?? "",
-            botID: effectiveBotID.rawValue,
+            botID: effectiveDelegatedID ?? effectiveBotID.rawValue,
             role: "user",
-            content: text,
+            content: text.isEmpty ? "[表情包:\(userSticker?.searchableSummary ?? "")]" : text,
             createdAt: userMsg.createdAt,
             memoryExtracted: false
         ))
         self.messages.append(userMsg)
         self.sessions = self.database.fetchButlerSessions()
         self.lastErrorMessage = nil
-        let resolvedConfig = AIBotStore.shared.resolvedConfiguration(for: effectiveBotID)
+        let resolvedConfig = targetCustomBot.map { AIBotStore.shared.resolvedConfiguration(forBotID: $0.id) }
+            ?? AIBotStore.shared.resolvedConfiguration(for: effectiveBotID)
+        let llmUserText: String = {
+            if let userSticker {
+                return text.isEmpty
+                    ? "用户发了一张表情包（\(userSticker.promptDescription)）"
+                    : "\(text)（附带表情包：\(userSticker.searchableSummary)）"
+            }
+            return text
+        }()
         guard resolvedConfig.isUsable else {
-            await self.handleOfflineCommand(text, sessionID: targetSessionID)
+            await self.handleOfflineCommand(llmUserText, sessionID: targetSessionID)
             return
         }
         
@@ -1144,7 +1179,7 @@ final class CotButlerManager {
             if let targetBot {
                 await self.performDelegatedBotTurn(
                     botID: targetBot,
-                    userText: text,
+                    userText: llmUserText,
                     quote: cleanQuote,
                     contextSources: contextSources,
                     attachedDocuments: allAttachedDocs,
@@ -1153,9 +1188,19 @@ final class CotButlerManager {
                     resolvedConfig: resolvedConfig,
                     generation: turnGeneration
                 )
+            } else if let targetCustomBot {
+                await self.performDelegatedCustomBotTurn(
+                    bot: targetCustomBot,
+                    userText: llmUserText,
+                    quote: cleanQuote,
+                    attachedDocuments: allAttachedDocs,
+                    sessionID: targetSessionID,
+                    resolvedConfig: resolvedConfig,
+                    generation: turnGeneration
+                )
             } else {
                 await self.performTurn(
-                    userText: text,
+                    userText: llmUserText,
                     quote: cleanQuote,
                     contextSources: contextSources,
                     attachedDocuments: allAttachedDocs,
@@ -1170,6 +1215,116 @@ final class CotButlerManager {
         await task.value
         if self.activeTurnGeneration == turnGeneration {
             self.activeTurnTask = nil
+        }
+    }
+    
+    
+    static func resolveDelegatedCustomBot(
+        in text: String,
+        explicitBotID: String?,
+        botStore: AIBotStore = .shared
+    ) -> CustomBotProfile? {
+        if let raw = explicitBotID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty,
+           let matched = botStore.customBots.first(where: { $0.id == raw && $0.isEnabled })
+        {
+            return matched
+        }
+        let lower = text.lowercased()
+        guard lower.contains("@") else { return nil }
+        return botStore.customBots.first { bot in
+            guard bot.isEnabled else { return false }
+            let n = bot.name.lowercased()
+            let nick = bot.nickname.lowercased()
+            return (!n.isEmpty && lower.contains("@\(n)")) || (!nick.isEmpty && lower.contains("@\(nick)"))
+        }
+    }
+    
+    
+    private func performDelegatedCustomBotTurn(
+        bot: CustomBotProfile,
+        userText: String,
+        quote: String?,
+        attachedDocuments: [ButlerDocumentAttachment],
+        sessionID: String,
+        resolvedConfig: AIConfiguration,
+        generation: UInt64
+    ) async {
+        defer {
+            if self.activeTurnGeneration == generation {
+                self.isStreaming = false
+                self.streamingSessionID = nil
+                self.streamingMessageID = nil
+                self.streamingDraft = ""
+                self.streamingThinking = ""
+                self.streamingSteps = []
+                self.streamingStatusLabel = ""
+                self.streamingStartedAt = nil
+            }
+        }
+        let emotion = AIBotStore.shared.emotionState(for: bot.id)
+        let candidates = CotStickerLibraryStore.shared.search(
+            query: userText,
+            mood: emotion.mood.displayLabel,
+            preferredCategories: bot.preferredStickerCategories,
+            limit: 8
+        )
+        let stickerBlock = MeetingRoomPersona.buildStickerProtocolBlock(
+            candidates: candidates,
+            allowStickerOnly: true,
+            allowOnlineSearch: OnlineStickerSearchService.isAutoExpansionEnabled
+        )
+        let systemPrompt = """
+        你是「\(bot.name)」。\(bot.personaPrompt)
+        \(emotion.baseline.promptDirective) 当前心情「\(emotion.mood.displayLabel)」，\(emotion.mood.toneDirective)
+        \(stickerBlock)
+        """
+        let prompt = self.buildTurnUserPrompt(
+            userText: userText,
+            quote: quote,
+            contextSources: [],
+            attachedDocuments: attachedDocuments
+        )
+        do {
+            let raw = try await AIService.shared.chat(
+                [.system(systemPrompt), .user(prompt)],
+                configuration: resolvedConfig,
+                analyticsFeature: "custom_bot_\(bot.id)"
+            ) { [weak self] partial in
+                guard let self, self.activeTurnGeneration == generation else { return }
+                self.streamingDraft = partial
+                self.emitStreamPatch()
+            }
+            guard self.activeTurnGeneration == generation else { return }
+            let parsed = BotReplyDirectiveParser.parse(
+                raw: raw,
+                allowedStickerIDs: Set(candidates.map(\.id)),
+                allowStickerOnly: true,
+                stickerOnlyCountInTurn: 0,
+                allowOnlineSearch: OnlineStickerSearchService.isAutoExpansionEnabled
+            )
+            var sticker = parsed.stickerID.flatMap { CotStickerLibraryStore.shared.sticker(id: $0) }
+            if sticker == nil, let sq = parsed.searchStickerQuery {
+                sticker = await OnlineStickerSearchService.searchAndAutoExpand(
+                    query: sq,
+                    preferredCategory: bot.preferredStickerCategories.first ?? "reaction"
+                )
+            }
+            if let sticker { CotStickerLibraryStore.shared.recordUse(id: sticker.id) }
+            AIBotStore.shared.updateEmotion(for: bot.id, userPrompt: userText, botReply: parsed.text, explicitMood: parsed.mood)
+            let meta = ButlerMessageMetadata(
+                delegatedBotID: bot.id,
+                delegatedBotName: bot.name,
+                delegatedModel: resolvedConfig.wireConfiguration.model,
+                stickerID: sticker?.id,
+                stickerURL: sticker.map { CotMediaSchemeHandler.stickerURLString(id: $0.id) },
+                stickerCaption: sticker?.searchableSummary
+            )
+            self.appendAssistantMessage(parsed.text, metadata: meta, sessionID: sessionID)
+        } catch {
+            guard self.activeTurnGeneration == generation else { return }
+            let meta = ButlerMessageMetadata(errorMessage: error.localizedDescription, delegatedBotID: bot.id, delegatedBotName: bot.name)
+            self.appendAssistantMessage(error.localizedDescription, metadata: meta, sessionID: sessionID)
         }
     }
     
@@ -1806,32 +1961,68 @@ final class CotButlerManager {
     
     
     private func appendAssistantMessage(_ text: String, metadata: ButlerMessageMetadata, sessionID: String) {
-        let assistantMsg = ButlerChatMessage(
-            id: UUID().uuidString,
-            sessionID: sessionID,
-            role: "assistant",
-            content: text,
-            actionsJSON: Self.encodeMetadata(metadata),
-            createdAt: Date()
-        )
-        self.database.appendButlerMessage(assistantMsg)
-        if metadata.errorMessage == nil {
+        // Enrich with emotion & optional sticker directive resolution
+        var enrichedMeta = metadata
+        let isUserStickerTurn = text.contains("表情包") || self.messages.last?.actionsJSON.contains("stickerID") == true
+        if metadata.errorMessage == nil && !text.isEmpty {
+            let botKey = metadata.delegatedBotID ?? AIBotID.butler.rawValue
+            let candidates = CotStickerLibraryStore.shared.search(query: text, limit: 8)
+            let parsed = BotReplyDirectiveParser.parse(
+                raw: text,
+                allowedStickerIDs: Set(candidates.map(\.id)),
+                allowStickerOnly: true,
+                stickerOnlyCountInTurn: 0,
+                allowOnlineSearch: OnlineStickerSearchService.isAutoExpansionEnabled
+            )
+            var resolvedText = parsed.text
+            if let sid = parsed.stickerID, let stk = CotStickerLibraryStore.shared.sticker(id: sid) {
+                CotStickerLibraryStore.shared.recordUse(id: stk.id)
+                enrichedMeta.stickerID = stk.id
+                enrichedMeta.stickerURL = CotMediaSchemeHandler.stickerURLString(id: stk.id)
+                enrichedMeta.stickerCaption = stk.searchableSummary
+            } else if enrichedMeta.stickerID == nil, isUserStickerTurn, !candidates.isEmpty, text.count < 80 {
+                // Keep clean text if model didn't emit explicit tag
+            }
+            AIBotStore.shared.updateEmotion(for: botKey, userPrompt: self.messages.last?.content ?? "", botReply: resolvedText, explicitMood: parsed.mood)
+            let assistantMsg = ButlerChatMessage(
+                id: UUID().uuidString,
+                sessionID: sessionID,
+                role: "assistant",
+                content: resolvedText,
+                actionsJSON: Self.encodeMetadata(enrichedMeta),
+                createdAt: Date()
+            )
+            self.database.appendButlerMessage(assistantMsg)
             let wsName = self.sessions.first(where: { $0.id == sessionID })?.workspaceName ?? ""
             self.database.appendAIConversationLog(AIConversationLogRecord(
                 id: "butler:\(assistantMsg.id)",
                 channel: "butler",
                 sessionID: sessionID,
                 workspaceName: wsName,
-                botID: metadata.delegatedBotID ?? "butler",
+                botID: enrichedMeta.delegatedBotID ?? "butler",
                 role: "assistant",
-                content: text,
+                content: resolvedText,
                 createdAt: assistantMsg.createdAt,
                 memoryExtracted: false
             ))
             if self.database === CotLocalDatabase.shared && !CotLocalDatabase.isRunningUnitTests {
                 CotMemoryExtractionAgent.shared.scheduleExtractionIfNeeded(reason: "butler_turn")
             }
+            if self.activeSessionID == sessionID {
+                self.messages.append(assistantMsg)
+            }
+            self.sessions = self.database.fetchButlerSessions()
+            return
         }
+        let assistantMsg = ButlerChatMessage(
+            id: UUID().uuidString,
+            sessionID: sessionID,
+            role: "assistant",
+            content: text,
+            actionsJSON: Self.encodeMetadata(enrichedMeta),
+            createdAt: Date()
+        )
+        self.database.appendButlerMessage(assistantMsg)
         if self.activeSessionID == sessionID {
             self.messages.append(assistantMsg)
         }
@@ -2086,6 +2277,20 @@ final class CotButlerManager {
         }
         if !workspaceSummary.isEmpty {
             lines.append("## 用户当前正在看的文档与页面（仅供背景参考）\n\(workspaceSummary)")
+        }
+        
+        let butlerEmotion = AIBotStore.shared.emotionState(for: AIBotID.butler.rawValue)
+        let stickerCandidates = CotStickerLibraryStore.shared.search(
+            query: userMessage,
+            mood: butlerEmotion.mood.displayLabel,
+            limit: 6
+        )
+        if !stickerCandidates.isEmpty {
+            lines.append(MeetingRoomPersona.buildStickerProtocolBlock(
+                candidates: stickerCandidates,
+                allowStickerOnly: true,
+                allowOnlineSearch: OnlineStickerSearchService.isAutoExpansionEnabled
+            ))
         }
         
         return lines.joined(separator: "\n\n")

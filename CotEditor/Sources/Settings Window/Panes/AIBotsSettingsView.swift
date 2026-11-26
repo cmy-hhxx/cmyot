@@ -2456,6 +2456,8 @@ struct AIBotsSettingsView: View {
     @State private var packExternalStepToken: Int = 0
     @State private var snapshots: [BotCardSnapshot] = []
     @State private var prewarmTask: Task<Void, Never>?
+    @State private var isShowingCreateBot = false
+    @State private var editingCustomBot: CustomBotProfile? = nil
     
     @Namespace private var modePillNamespace
     
@@ -2486,14 +2488,34 @@ struct AIBotsSettingsView: View {
         .onChange(of: self.settingsState?.pendingBotID) { _, _ in
             self.consumePendingBotSelection()
         }
+        .onChange(of: self.settingsState?.pendingCreateCustomBot) { _, _ in
+            if self.settingsState?.pendingCreateCustomBot == true {
+                self.settingsState?.pendingCreateCustomBot = false
+                self.isShowingCreateBot = true
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: UserProfileManager.activeProfileDidChangeNotification)) { _ in
             self.reload(cachedImagesOnly: true)
             self.startAsyncPortraitPrewarm()
+        }
+        .sheet(isPresented: self.$isShowingCreateBot) {
+            CustomBotCreationSheet { _ in
+                self.reload(cachedImagesOnly: true)
+            }
+        }
+        .sheet(item: self.$editingCustomBot) { customBot in
+            CustomBotCreationSheet(editingBot: customBot) { _ in
+                self.reload(cachedImagesOnly: true)
+            }
         }
     }
     
     
     private func consumePendingBotSelection() {
+        if self.settingsState?.pendingCreateCustomBot == true {
+            self.settingsState?.pendingCreateCustomBot = false
+            self.isShowingCreateBot = true
+        }
         guard let pending = self.settingsState?.pendingBotID else { return }
         self.inspectingBot = pending
         self.settingsState?.pendingBotID = nil
@@ -2703,6 +2725,14 @@ struct AIBotsSettingsView: View {
                 Text("\(enabledCount)/\(self.snapshots.count) \(AppLanguage.text("已启用", en: "Active"))")
                     .font(.system(size: 11.5, weight: .medium).monospacedDigit())
                     .foregroundStyle(.secondary)
+                
+                Button {
+                    self.isShowingCreateBot = true
+                } label: {
+                    Label(AppLanguage.text("新建 Bot", en: "New Bot"), systemImage: "plus")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
             }
             
             Rectangle()
@@ -2793,6 +2823,13 @@ struct AIBotsSettingsView: View {
                 Spacer()
             }
             .padding(.top, 2)
+            
+            CustomBotsRosterSection(
+                cardSurface: self.cardSurface,
+                cardBorder: self.cardBorder,
+                onCreateNew: { self.isShowingCreateBot = true },
+                onEditBot: { self.editingCustomBot = $0 }
+            )
         }
     }
     
@@ -3427,6 +3464,10 @@ private struct AIBotInlineInspectorView: View {
                 .controlSize(.small)
                 .disabled(self.isRefreshingModels)
             }
+            
+            Divider()
+            
+            BotEmotionInspectorRow(botID: self.botID.rawValue)
             
             Divider()
             

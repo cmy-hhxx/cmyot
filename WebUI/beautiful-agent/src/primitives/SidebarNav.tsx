@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import GlideMenu from "./GlideMenu";
-import type { SessionSummary, WorkspaceOption } from "../types";
+import SidebarMeetingGroup from "./SidebarMeetingGroup";
+import type { MeetingRoomSessionSummary, SessionSummary, WorkspaceOption } from "../types";
 
 /* ─────────────────────────────────────────────────────────
  * SIDEBAR NAV — Hierarchical Workspaces & Sessions
@@ -60,7 +61,14 @@ type SidebarNavProps = {
   onOpenSettings: () => void;
   meetingRoomActive?: boolean;
   meetingRoomIsConvening?: boolean;
+  meetingRoomSessions?: MeetingRoomSessionSummary[];
+  activeMeetingSessionID?: string;
   onOpenMeetingRoom?: () => void;
+  onNewMeetingSession?: () => void;
+  onSelectMeetingSession?: (id: string) => void;
+  onRenameMeetingSession?: (id: string, title: string) => void;
+  onDeleteMeetingSession?: (id: string) => void;
+  onTogglePinMeetingSession?: (id: string) => void;
 };
 
 type SessionGroup = {
@@ -945,7 +953,9 @@ function SidebarNav({
   onToggleCollapse, onNewChat, onCreateWorkspace, onRenameWorkspace, onDeleteWorkspace,
   onChooseWorkspaceFolder, onUnlinkWorkspaceFolder, onReorderWorkspaces, onMoveSession,
   onSelectSession, onDeleteSession, onRenameSession, onTogglePinSession, onOpenSettings,
-  meetingRoomActive = false, meetingRoomIsConvening = false, onOpenMeetingRoom,
+  meetingRoomActive = false, meetingRoomIsConvening = false, meetingRoomSessions = [],
+  activeMeetingSessionID = "", onOpenMeetingRoom, onNewMeetingSession,
+  onSelectMeetingSession, onRenameMeetingSession, onDeleteMeetingSession, onTogglePinMeetingSession,
 }: SidebarNavProps) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -1063,6 +1073,20 @@ function SidebarNav({
         )}
 
         <div ref={listContainerRef} className={`bui-scroll mt-3 min-h-0 flex-1 overflow-y-auto transition-opacity duration-120 ease-out ${collapsed ? "pointer-events-none opacity-0" : "opacity-100"}`}>
+          {onSelectMeetingSession && onNewMeetingSession && (
+            <SidebarMeetingGroup
+              sessions={meetingRoomSessions}
+              activeSessionID={activeMeetingSessionID}
+              meetingRoomActive={meetingRoomActive}
+              isConvening={meetingRoomIsConvening}
+              locale={locale}
+              onNewMeeting={onNewMeetingSession}
+              onSelectMeeting={onSelectMeetingSession}
+              onRenameMeeting={onRenameMeetingSession ?? (() => {})}
+              onDeleteMeeting={onDeleteMeetingSession ?? (() => {})}
+              onTogglePinMeeting={onTogglePinMeetingSession ?? (() => {})}
+            />
+          )}
           <SidebarSearchHeader
             searchOpen={searchOpen} query={query} hasWorkspaces={availableWorkspaces.length > 0} locale={locale} searchRef={searchRef}
             onOpenSearch={() => setSearchOpen(true)} onCloseSearch={() => { setSearchOpen(false); setQuery(""); }} onQueryChange={setQuery}
