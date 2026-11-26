@@ -63,6 +63,9 @@ const UserBubble = memo(function UserBubble({
   delegatedBotName,
   stickerURL,
   stickerCaption,
+  userAvatarURL,
+  locale,
+  onOpenUserConfig,
 }: {
   text: string;
   quoteContext?: string;
@@ -70,6 +73,9 @@ const UserBubble = memo(function UserBubble({
   delegatedBotName?: string;
   stickerURL?: string | null;
   stickerCaption?: string | null;
+  userAvatarURL?: string | null;
+  locale: "zh" | "en";
+  onOpenUserConfig: () => void;
 }) {
   const hasAttachments = Boolean((attachedDocuments && attachedDocuments.length > 0) || delegatedBotName);
   return (
@@ -109,11 +115,25 @@ const UserBubble = memo(function UserBubble({
         </div>
       )}
       {stickerURL && (
-        <img
-          src={stickerURL}
-          alt={stickerCaption || "Sticker"}
-          className="max-h-[144px] max-w-[144px] rounded-[10px] object-contain"
-        />
+        <div className="flex items-start justify-end gap-2">
+          <img
+            src={stickerURL}
+            alt={stickerCaption || "Sticker"}
+            className="max-h-[144px] max-w-[144px] rounded-[10px] object-contain"
+          />
+          <button
+            type="button"
+            onClick={onOpenUserConfig}
+            title={locale === "zh" ? "配置个人头像" : "Configure profile"}
+            className="flex size-8 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-[8px] border border-line bg-surface transition-opacity hover:border-line-strong hover:opacity-90"
+          >
+            {userAvatarURL ? (
+              <img src={userAvatarURL} alt="Me" className="size-full object-cover" />
+            ) : (
+              <span className="text-[12px] font-semibold text-ink-2">{locale === "zh" ? "我" : "Me"}</span>
+            )}
+          </button>
+        </div>
       )}
     </div>
   );
@@ -122,17 +142,23 @@ const UserBubble = memo(function UserBubble({
 const AssistantMessageBlock = memo(function AssistantMessageBlock({
   message,
   locale,
+  botAvatarURL,
+  botName,
   statusLabel,
   onRetry,
   onInsert,
   onOpenNote,
+  onOpenBotConfig,
 }: {
   message: AgentMessage;
   locale: "zh" | "en";
+  botAvatarURL?: string | null;
+  botName: string;
   statusLabel?: string;
   onRetry?: () => void;
   onInsert?: (text: string) => void;
   onOpenNote?: (text: string) => void;
+  onOpenBotConfig: (botId: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const hasText = message.text.trim().length > 0;
@@ -207,7 +233,21 @@ const AssistantMessageBlock = memo(function AssistantMessageBlock({
           {message.toolChips && message.toolChips.length > 0 && <ToolChips items={message.toolChips} />}
 
           {message.stickerURL && (
-            <div className="mt-2">
+            <div className="mt-2 flex items-start gap-2">
+              <button
+                type="button"
+                onClick={() => onOpenBotConfig(message.delegatedBotID || "butler")}
+                title={locale === "zh" ? `配置 ${message.delegatedBotName || botName}` : `Configure ${message.delegatedBotName || botName}`}
+                className="flex size-8 shrink-0 cursor-pointer items-center justify-center overflow-hidden rounded-[8px] border border-line bg-surface transition-opacity hover:border-line-strong hover:opacity-90"
+              >
+                {botAvatarURL ? (
+                  <img src={botAvatarURL} alt={message.delegatedBotName || botName} className="size-full object-cover" />
+                ) : (
+                  <span className="text-[12px] font-semibold text-ink-2">
+                    {(message.delegatedBotName || botName).slice(0, 1)}
+                  </span>
+                )}
+              </button>
               <img
                 src={message.stickerURL}
                 alt={message.stickerCaption || "Sticker"}
@@ -299,10 +339,14 @@ const ChatMessageList = memo(function ChatMessageList({
   isStreaming,
   streamingStatusLabel,
   errorMessage,
+  userAvatarURL,
+  botAvatarURL,
+  botName,
   onRetry,
   onInsert,
   onOpenNote,
   onOpenGatewaySettings,
+  onOpenBotConfig,
 }: {
   messages: AgentMessage[];
   locale: "zh" | "en";
@@ -310,10 +354,14 @@ const ChatMessageList = memo(function ChatMessageList({
   isStreaming: boolean;
   streamingStatusLabel?: string;
   errorMessage?: string | null;
+  userAvatarURL?: string | null;
+  botAvatarURL?: string | null;
+  botName: string;
   onRetry: () => void;
   onInsert: (text: string) => void;
   onOpenNote: (text: string) => void;
   onOpenGatewaySettings: () => void;
+  onOpenBotConfig: (botId: string) => void;
 }) {
   return (
     <>
@@ -328,16 +376,22 @@ const ChatMessageList = memo(function ChatMessageList({
             delegatedBotName={msg.delegatedBotName}
             stickerURL={msg.stickerURL}
             stickerCaption={msg.stickerCaption}
+            userAvatarURL={userAvatarURL}
+            locale={locale}
+            onOpenUserConfig={() => onOpenBotConfig("user")}
           />
         ) : (
           <AssistantMessageBlock
             key={msg.id}
             message={msg}
             locale={locale}
+            botAvatarURL={botAvatarURL}
+            botName={botName}
             statusLabel={isLastAssistant ? streamingStatusLabel : undefined}
             onRetry={isNews && isLastAssistant && !isStreaming ? onRetry : undefined}
             onInsert={isNews ? onInsert : undefined}
             onOpenNote={isNews ? onOpenNote : undefined}
+            onOpenBotConfig={onOpenBotConfig}
           />
         );
       })}
@@ -629,6 +683,7 @@ declare global {
 export default function App() {
   const [state, setState] = useState<HostState>(DEFAULT_STATE);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [membersDrawerOpen, setMembersDrawerOpen] = useState(false);
   const [localQuote, setLocalQuote] = useState<string | null>(null);
   const [revealStage, setRevealStage] = useState(4);
   const [composerH, setComposerH] = useState(118);
@@ -917,6 +972,14 @@ export default function App() {
     postToNative("openSettings", { target: "bot" });
   }, []);
 
+  const handleOpenBotConfig = useCallback((botId: string) => {
+    postToNative("openBotConfig", { botId });
+  }, []);
+
+  const handleRefreshStickers = useCallback(() => {
+    postToNative("refreshStickers");
+  }, []);
+
   const handleOpenGatewaySettings = useCallback(() => {
     postToNative("openSettings", { target: "gateway" });
   }, []);
@@ -968,6 +1031,14 @@ export default function App() {
   const availableWorkspaces = state.availableWorkspaces ?? [];
   const availableDocuments = state.availableDocuments ?? [];
   const availableBots = state.availableBots ?? [];
+  const meetingParticipants = state.meetingRoomBots ?? [];
+  const activeMeetingParticipants = meetingParticipants.filter((p) => p.isSelected !== false);
+
+  useEffect(() => {
+    if (!isMeetingRoom) {
+      setMembersDrawerOpen(false);
+    }
+  }, [isMeetingRoom, state.activeMeetingSessionID]);
 
   const butlerEmptyHeading = activeSession?.workspaceName
     ? state.locale === "zh"
@@ -1080,6 +1151,37 @@ export default function App() {
           </div>
 
           <div className="flex shrink-0 items-center gap-1">
+            {!isNews && isMeetingRoom && (
+              <button
+                type="button"
+                data-members-toggle
+                onClick={() => setMembersDrawerOpen((v) => !v)}
+                title={state.locale === "zh" ? "群成员管理" : "Members"}
+                className={`flex h-7.5 items-center gap-1.5 rounded-[7px] px-2 text-[12.5px] font-medium transition-colors duration-100 ${
+                  membersDrawerOpen
+                    ? "bg-hover-2 text-ink"
+                    : "text-ink-2 hover:bg-hover hover:text-ink"
+                }`}
+              >
+                <span className="flex items-center -space-x-1.5">
+                  {activeMeetingParticipants.slice(0, 4).map((bot) => (
+                    <span
+                      key={bot.id}
+                      className="flex size-5 items-center justify-center overflow-hidden rounded-[5px] bg-surface ring-[1.5px] ring-page"
+                      style={!bot.avatarURL ? { backgroundColor: `${bot.accentHex}24`, color: bot.accentHex } : undefined}
+                    >
+                      {bot.avatarURL ? (
+                        <img src={bot.avatarURL} alt={bot.name} className="size-full object-cover" />
+                      ) : (
+                        <span className="text-[10px] font-semibold">{bot.name.slice(0, 1)}</span>
+                      )}
+                    </span>
+                  ))}
+                </span>
+                <span className="tabular-nums">{activeMeetingParticipants.length}</span>
+              </button>
+            )}
+
             {!isNews && isMeetingRoom && (state.meetingRoomMessages?.length ?? 0) > 0 && !state.meetingRoomIsConvening && (
               <button
                 type="button"
@@ -1252,13 +1354,17 @@ export default function App() {
             selectedModelTitle={state.selectedModelTitle}
             stickers={state.stickerCatalog ?? []}
             userAvatarURL={state.userAvatarURL}
+            membersDrawerOpen={membersDrawerOpen}
+            onCloseMembersDrawer={() => setMembersDrawerOpen(false)}
             onSend={handleMeetingSend}
             onAbort={handleMeetingAbort}
             onSelectModel={handleSelectModel}
             onOpenSettings={handleOpenBotSettings}
+            onOpenBotConfig={handleOpenBotConfig}
             onToggleParticipant={(botId) => postToNative("toggleMeetingParticipant", { botId })}
             onOpenCreateBot={() => postToNative("openCreateBotSheet")}
             onUploadSticker={handleUploadSticker}
+            onRefreshStickers={handleRefreshStickers}
             onToggleFavoriteSticker={handleToggleFavoriteSticker}
             onSearchOnlineStickers={handleSearchOnlineStickers}
           />
@@ -1299,6 +1405,7 @@ export default function App() {
                   onSelectEffort={(e) => postToNative("selectEffort", { effort: e })}
                   onOpenSettings={() => postToNative("openSettings", { target: "gateway" })}
                   onUploadSticker={handleUploadSticker}
+                  onRefreshStickers={handleRefreshStickers}
                   onToggleFavoriteSticker={handleToggleFavoriteSticker}
                   onSearchOnlineStickers={handleSearchOnlineStickers}
                   onSend={handleSend}
@@ -1321,10 +1428,14 @@ export default function App() {
                   isStreaming={state.isStreaming}
                   streamingStatusLabel={state.streamingStatusLabel}
                   errorMessage={state.errorMessage}
+                  userAvatarURL={state.userAvatarURL}
+                  botAvatarURL={state.botAvatarDataURL}
+                  botName={state.botName}
                   onRetry={handleRetry}
                   onInsert={handleInsertToEditor}
                   onOpenNote={handleOpenNewDocument}
                   onOpenGatewaySettings={handleOpenGatewaySettings}
+                  onOpenBotConfig={handleOpenBotConfig}
                 />
               </div>
             </div>
@@ -1365,6 +1476,7 @@ export default function App() {
                   onSelectEffort={(e) => postToNative("selectEffort", { effort: e })}
                   onOpenSettings={() => postToNative("openSettings", { target: "gateway" })}
                   onUploadSticker={handleUploadSticker}
+                  onRefreshStickers={handleRefreshStickers}
                   onToggleFavoriteSticker={handleToggleFavoriteSticker}
                   onSearchOnlineStickers={handleSearchOnlineStickers}
                   onSend={handleSend}

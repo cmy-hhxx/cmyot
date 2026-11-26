@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { copyTextWithFallback } from "../bridge";
 import LoadingState from "./LoadingState";
 import MarkdownProse from "./MarkdownProse";
+import MeetingMembersDrawer from "./MeetingMembersDrawer";
 import PromptBar, { type PromptBarHandle } from "./PromptBar";
 import type {
   BotMentionItem,
@@ -21,13 +22,17 @@ type MeetingRoomViewProps = {
   selectedModelTitle: string;
   stickers?: StickerItem[];
   userAvatarURL?: string | null;
+  membersDrawerOpen: boolean;
+  onCloseMembersDrawer: () => void;
   onSend: (text: string, botId?: string | null, stickerId?: string | null) => void;
   onAbort: () => void;
   onSelectModel: (model: ModelOption) => void;
   onOpenSettings: () => void;
+  onOpenBotConfig: (botId: string) => void;
   onToggleParticipant?: (botId: string) => void;
   onOpenCreateBot?: () => void;
   onUploadSticker?: () => void;
+  onRefreshStickers?: () => void;
   onToggleFavoriteSticker?: (id: string) => void;
   onSearchOnlineStickers?: (query: string) => void;
 };
@@ -36,28 +41,55 @@ const AvatarTile = memo(function AvatarTile({
   url,
   name,
   accentHex,
+  title,
+  onClick,
 }: {
   url?: string | null;
   name: string;
   accentHex?: string | null;
+  title?: string;
+  onClick?: () => void;
 }) {
   const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setFailed(false);
+  }, [url]);
   const bg = accentHex || "var(--accent)";
+  const content =
+    url && !failed ? (
+      <img
+        src={url}
+        alt={name}
+        onError={() => setFailed(true)}
+        className="size-full object-cover"
+      />
+    ) : (
+      <span className="text-[13.5px] font-semibold">{name.slice(0, 1)}</span>
+    );
+
+  const baseClass =
+    "flex size-[36px] shrink-0 items-center justify-center overflow-hidden rounded-[8px] border border-line bg-surface shadow-hairline";
+
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        title={title}
+        className={`${baseClass} cursor-pointer transition-opacity hover:border-line-strong hover:opacity-90`}
+        style={!url || failed ? { backgroundColor: `${bg}20`, color: bg } : undefined}
+      >
+        {content}
+      </button>
+    );
+  }
+
   return (
     <div
-      className="flex size-[34px] shrink-0 items-center justify-center overflow-hidden rounded-[8px] border border-line bg-surface shadow-hairline"
+      className={baseClass}
       style={!url || failed ? { backgroundColor: `${bg}20`, color: bg } : undefined}
     >
-      {url && !failed ? (
-        <img
-          src={url}
-          alt={name}
-          onError={() => setFailed(true)}
-          className="size-full object-cover"
-        />
-      ) : (
-        <span className="text-[13.5px] font-semibold">{name.slice(0, 1)}</span>
-      )}
+      {content}
     </div>
   );
 });
@@ -89,7 +121,7 @@ const StickerAttachmentBlock = memo(function StickerAttachmentBlock({
         <img
           src={url}
           alt={caption || "Sticker"}
-          className="max-h-[148px] max-w-[148px] rounded-[10px] object-contain"
+          className="max-h-[144px] max-w-[144px] rounded-[10px] object-contain"
         />
       </button>
       {stickerID && onToggleFavorite && (
@@ -113,6 +145,7 @@ const ChatMessageBubbleRow = memo(function ChatMessageBubbleRow({
   locale,
   userAvatarURL,
   favoriteStickerIDs,
+  onOpenBotConfig,
   onPreviewSticker,
   onToggleFavoriteSticker,
 }: {
@@ -120,6 +153,7 @@ const ChatMessageBubbleRow = memo(function ChatMessageBubbleRow({
   locale: "zh" | "en";
   userAvatarURL?: string | null;
   favoriteStickerIDs: Set<string>;
+  onOpenBotConfig: (botId: string) => void;
   onPreviewSticker: (url: string, caption?: string | null) => void;
   onToggleFavoriteSticker?: (id: string) => void;
 }) {
@@ -129,6 +163,13 @@ const ChatMessageBubbleRow = memo(function ChatMessageBubbleRow({
   const hasText = message.text.trim().length > 0;
   const hasSticker = Boolean(message.stickerURL);
   const displayName = isUser ? (locale === "zh" ? "我" : "Me") : (message.botName || message.botID || "Bot");
+  const configTitle = isUser
+    ? locale === "zh"
+      ? "配置个人头像与名称"
+      : "Configure profile"
+    : locale === "zh"
+      ? `配置 ${displayName}`
+      : `Configure ${displayName}`;
 
   const handleCopy = () => {
     copyTextWithFallback(message.text);
@@ -138,14 +179,23 @@ const ChatMessageBubbleRow = memo(function ChatMessageBubbleRow({
 
   if (isUser) {
     return (
-      <div className="flex items-start justify-end gap-2.5 pl-10">
-        <div className="flex max-w-[74%] flex-col items-end gap-1.5">
-          {hasText && (
-            <div className="select-text whitespace-pre-wrap break-words rounded-[12px] rounded-tr-[4px] bg-accent px-3.5 py-2 text-[14px] leading-relaxed text-white shadow-hairline">
+      <div className="flex flex-col gap-2.5">
+        {hasText && (
+          <div className="flex items-start justify-end gap-2.5 pl-10">
+            <div className="max-w-[78%] select-text whitespace-pre-wrap break-words rounded-[12px] rounded-tr-[4px] bg-accent px-3.5 py-2 text-[14px] leading-relaxed text-white shadow-hairline">
               {message.text}
             </div>
-          )}
-          {hasSticker && message.stickerURL && (
+            <AvatarTile
+              url={userAvatarURL}
+              name={displayName}
+              accentHex="#3B82F6"
+              title={configTitle}
+              onClick={() => onOpenBotConfig("user")}
+            />
+          </div>
+        )}
+        {hasSticker && message.stickerURL && (
+          <div className="flex items-start justify-end gap-2.5 pl-10">
             <StickerAttachmentBlock
               url={message.stickerURL}
               caption={message.stickerCaption}
@@ -155,78 +205,114 @@ const ChatMessageBubbleRow = memo(function ChatMessageBubbleRow({
               onPreview={onPreviewSticker}
               onToggleFavorite={onToggleFavoriteSticker}
             />
-          )}
-        </div>
-        <AvatarTile url={userAvatarURL} name={displayName} accentHex="#3B82F6" />
+            <AvatarTile
+              url={userAvatarURL}
+              name={displayName}
+              accentHex="#3B82F6"
+              title={configTitle}
+              onClick={() => onOpenBotConfig("user")}
+            />
+          </div>
+        )}
       </div>
     );
   }
 
+  const avatarAction = message.botID ? () => onOpenBotConfig(message.botID as string) : undefined;
+  const showPrimaryRow = hasText || isSpeaking || !hasSticker;
+
   return (
-    <div className="group/msg flex items-start gap-2.5 pr-8">
-      <AvatarTile url={message.botAvatarURL} name={displayName} accentHex={message.botAccentHex} />
+    <div className="flex flex-col gap-2.5">
+      {showPrimaryRow && (
+        <div className="group/msg flex items-start gap-2.5 pr-6">
+          <AvatarTile
+            url={message.botAvatarURL}
+            name={displayName}
+            accentHex={message.botAccentHex}
+            title={configTitle}
+            onClick={avatarAction}
+          />
 
-      <div className="flex min-w-0 max-w-[74%] flex-col items-start gap-1.5">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <span className="text-[12.5px] font-semibold text-ink-2">{displayName}</span>
-          {message.botMoodLabel && (
-            <span className="rounded-[5px] bg-inset px-1.5 py-0.5 text-[12px] text-ink-3">
-              {message.botMoodLabel}
-            </span>
-          )}
-          {message.delegatedFromButler && (
-            <span className="rounded-[5px] bg-accent-tint px-1.5 py-0.5 text-[12px] text-accent-ink">
-              {locale === "zh" ? "总管调度" : "Dispatched"}
-            </span>
-          )}
-          {!isSpeaking && hasText && (
-            <button
-              type="button"
-              onClick={handleCopy}
-              className="rounded-[5px] px-1.5 py-0.5 text-[12px] text-ink-3 opacity-0 transition-opacity group-hover/msg:opacity-100 hover:bg-hover hover:text-ink"
-            >
-              {copied ? (locale === "zh" ? "已复制" : "Copied") : locale === "zh" ? "复制" : "Copy"}
-            </button>
-          )}
-        </div>
+          <div className="flex min-w-0 max-w-[78%] flex-col items-start gap-1">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[12.5px] font-semibold text-ink-2">{displayName}</span>
+              {message.botMoodLabel && (
+                <span className="rounded-[5px] bg-inset px-1.5 py-0.5 text-[12px] text-ink-3">
+                  {message.botMoodLabel}
+                </span>
+              )}
+              {message.delegatedFromButler && (
+                <span className="rounded-[5px] bg-accent-tint px-1.5 py-0.5 text-[12px] text-accent-ink">
+                  {locale === "zh" ? "总管调度" : "Dispatched"}
+                </span>
+              )}
+              {!isSpeaking && hasText && (
+                <button
+                  type="button"
+                  onClick={handleCopy}
+                  className="rounded-[5px] px-1.5 py-0.5 text-[12px] text-ink-3 opacity-0 transition-opacity group-hover/msg:opacity-100 hover:bg-hover hover:text-ink"
+                >
+                  {copied ? (locale === "zh" ? "已复制" : "Copied") : locale === "zh" ? "复制" : "Copy"}
+                </button>
+              )}
+            </div>
 
-        {message.receipts && message.receipts.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {message.receipts.map((receipt, idx) => (
-              <span
-                key={`${message.id}-r-${idx}`}
-                className="rounded-[6px] bg-inset px-2 py-0.5 text-[12px] text-ink-2 shadow-hairline"
-              >
-                {receipt}
-              </span>
-            ))}
-          </div>
-        )}
+            {message.receipts && message.receipts.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {message.receipts.map((receipt, idx) => (
+                  <span
+                    key={`${message.id}-r-${idx}`}
+                    className="rounded-[6px] bg-inset px-2 py-0.5 text-[12px] text-ink-2 shadow-hairline"
+                  >
+                    {receipt}
+                  </span>
+                ))}
+              </div>
+            )}
 
-        {isSpeaking && !hasText && !hasSticker ? (
-          <div className="rounded-[12px] rounded-tl-[4px] border border-line bg-surface px-3.5 py-2 shadow-hairline">
-            <LoadingState label={locale === "zh" ? "正在输入" : "Typing"} variant="Dots" />
-          </div>
-        ) : (
-          <>
-            {hasText && (
+            {isSpeaking && !hasText ? (
+              <div className="rounded-[12px] rounded-tl-[4px] border border-line bg-surface px-3.5 py-2 shadow-hairline">
+                <LoadingState label={locale === "zh" ? "正在输入" : "Typing"} variant="Dots" />
+              </div>
+            ) : hasText ? (
               <div className="w-fit max-w-full rounded-[12px] rounded-tl-[4px] border border-line bg-surface px-3.5 py-2 shadow-hairline">
                 <MarkdownProse markdown={message.text} isStreaming={isSpeaking} locale={locale} />
               </div>
-            )}
-            {hasSticker && message.stickerURL && (
-              <StickerAttachmentBlock
-                url={message.stickerURL}
-                caption={message.stickerCaption}
-                stickerID={message.stickerID}
-                isFavorite={message.stickerID ? favoriteStickerIDs.has(message.stickerID) : false}
-                onPreview={onPreviewSticker}
-                onToggleFavorite={onToggleFavoriteSticker}
-              />
-            )}
-          </>
-        )}
-      </div>
+            ) : null}
+          </div>
+        </div>
+      )}
+
+      {hasSticker && message.stickerURL && (
+        <div className="flex items-start gap-2.5 pr-6">
+          <AvatarTile
+            url={message.botAvatarURL}
+            name={displayName}
+            accentHex={message.botAccentHex}
+            title={configTitle}
+            onClick={avatarAction}
+          />
+
+          <div className="flex min-w-0 max-w-[78%] flex-col items-start gap-1">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[12.5px] font-semibold text-ink-2">{displayName}</span>
+              {!hasText && message.botMoodLabel && (
+                <span className="rounded-[5px] bg-inset px-1.5 py-0.5 text-[12px] text-ink-3">
+                  {message.botMoodLabel}
+                </span>
+              )}
+            </div>
+            <StickerAttachmentBlock
+              url={message.stickerURL}
+              caption={message.stickerCaption}
+              stickerID={message.stickerID}
+              isFavorite={message.stickerID ? favoriteStickerIDs.has(message.stickerID) : false}
+              onPreview={onPreviewSticker}
+              onToggleFavorite={onToggleFavoriteSticker}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 });
@@ -241,13 +327,17 @@ const MeetingRoomView = memo(function MeetingRoomView({
   selectedModelTitle,
   stickers = [],
   userAvatarURL,
+  membersDrawerOpen,
+  onCloseMembersDrawer,
   onSend,
   onAbort,
   onSelectModel,
   onOpenSettings,
+  onOpenBotConfig,
   onToggleParticipant,
   onOpenCreateBot,
   onUploadSticker,
+  onRefreshStickers,
   onToggleFavoriteSticker,
   onSearchOnlineStickers,
 }: MeetingRoomViewProps) {
@@ -314,11 +404,11 @@ const MeetingRoomView = memo(function MeetingRoomView({
 
   return (
     <div className="relative flex min-h-0 flex-1 overflow-hidden">
-      {/* Main Group Chat Feed */}
+      {/* Main Group Chat Feed (full-width WeChat / Teams proportions) */}
       <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
         {!hasMessages ? (
           <div className="bui-scroll flex min-h-0 flex-1 flex-col justify-center overflow-y-auto px-5 py-6">
-            <div className="mx-auto flex w-full max-w-[620px] flex-col gap-5">
+            <div className="mx-auto flex w-full max-w-[660px] flex-col gap-5">
               <h1 className="text-[21px] font-semibold tracking-[-0.02em] text-ink">
                 {locale === "zh" ? "会议室" : "Meeting Room"}
               </h1>
@@ -342,6 +432,7 @@ const MeetingRoomView = memo(function MeetingRoomView({
                 onSelectEffort={() => {}}
                 onOpenSettings={onOpenSettings}
                 onUploadSticker={onUploadSticker}
+                onRefreshStickers={onRefreshStickers}
                 onToggleFavoriteSticker={onToggleFavoriteSticker}
                 onSearchOnlineStickers={onSearchOnlineStickers}
                 onSend={(text, _docs, botId, stickerId) => onSend(text, botId, stickerId)}
@@ -353,7 +444,7 @@ const MeetingRoomView = memo(function MeetingRoomView({
           <>
             <div ref={scrollRef} className="bui-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain">
               <div
-                className="mx-auto flex w-full max-w-[700px] flex-col gap-4 px-4 pt-5"
+                className="mx-auto flex w-full max-w-[760px] flex-col gap-4 px-4 pt-5"
                 style={{ paddingBottom: composerH + 24 }}
               >
                 {messages.map((msg) => (
@@ -363,6 +454,7 @@ const MeetingRoomView = memo(function MeetingRoomView({
                     locale={locale}
                     userAvatarURL={userAvatarURL}
                     favoriteStickerIDs={favoriteStickerIDs}
+                    onOpenBotConfig={onOpenBotConfig}
                     onPreviewSticker={(url, caption) => setPreviewSticker({ url, caption })}
                     onToggleFavoriteSticker={onToggleFavoriteSticker}
                   />
@@ -376,7 +468,7 @@ const MeetingRoomView = memo(function MeetingRoomView({
             />
 
             <div ref={composerRef} className="absolute inset-x-0 bottom-0 px-3.5 pb-3.5">
-              <div className="mx-auto max-w-[700px]">
+              <div className="mx-auto max-w-[760px]">
                 <PromptBar
                   ref={promptBarRef}
                   placeholder={locale === "zh" ? "发言，或 @ 指定成员" : "Reply or @mention"}
@@ -395,6 +487,7 @@ const MeetingRoomView = memo(function MeetingRoomView({
                   onSelectEffort={() => {}}
                   onOpenSettings={onOpenSettings}
                   onUploadSticker={onUploadSticker}
+                  onRefreshStickers={onRefreshStickers}
                   onToggleFavoriteSticker={onToggleFavoriteSticker}
                   onSearchOnlineStickers={onSearchOnlineStickers}
                   onSend={(text, _docs, botId, stickerId) => onSend(text, botId, stickerId)}
@@ -406,69 +499,17 @@ const MeetingRoomView = memo(function MeetingRoomView({
         )}
       </div>
 
-      {/* Right Participant Rail */}
-      <aside className="hidden w-[204px] shrink-0 flex-col border-l border-line bg-canvas/70 md:flex">
-        <div className="flex h-10 shrink-0 items-center justify-between border-b border-line px-3">
-          <span className="text-[12.5px] font-semibold text-ink-2">
-            {locale === "zh" ? "参会席位" : "Participants"}
-          </span>
-          <span className="text-[12px] text-ink-3 tabular-nums">{participants.filter((p) => p.isSelected !== false).length}</span>
-        </div>
-
-        <div className="bui-scroll flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-2">
-          {participants.map((bot) => {
-            const isSelected = bot.isSelected !== false;
-            return (
-              <div
-                key={bot.id}
-                className={`group flex items-center gap-2 rounded-[8px] px-2 py-1.5 transition-colors hover:bg-hover-2 ${
-                  isSelected ? "" : "opacity-55"
-                }`}
-              >
-                <button
-                  type="button"
-                  onClick={() => insertBotMention(bot.nickname || bot.name)}
-                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                >
-                  <AvatarTile url={bot.avatarURL} name={bot.name} accentHex={bot.accentHex} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1">
-                      <span className="truncate text-[12.5px] font-medium text-ink">{bot.name}</span>
-                      {bot.status === "speaking" && (
-                        <span className="size-1.5 shrink-0 rounded-full bg-accent animate-pulse" />
-                      )}
-                    </div>
-                    <div className="truncate text-[12px] text-ink-3">
-                      {bot.moodLabel || bot.roleLabel}
-                    </div>
-                  </div>
-                </button>
-                {onToggleParticipant && bot.id !== "butler" && (
-                  <input
-                    type="checkbox"
-                    checked={isSelected}
-                    onChange={() => onToggleParticipant(bot.id)}
-                    className="size-3.5 shrink-0 accent-accent"
-                    aria-label={bot.name}
-                  />
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {onOpenCreateBot && (
-          <div className="border-t border-line p-2">
-            <button
-              type="button"
-              onClick={onOpenCreateBot}
-              className="flex h-8 w-full items-center justify-center gap-1 rounded-[8px] bg-hover-2 text-[12.5px] font-medium text-ink transition-colors hover:bg-line-strong"
-            >
-              <span>+ {locale === "zh" ? "新建 Bot" : "New Bot"}</span>
-            </button>
-          </div>
-        )}
-      </aside>
+      {/* Dismissible WeChat/Teams-style Members Drawer */}
+      <MeetingMembersDrawer
+        open={membersDrawerOpen}
+        locale={locale}
+        participants={participants}
+        onClose={onCloseMembersDrawer}
+        onMentionBot={insertBotMention}
+        onOpenBotConfig={onOpenBotConfig}
+        onToggleParticipant={onToggleParticipant}
+        onOpenCreateBot={onOpenCreateBot}
+      />
 
       {/* Lightbox preview */}
       {previewSticker && (

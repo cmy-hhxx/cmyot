@@ -2488,6 +2488,9 @@ struct AIBotsSettingsView: View {
         .onChange(of: self.settingsState?.pendingBotID) { _, _ in
             self.consumePendingBotSelection()
         }
+        .onChange(of: self.settingsState?.pendingCustomBotID) { _, _ in
+            self.consumePendingBotSelection()
+        }
         .onChange(of: self.settingsState?.pendingCreateCustomBot) { _, _ in
             if self.settingsState?.pendingCreateCustomBot == true {
                 self.settingsState?.pendingCreateCustomBot = false
@@ -2515,6 +2518,14 @@ struct AIBotsSettingsView: View {
         if self.settingsState?.pendingCreateCustomBot == true {
             self.settingsState?.pendingCreateCustomBot = false
             self.isShowingCreateBot = true
+        }
+        if let customID = self.settingsState?.pendingCustomBotID {
+            self.settingsState?.pendingCustomBotID = nil
+            self.inspectingBot = nil
+            if let found = self.botStore.customBots.first(where: { $0.id == customID }) {
+                self.editingCustomBot = found
+            }
+            return
         }
         guard let pending = self.settingsState?.pendingBotID else { return }
         self.inspectingBot = pending

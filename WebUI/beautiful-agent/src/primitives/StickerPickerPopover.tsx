@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { StickerItem } from "../types";
 
 type StickerPickerPopoverProps = {
@@ -49,6 +49,13 @@ const StickerPickerPopover = memo(function StickerPickerPopover({
   const [tab, setTab] = useState<string>("all");
   const [query, setQuery] = useState("");
   const [onlineSearching, setOnlineSearching] = useState(false);
+  const [visibleLimit, setVisibleLimit] = useState(80);
+  const gridRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setVisibleLimit(80);
+    if (gridRef.current) gridRef.current.scrollTop = 0;
+  }, [tab, query]);
 
   const categories = useMemo(() => {
     const counts = new Map<string, number>();
@@ -59,7 +66,7 @@ const StickerPickerPopover = memo(function StickerPickerPopover({
     return keys.filter((k) => k === "all" || k === "fav" || k === "recent" || (counts.get(k) ?? 0) > 0);
   }, [stickers]);
 
-  const visible = useMemo(() => {
+  const filtered = useMemo(() => {
     const cleanQ = query.trim();
     let list = stickers;
     if (tab === "fav") {
@@ -72,8 +79,10 @@ const StickerPickerPopover = memo(function StickerPickerPopover({
     if (cleanQ) {
       list = list.filter((s) => matchesSticker(s, cleanQ));
     }
-    return list.slice(0, 80);
+    return list;
   }, [stickers, tab, query]);
+
+  const visible = useMemo(() => filtered.slice(0, visibleLimit), [filtered, visibleLimit]);
 
   const triggerOnlineExpand = () => {
     const q = query.trim();
@@ -133,14 +142,26 @@ const StickerPickerPopover = memo(function StickerPickerPopover({
                 active ? "bg-hover-2 text-ink" : "text-ink-3 hover:bg-hover hover:text-ink"
               }`}
             >
-              {CATEGORY_LABELS[key] ?? key}
-            </button>
-          );
-        })}
-      </div>
+                {CATEGORY_LABELS[key] ?? key}
+                {key === "all" && (
+                  <span className="ml-1 text-[11px] opacity-70 tabular-nums">{stickers.length}</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
 
       {/* Grid */}
-      <div className="bui-scroll grid h-[228px] grid-cols-4 gap-1.5 overflow-y-auto p-2">
+      <div
+        ref={gridRef}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          if (el.scrollHeight - el.scrollTop - el.clientHeight < 90 && visibleLimit < filtered.length) {
+            setVisibleLimit((n) => n + 80);
+          }
+        }}
+        className="bui-scroll grid h-[228px] grid-cols-4 gap-1.5 overflow-y-auto p-2"
+      >
         {visible.length === 0 ? (
           <div className="col-span-4 flex flex-col items-center justify-center gap-2 py-8 text-center">
             <span className="text-[12.5px] text-ink-3">

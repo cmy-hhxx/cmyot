@@ -418,6 +418,20 @@ extension Logger {
     }
     
     
+    /// Opens the Bots Settings pane targeting either a built-in `AIBotID` or custom Bot ID.
+    func openBotConfig(idString: String) {
+        
+        self.settingsWindowController.openBot(idString: idString)
+    }
+    
+    
+    /// Opens the General Settings pane where local user profile & avatar are configured.
+    func openUserProfileSettings() {
+        
+        self.settingsWindowController.openUserProfileSettings()
+    }
+    
+    
     /// Opens the Bots Settings pane directly with the custom Bot creation sheet.
     func openCreateCustomBotSettings() {
         

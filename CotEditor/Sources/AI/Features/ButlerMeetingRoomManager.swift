@@ -534,16 +534,16 @@ final class ButlerMeetingRoomManager {
     
     
     func participantRoster(botStore: AIBotStore = .shared) -> [MeetingRoomParticipantPayload] {
-        let _ = botStore.customBotsRevision
+        let avatarRev = botStore.avatarRevision &+ botStore.customBotsRevision
         let todayKey = AnalyticsManager.dateKey()
         let selectedSet = Set(self.activeParticipantIDs)
         let unified = botStore.allUnifiedBots(includeDisabled: false)
         let identityKey = unified.map { bot in
             let status = self.botStatuses[bot.id] ?? "idle"
             let sel = selectedSet.contains(bot.id) ? "1" : "0"
-            return "\(bot.id):\(bot.name):\(bot.emotion.mood.rawValue):\(status):\(sel)"
+            return "\(bot.id):\(bot.name):\(bot.nickname):\(bot.emotion.mood.rawValue):\(status):\(sel)"
         }.joined(separator: "|")
-        let cacheKey = "\(self.revision)|\(self.activeSessionID)|\(todayKey)|\(identityKey)"
+        let cacheKey = "\(self.revision)|\(avatarRev)|\(self.activeSessionID)|\(todayKey)|\(identityKey)"
         let now = Date()
         if self.cachedRosterKey == cacheKey, now.timeIntervalSince(self.cachedRosterAt) < 2.0 {
             return self.cachedRoster
@@ -562,7 +562,7 @@ final class ButlerMeetingRoomManager {
                 status: self.botStatuses[bot.id] ?? "idle",
                 todayBadge: telemetry?.badgeText ?? "",
                 moodLabel: bot.emotion.mood.displayLabel,
-                avatarURL: CotMediaSchemeHandler.botAvatarURLString(botID: bot.id),
+                avatarURL: CotMediaSchemeHandler.botAvatarURLString(botID: bot.id, revision: avatarRev),
                 isSelected: selectedSet.contains(bot.id),
                 isCustom: !bot.isBuiltIn
             )

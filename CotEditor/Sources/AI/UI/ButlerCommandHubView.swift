@@ -616,6 +616,18 @@ struct ButlerCommandHubView: View {
         .onChange(of: self.butler.pendingQuoteExcerpt) { _, _ in
             self.consumeAnyPendingHandoff()
         }
+        .onReceive(NotificationCenter.default.publisher(for: CotStickerLibraryStore.didChangeNotification)) { _ in
+            self.webController.syncState(self.buildHostState(), force: true)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AIBotStore.customBotsDidChangeNotification)) { _ in
+            self.webController.syncState(self.buildHostState(), force: true)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: CotButlerManager.identityDidChangeNotification)) { _ in
+            self.webController.syncState(self.buildHostState(), force: true)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UserProfileManager.activeProfileDidChangeNotification)) { _ in
+            self.webController.syncState(self.buildHostState(), force: true)
+        }
         .task {
             self.reloadModels()
             let targetProfile = self.botStore.resolvedEndpointProfile(for: .butler)
@@ -783,6 +795,11 @@ struct ButlerCommandHubView: View {
         let _ = self.meetingRoom.revision
         let _ = self.stickerStore.revision
         let _ = self.botStore.customBotsRevision
+        let _ = self.botStore.avatarRevision
+        let avatarRev = self.botStore.avatarRevision &+ self.botStore.customBotsRevision
+        let rawUserHash = (self.userProfile.activeProfile.avatarData?.hashValue ?? 0)
+            ^ self.userProfile.activeProfile.id.hashValue
+        let userAvatarRev = Int(bitPattern: UInt(bitPattern: rawUserHash) & 0x7FFF_FFFF)
         let workers = self.proactiveEngine.workers
         let meetingBots = self.meetingRoom.participantRoster(botStore: self.botStore)
         let meetingSessions = self.meetingRoom.sessions.map {
@@ -794,7 +811,16 @@ struct ButlerCommandHubView: View {
                 participantIDs: $0.participantIDs
             )
         }
-        let stickerCatalog: [BeautifulAgentStickerPayload] = self.stickerStore.stickers.prefix(600).map { stk in
+        let refreshedMeetingMessages: [MeetingRoomMessage] = self.meetingRoom.messages.map { msg in
+            guard msg.role == "bot", let bid = msg.botID, !bid.isEmpty else { return msg }
+            var copy = msg
+            if let liveName = self.botStore.unifiedBot(id: bid)?.name, !liveName.isEmpty {
+                copy.botName = liveName
+            }
+            copy.botAvatarURL = CotMediaSchemeHandler.botAvatarURLString(botID: bid, revision: avatarRev)
+            return copy
+        }
+        let stickerCatalog: [BeautifulAgentStickerPayload] = self.stickerStore.stickers.map { stk in
             BeautifulAgentStickerPayload(
                 id: stk.id,
                 url: CotMediaSchemeHandler.stickerURLString(id: stk.id),
@@ -849,12 +875,12 @@ struct ButlerCommandHubView: View {
             backgroundWorkers: workers,
             meetingRoomActive: self.meetingRoom.isActive,
             meetingRoomIsConvening: self.meetingRoom.isConvening,
-            meetingRoomMessages: self.meetingRoom.messages,
+            meetingRoomMessages: refreshedMeetingMessages,
             meetingRoomBots: meetingBots,
             meetingRoomSessions: meetingSessions,
             activeMeetingSessionID: self.meetingRoom.activeSessionID,
             stickerCatalog: stickerCatalog,
-            userAvatarURL: CotMediaSchemeHandler.userAvatarURLString(),
+            userAvatarURL: CotMediaSchemeHandler.userAvatarURLString(revision: userAvatarRev),
             onlineStickerExpansionEnabled: OnlineStickerSearchService.isAutoExpansionEnabled
         )
     }
@@ -1285,6 +1311,20 @@ struct ButlerCommandHubView: View {
                 self.onDismiss()
             }
             (NSApp.delegate as? AppDelegate)?.openCreateCustomBotSettings()
+        }
+        cb.onOpenBotConfig = { targetID in
+            if !self.isDockedPane {
+                self.onDismiss()
+            }
+            if targetID == "user" {
+                (NSApp.delegate as? AppDelegate)?.openUserProfileSettings()
+            } else {
+                (NSApp.delegate as? AppDelegate)?.openBotConfig(idString: targetID)
+            }
+        }
+        cb.onRefreshStickers = {
+            self.stickerStore.syncWithDiskAndDatabase()
+            self.webController.syncState(self.buildHostState(), force: true)
         }
         return cb
     }

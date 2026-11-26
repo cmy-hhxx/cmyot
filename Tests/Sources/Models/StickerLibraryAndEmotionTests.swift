@@ -191,4 +191,49 @@ struct StickerLibraryAndEmotionTests {
         botStore.deleteCustomBot(id: custom.id)
         #expect(botStore.customBots.isEmpty)
     }
+    
+    
+    @Test func squareAvatarFullBleedAndStickerDeletionSync() async throws {
+        // 1. Verify squareAvatar renders full-bleed into all 4 quadrants (regression against 1/4-corner crop bug)
+        let pngData = self.makeTestPNG(color: .systemRed, width: 120, height: 180)
+        let sourceImage = try #require(NSImage(data: pngData))
+        let rendered = try #require(
+            AIGijinkaImageLoader.renderSquareAvatarBitmap(from: sourceImage, cropAnchor: .top, pointSize: 48)
+        )
+        let cg = try #require(rendered.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        let rep = NSBitmapImageRep(cgImage: cg)
+        let topRight = try #require(rep.colorAt(x: cg.width - 6, y: 6)?.usingColorSpace(.sRGB))
+        let bottomLeft = try #require(rep.colorAt(x: 6, y: cg.height - 6)?.usingColorSpace(.sRGB))
+        // Red source must dominate over green/blue in top-right as well as bottom-left (not white!)
+        #expect(topRight.redComponent > 0.6)
+        #expect(topRight.greenComponent < 0.45)
+        #expect(bottomLeft.redComponent > 0.6)
+        
+        // 2. Verify sticker deletion and disk/DB orphan pruning stay in sync
+        let tempDir = self.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let db = CotLocalDatabase(customURL: tempDir.appending(path: "sync.sqlite3"))
+        let store = CotStickerLibraryStore(database: db, stickersDirectory: tempDir.appending(path: "stickers", directoryHint: .isDirectory))
+        
+        let img1URL = tempDir.appending(path: "one.png")
+        let img2URL = tempDir.appending(path: "two.png")
+        try self.makeTestPNG(color: .systemGreen).write(to: img1URL)
+        try self.makeTestPNG(color: .systemPurple).write(to: img2URL)
+        _ = await store.importFiles([img1URL, img2URL], defaultCategory: "custom")
+        #expect(store.stickers.count == 2)
+        
+        let deletedID = store.stickers[0].id
+        store.deleteSticker(id: deletedID)
+        #expect(store.stickers.count == 1)
+        #expect(store.sticker(id: deletedID) == nil)
+        #expect(store.imageData(for: deletedID) == nil)
+        #expect(db.fetchAllStickers().count == 1)
+        
+        // Simulate external file deletion on disk -> syncWithDiskAndDatabase prunes orphaned DB row
+        let remaining = try #require(store.stickers.first)
+        try FileManager.default.removeItem(at: store.fileURL(for: remaining))
+        store.syncWithDiskAndDatabase()
+        #expect(store.stickers.isEmpty)
+        #expect(db.fetchAllStickers().isEmpty)
+    }
 }

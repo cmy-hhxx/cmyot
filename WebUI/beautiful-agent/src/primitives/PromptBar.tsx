@@ -134,6 +134,7 @@ type PromptBarProps = {
   onSelectEffort?: (effort: EffortLevel) => void;
   onOpenSettings: () => void;
   onUploadSticker?: () => void;
+  onRefreshStickers?: () => void;
   onToggleFavoriteSticker?: (id: string) => void;
   onSearchOnlineStickers?: (query: string) => void;
   onSend: (text: string, documents: AttachedDocumentRef[], botId: string | null, stickerId?: string | null) => void;
@@ -162,6 +163,7 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
     onSelectEffort,
     onOpenSettings,
     onUploadSticker,
+    onRefreshStickers,
     onToggleFavoriteSticker,
     onSearchOnlineStickers,
     onSend,
@@ -302,6 +304,12 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
   useEffect(() => {
     if (!modelOpen) setModelHovered(null);
   }, [modelOpen]);
+
+  useEffect(() => {
+    if (selectedSticker && !stickers.some((s) => s.id === selectedSticker.id)) {
+      setSelectedSticker(null);
+    }
+  }, [stickers, selectedSticker]);
 
   // Glimm rainbow shader sweep when switching flagship models
   const makeShader = () => {
@@ -951,7 +959,11 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
                 onClick={() => {
                   setModelOpen(false);
                   setManualAtTab(null);
-                  setStickerOpen((v) => !v);
+                  setStickerOpen((v) => {
+                    const next = !v;
+                    if (next) onRefreshStickers?.();
+                    return next;
+                  });
                 }}
                 className={`flex size-7.5 shrink-0 items-center justify-center rounded-[8px] transition-colors duration-150 ${
                   stickerOpen ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"

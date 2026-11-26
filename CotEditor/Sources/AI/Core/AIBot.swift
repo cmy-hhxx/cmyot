@@ -500,52 +500,13 @@ final class AIGijinkaImageLoader {
             return cached
         }
         guard let source = self.image(for: artwork) else { return nil }
-        let srcSize = source.size
-        guard srcSize.width > 1, srcSize.height > 1 else { return nil }
-        
-        let aspect = srcSize.width / srcSize.height
-        let cropSide: CGFloat
-        let originX: CGFloat
-        let originY: CGFloat
-        if aspect > 0.92 {
-            // Near-square illustration: center-crop full width/height symmetrically
-            cropSide = min(srcSize.width, srcSize.height)
-            originX = max(0, (srcSize.width - cropSide) * 0.5)
-            originY = max(0, (srcSize.height - cropSide) * 0.5)
-        } else {
-            // Vertical standing portrait: unflipped AppKit coords have y = height at top of head
-            cropSide = min(srcSize.width, srcSize.height * 0.86)
-            switch artwork.cropAnchor {
-                case .center:
-                    originX = max(0, (srcSize.width - cropSide) * 0.5)
-                    originY = max(0, (srcSize.height - cropSide) * 0.5)
-                case .top, .leading:
-                    originX = artwork.cropAnchor == .leading
-                        ? max(0, (srcSize.width - cropSide) * 0.35)
-                        : max(0, (srcSize.width - cropSide) * 0.5)
-                    let topMargin = srcSize.height * 0.02
-                    originY = max(0, srcSize.height - cropSide - topMargin)
-            }
+        guard let bitmap = Self.renderSquareAvatarBitmap(
+            from: source,
+            cropAnchor: artwork.cropAnchor,
+            pointSize: CGFloat(sideBucket)
+        ) else {
+            return source
         }
-        let srcRect = NSRect(x: originX, y: originY, width: cropSide, height: cropSide)
-        let pixelSide = max(64, sideBucket * 2)
-        let targetPoints = NSSize(width: CGFloat(sideBucket), height: CGFloat(sideBucket))
-        
-        let bitmap = self.rasterize(
-            pixelWidth: pixelSide,
-            pixelHeight: pixelSide,
-            pointSize: targetPoints
-        ) { rect in
-            NSColor(calibratedRed: 0.965, green: 0.969, blue: 0.980, alpha: 1.0).setFill()
-            rect.fill()
-            source.draw(
-                in: rect,
-                from: srcRect,
-                operation: .sourceOver,
-                fraction: 1.0
-            )
-        }
-        guard let bitmap else { return source }
         self.squareAvatars[cacheKey] = bitmap
         self.squareAvatarOrder.removeAll { $0 == cacheKey }
         self.squareAvatarOrder.append(cacheKey)
@@ -554,6 +515,74 @@ final class AIGijinkaImageLoader {
             self.squareAvatars.removeValue(forKey: evicted)
         }
         return bitmap
+    }
+    
+    
+    /// Thread-safe, pure `CGImage`/`CGContext` isotropic 1:1 crop & Retina downsampler for square avatars.
+    nonisolated static func renderSquareAvatarBitmap(
+        from source: NSImage,
+        cropAnchor: AIGijinkaCropAnchor = .top,
+        pointSize: CGFloat = 122
+    ) -> NSImage? {
+        guard let cg = source.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              cg.width > 2,
+              cg.height > 2
+        else { return nil }
+        
+        let pxW = CGFloat(cg.width)
+        let pxH = CGFloat(cg.height)
+        let sidePts = max(32, pointSize.rounded())
+        let aspect = pxW / pxH
+        
+        let cropSide: CGFloat
+        let cropX: CGFloat
+        let cropY: CGFloat
+        // CGImage.cropping(to:) uses top-left pixel origin (y = 0 is top of character head).
+        if aspect > 0.92 {
+            cropSide = min(pxW, pxH)
+            cropX = max(0, ((pxW - cropSide) * 0.5).rounded())
+            cropY = max(0, ((pxH - cropSide) * 0.5).rounded())
+        } else {
+            cropSide = min(pxW, (pxH * 0.86).rounded())
+            switch cropAnchor {
+                case .leading:
+                    cropX = max(0, ((pxW - cropSide) * 0.35).rounded())
+                    cropY = max(0, (pxH * 0.02).rounded())
+                case .top:
+                    cropX = max(0, ((pxW - cropSide) * 0.5).rounded())
+                    cropY = max(0, (pxH * 0.02).rounded())
+                case .center:
+                    cropX = max(0, ((pxW - cropSide) * 0.5).rounded())
+                    cropY = max(0, ((pxH - cropSide) * 0.25).rounded())
+            }
+        }
+        
+        let cropRect = CGRect(x: cropX, y: cropY, width: max(1, cropSide), height: max(1, cropSide)).integral
+        let croppedCG = cg.cropping(to: cropRect) ?? cg
+        
+        let outPx = max(64, Int(sidePts * 2))
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil,
+            width: outPx,
+            height: outPx,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        
+        ctx.interpolationQuality = .high
+        ctx.setFillColor(red: 0.965, green: 0.969, blue: 0.980, alpha: 1.0)
+        ctx.fill(CGRect(x: 0, y: 0, width: outPx, height: outPx))
+        ctx.draw(croppedCG, in: CGRect(x: 0, y: 0, width: outPx, height: outPx))
+        
+        guard let outCG = ctx.makeImage() else { return nil }
+        let rep = NSBitmapImageRep(cgImage: outCG)
+        rep.size = NSSize(width: sidePts, height: sidePts)
+        let outImage = NSImage(size: NSSize(width: sidePts, height: sidePts))
+        outImage.addRepresentation(rep)
+        return outImage
     }
     
     
@@ -715,6 +744,9 @@ final class AIGijinkaImageLoader {
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = context
         context.imageInterpolation = .high
+        let scaleX = CGFloat(pixelWidth) / max(1, pointSize.width)
+        let scaleY = CGFloat(pixelHeight) / max(1, pointSize.height)
+        context.cgContext.scaleBy(x: scaleX, y: scaleY)
         draw(NSRect(origin: .zero, size: pointSize))
         NSGraphicsContext.restoreGraphicsState()
         

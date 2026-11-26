@@ -740,7 +740,7 @@ const SidebarPrimaryHeader = memo(function SidebarPrimaryHeader(props: {
           </span>
         </button>
 
-        {onOpenMeetingRoom && (
+        {onOpenMeetingRoom && collapsed && (
           <button
             data-row
             type="button"

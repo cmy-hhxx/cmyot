@@ -133,6 +133,7 @@ final class SidebarSettingsState {
     
     var selectedItem: SidebarSettingsItem = .general
     var pendingBotID: AIBotID? = nil
+    var pendingCustomBotID: String? = nil
     var pendingCreateCustomBot: Bool = false
 }
 
@@ -207,8 +208,25 @@ final class SidebarSettingsWindowController: NSWindowController {
     
     
     func openBot(_ botID: AIBotID?) {
+        self.state.pendingCustomBotID = nil
         self.state.pendingBotID = botID
         self.openItem(.bots)
+    }
+    
+    
+    func openBot(idString: String) {
+        if let builtIn = AIBotID(rawValue: idString) {
+            self.openBot(builtIn)
+        } else {
+            self.state.pendingBotID = nil
+            self.state.pendingCustomBotID = idString
+            self.openItem(.bots)
+        }
+    }
+    
+    
+    func openUserProfileSettings() {
+        self.openItem(.general)
     }
     
     

@@ -35,13 +35,13 @@ final class CotMediaSchemeHandler: NSObject, WKURLSchemeHandler {
     }
     
     
-    static func botAvatarURLString(botID: String) -> String {
-        "\(Self.scheme)://avatar/bot/\(botID)"
+    static func botAvatarURLString(botID: String, revision: Int = 0) -> String {
+        "\(Self.scheme)://avatar/bot/\(botID)?v=\(revision)"
     }
     
     
-    static func userAvatarURLString() -> String {
-        "\(Self.scheme)://avatar/user"
+    static func userAvatarURLString(revision: Int = 0) -> String {
+        "\(Self.scheme)://avatar/user?v=\(revision)"
     }
     
     
@@ -61,7 +61,7 @@ final class CotMediaSchemeHandler: NSObject, WKURLSchemeHandler {
             }
             let headers = [
                 "Content-Type": payload.mimeType,
-                "Cache-Control": host == "sticker" ? "max-age=31536000" : "max-age=60",
+                "Cache-Control": "no-cache",
             ]
             if let response = HTTPURLResponse(
                 url: url,

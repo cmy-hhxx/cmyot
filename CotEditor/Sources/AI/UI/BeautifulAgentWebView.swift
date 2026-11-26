@@ -331,6 +331,8 @@ struct BeautifulAgentWebActionCallbacks {
     var onToggleFavoriteSticker: ((String) -> Void)? = nil
     var onSearchOnlineStickers: ((String) -> Void)? = nil
     var onOpenCreateBotSheet: (() -> Void)? = nil
+    var onOpenBotConfig: ((String) -> Void)? = nil
+    var onRefreshStickers: (() -> Void)? = nil
 }
 
 
@@ -885,6 +887,14 @@ struct BeautifulAgentWebView: NSViewRepresentable, Equatable {
                     
                 case "openCreateBotSheet":
                     self.callbacks.onOpenCreateBotSheet?()
+                    
+                case "openBotConfig":
+                    if let botID = dict["botId"] as? String, !botID.isEmpty {
+                        self.callbacks.onOpenBotConfig?(botID)
+                    }
+                    
+                case "refreshStickers":
+                    self.callbacks.onRefreshStickers?()
                     
                 default:
                     break

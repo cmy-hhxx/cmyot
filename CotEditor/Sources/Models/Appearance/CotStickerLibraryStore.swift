@@ -74,10 +74,39 @@ final class CotStickerLibraryStore {
     
     
     func reloadFromDatabase() {
-        let items = self.database.fetchAllStickers()
-        self.stickers = items
-        self.rebuildIndexes()
-        self.revision &+= 1
+        self.syncWithDiskAndDatabase(forceRevisionBump: true)
+    }
+    
+    
+    /// Reconciles SQLite sticker rows with files currently on disk, pruning any orphaned
+    /// rows whose image file was deleted externally or removed during cleanup.
+    func syncWithDiskAndDatabase(forceRevisionBump: Bool = false) {
+        let fetched = self.database.fetchAllStickers()
+        let fm = FileManager.default
+        var valid: [StickerAsset] = []
+        valid.reserveCapacity(fetched.count)
+        var prunedAny = false
+        for asset in fetched {
+            let path = self.fileURL(for: asset).path(percentEncoded: false)
+            if fm.fileExists(atPath: path) {
+                valid.append(asset)
+            } else {
+                self.database.deleteSticker(id: asset.id)
+                prunedAny = true
+            }
+        }
+        let changed = prunedAny || valid != self.stickers
+        if changed {
+            self.stickers = valid
+            self.rebuildIndexes()
+            self.thumbnailCache.removeAllObjects()
+            self.revision &+= 1
+            NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+        } else if forceRevisionBump {
+            self.stickers = valid
+            self.rebuildIndexes()
+            self.revision &+= 1
+        }
     }
     
     
@@ -231,6 +260,7 @@ final class CotStickerLibraryStore {
         self.database.deleteSticker(id: id)
         self.stickers.removeAll { $0.id == id }
         self.rebuildIndexes()
+        self.thumbnailCache.removeAllObjects()
         self.revision &+= 1
         NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
     }
