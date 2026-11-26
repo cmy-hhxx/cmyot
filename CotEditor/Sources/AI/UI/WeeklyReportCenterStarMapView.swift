@@ -171,14 +171,12 @@ struct WeeklyReportCenterView: View {
                         }
                     },
                     onToggleCluster: { clusterID in
-                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.22)) {
-                            if self.state.collapsedClusterIDs.contains(clusterID) {
-                                self.state.collapsedClusterIDs.remove(clusterID)
-                            } else {
-                                self.state.collapsedClusterIDs.insert(clusterID)
-                            }
-                            self.focusedClusterID = self.focusedClusterID == clusterID ? nil : clusterID
+                        if self.state.collapsedClusterIDs.contains(clusterID) {
+                            self.state.collapsedClusterIDs.remove(clusterID)
+                        } else {
+                            self.state.collapsedClusterIDs.insert(clusterID)
                         }
+                        self.focusedClusterID = self.focusedClusterID == clusterID ? nil : clusterID
                     },
                     clusterContextMenu: { cluster in
                         self.clusterContextMenu(cluster: cluster)
@@ -235,9 +233,7 @@ struct WeeklyReportCenterView: View {
     @ViewBuilder
     private func clusterContextMenu(cluster: StarMapClusterNode) -> some View {
         Button(self.focusedClusterID == cluster.id ? "取消月度聚焦" : "聚焦此月星团") {
-            withAnimation(.easeOut(duration: 0.16)) {
-                self.focusedClusterID = self.focusedClusterID == cluster.id ? nil : cluster.id
-            }
+            self.focusedClusterID = self.focusedClusterID == cluster.id ? nil : cluster.id
         }
         Button(self.state.selectedMonth == cluster.id ? "显示全部月份" : "仅查看「\(cluster.title)」") {
             self.state.selectedMonth = self.state.selectedMonth == cluster.id ? nil : cluster.id
@@ -530,7 +526,7 @@ struct WeeklyReportCenterView: View {
     // MARK: Top Bar
     
     private func topBar(tokens: StudioColorTokens, clusters: [StarMapClusterNode]) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             if let onDismiss = self.onDismiss {
                 Button(action: onDismiss) {
                     HStack(spacing: 4) {
@@ -542,8 +538,8 @@ struct WeeklyReportCenterView: View {
                     .foregroundStyle(tokens.primaryInk.opacity(0.84))
                     .padding(.horizontal, 10)
                     .frame(height: 28)
-                    .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .background(tokens.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .pointerStyle(.link)
@@ -559,7 +555,7 @@ struct WeeklyReportCenterView: View {
             self.trailingTopBarButtons(tokens: tokens)
         }
         .padding(.horizontal, 14)
-        .frame(height: 46)
+        .frame(height: 48)
         .background(tokens.canvasTop)
     }
     
@@ -599,7 +595,7 @@ struct WeeklyReportCenterView: View {
             .frame(height: 28)
             .background(
                 self.state.selectedMonth == nil ? tokens.inset : tokens.accent.opacity(0.12),
-                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
             )
         }
         .menuStyle(.borderlessButton)
@@ -636,7 +632,7 @@ struct WeeklyReportCenterView: View {
             .frame(height: 28)
             .background(
                 self.state.timeHorizon == .all ? tokens.inset : tokens.accent.opacity(0.12),
-                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
             )
         }
         .menuStyle(.borderlessButton)
@@ -660,13 +656,13 @@ struct WeeklyReportCenterView: View {
                     Image(systemName: allCollapsed ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
                         .font(.system(size: 9.5, weight: .semibold))
                     Text(allCollapsed ? "展开全部" : "全部折叠")
-                        .font(.system(size: 11.5, weight: .medium))
+                        .font(.system(size: 12, weight: .medium))
                 }
                 .foregroundStyle(tokens.primaryInk.opacity(0.80))
                 .padding(.horizontal, 9)
                 .frame(height: 28)
-                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .buttonStyle(.plain)
             .pointerStyle(.link)
@@ -676,51 +672,28 @@ struct WeeklyReportCenterView: View {
     
     private func searchBar(tokens: StudioColorTokens) -> some View {
         let searchTerms = StarMapSearchEngine.parseTerms(self.state.searchText)
-        return HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(searchTerms.isEmpty ? tokens.primaryInk.opacity(0.45) : tokens.accent)
-            TextField("搜索周报", text: self.$searchDraft)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12.5))
-                .focused(self.$isSearchFocused)
-                .onSubmit {
-                    self.searchDebounceTask?.cancel()
-                    let query = self.searchDraft
-                    self.unfocusSearchField()
-                    self.searchDebounceTask = Task {
-                        guard await self.state.applySearch(query), let first = self.state.searchHits.first else { return }
-                        self.state.selectedReportID = first.id
-                        self.panRequestToken &+= 1
-                    }
+        return StarMapSearchField(
+            placeholder: "搜索周报",
+            text: self.$searchDraft,
+            hitCount: self.state.searchHits.count,
+            showCount: !searchTerms.isEmpty,
+            isFocused: self.$isSearchFocused,
+            tokens: tokens,
+            onSubmit: {
+                self.searchDebounceTask?.cancel()
+                let query = self.searchDraft
+                self.unfocusSearchField()
+                self.searchDebounceTask = Task {
+                    guard await self.state.applySearch(query), let first = self.state.searchHits.first else { return }
+                    self.state.selectedReportID = first.id
+                    self.panRequestToken &+= 1
                 }
-            if !searchTerms.isEmpty {
-                Text("\(self.state.searchHits.count) 篇")
-                    .font(.system(size: 10.5, weight: .semibold, design: .rounded).monospacedDigit())
-                    .foregroundStyle(tokens.accentText)
-                    .padding(.horizontal, 6)
-                    .frame(height: 18)
-                    .background(tokens.accent.opacity(0.13), in: Capsule())
+            },
+            onClear: {
+                self.searchDebounceTask?.cancel()
+                self.searchDraft = ""
+                self.state.searchText = ""
             }
-            if !self.searchDraft.isEmpty {
-                Button {
-                    self.searchDebounceTask?.cancel()
-                    self.searchDraft = ""
-                    self.state.searchText = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(tokens.primaryInk.opacity(0.42))
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 10)
-        .frame(minWidth: 180, maxWidth: 260, minHeight: 28, maxHeight: 28)
-        .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(searchTerms.isEmpty ? tokens.hairline : tokens.accent.opacity(0.45), lineWidth: 0.85)
         )
     }
     
@@ -735,8 +708,8 @@ struct WeeklyReportCenterView: View {
                 .foregroundStyle(tokens.primaryInk.opacity(0.84))
                 .padding(.horizontal, 10)
                 .frame(height: 28)
-                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
         .pointerStyle(.link)
@@ -750,7 +723,7 @@ struct WeeklyReportCenterView: View {
                 .foregroundStyle(tokens.primaryInk.opacity(0.84))
                 .padding(.horizontal, 10)
                 .frame(height: 28)
-                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
@@ -770,8 +743,8 @@ struct WeeklyReportCenterView: View {
             .foregroundStyle(tokens.onAccentInk)
             .padding(.horizontal, 11)
             .frame(height: 28)
-            .background(tokens.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .background(tokens.accent, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
         .pointerStyle(.link)
@@ -891,7 +864,7 @@ struct WeeklyReportCenterView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .frame(maxWidth: 760)
+        .frame(maxWidth: 680)
         .background(tokens.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(tokens.hairlineStrong, lineWidth: 0.8))
         .shadow(color: tokens.cardShadow, radius: 10, y: 4)

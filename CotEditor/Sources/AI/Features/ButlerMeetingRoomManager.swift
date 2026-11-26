@@ -67,6 +67,7 @@ nonisolated struct MeetingBotDailyTelemetry: Equatable, Sendable {
     let todayTokens: Int
     let badgeText: String
     let evidenceSummary: String
+    let hasTodayActivity: Bool
 }
 
 
@@ -127,7 +128,8 @@ nonisolated enum MeetingRoomRouter {
         explicitBotID: AIBotID? = nil,
         butlerAliases: [String] = ["总管", "Butler"],
         availableBots: [AIBotID],
-        activeTodayBots: Set<AIBotID> = []
+        activeTodayBots: Set<AIBotID> = [],
+        customBotAliases: [AIBotID: [String]] = [:]
     ) -> MeetingDispatchPlan {
         let trimmed = rawPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = trimmed.lowercased()
@@ -151,7 +153,7 @@ nonisolated enum MeetingRoomRouter {
         }
         
         for botID in availableBots where botID != .butler {
-            let tokens = Self.mentionTokens(for: botID)
+            let tokens = Self.mentionTokens(for: botID, extraAliases: customBotAliases[botID] ?? [])
             if tokens.contains(where: { lower.contains("@\($0)") }) {
                 if !mentioned.contains(botID) {
                     mentioned.append(botID)
@@ -164,7 +166,8 @@ nonisolated enum MeetingRoomRouter {
         if hasGovernanceCue || mentioned.contains(.butler) {
             for botID in availableBots where botID != .butler {
                 if namedSubordinates.contains(botID) { continue }
-                let names = [botID.displayName.lowercased(), botID.defaultNickname.lowercased()]
+                let extra = (customBotAliases[botID] ?? []).map { $0.lowercased() }
+                let names = [botID.displayName.lowercased(), botID.defaultNickname.lowercased()] + extra
                 if names.contains(where: { $0.count >= 2 && lower.contains($0) }) {
                     namedSubordinates.append(botID)
                 }
@@ -199,7 +202,7 @@ nonisolated enum MeetingRoomRouter {
         return MeetingDispatchPlan(
             mode: .allHandsStandup(participants: defaultStandupParticipants),
             cleanedPrompt: trimmed.isEmpty
-                ? AppLanguage.text("请各位汇报今天的工作、对我的印象，以及明天的建议。", en: "Share today's report, impression, and tomorrow's focus.")
+                ? AppLanguage.text("聊聊今天各自手里有什么新进展。", en: "Share anything new on your plate today.")
                 : trimmed,
             mentionedBots: []
         )
@@ -225,14 +228,17 @@ nonisolated enum MeetingRoomRouter {
     }
     
     
-    private static func mentionTokens(for botID: AIBotID) -> [String] {
+    private static func mentionTokens(for botID: AIBotID, extraAliases: [String] = []) -> [String] {
         let rawHandle = botID.handle.hasPrefix("@") ? String(botID.handle.dropFirst()) : botID.handle
+        let extras = extraAliases
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
         return [
             rawHandle.lowercased(),
             botID.displayName.lowercased(),
             botID.defaultNickname.lowercased(),
             botID.rawValue.lowercased(),
-        ]
+        ] + extras
     }
 }
 
@@ -253,6 +259,9 @@ final class ButlerMeetingRoomManager {
     private let database: CotLocalDatabase
     @ObservationIgnored private var activeTask: Task<Void, Never>?
     @ObservationIgnored private var activeGeneration: UInt64 = 0
+    @ObservationIgnored private var cachedRosterKey: String?
+    @ObservationIgnored private var cachedRosterAt: Date = .distantPast
+    @ObservationIgnored private var cachedRoster: [MeetingRoomParticipantPayload] = []
     
     private static let encoder = JSONEncoder()
     private static let decoder = JSONDecoder()
@@ -302,11 +311,24 @@ final class ButlerMeetingRoomManager {
     
     /// Builds the live participant roster shown in the Meeting Room right-side rail.
     func participantRoster(botStore: AIBotStore = .shared) -> [MeetingRoomParticipantPayload] {
-        let telemetryMap = self.collectDailyTelemetryByBot()
+        let todayKey = AnalyticsManager.dateKey()
         let orderedBots: [AIBotID] = [.butler] + AIBotID.allCases.filter {
             $0 != .butler && botStore.config(for: $0).isEnabled
         }
-        return orderedBots.map { botID in
+        let identityKey = orderedBots.map { botID in
+            let name = (botID == .butler) ? CotButlerManager.shared.name : botStore.resolvedName(for: botID)
+            let nickname = (botID == .butler) ? CotButlerManager.shared.nickname : botStore.resolvedNickname(for: botID)
+            let status = self.botStatuses[botID.rawValue] ?? "idle"
+            return "\(botID.rawValue):\(name):\(nickname):\(status)"
+        }.joined(separator: "|")
+        let cacheKey = "\(self.revision)|\(todayKey)|\(identityKey)"
+        let now = Date()
+        if self.cachedRosterKey == cacheKey, now.timeIntervalSince(self.cachedRosterAt) < 3.0 {
+            return self.cachedRoster
+        }
+        
+        let telemetryMap = self.collectDailyTelemetryByBot()
+        let roster = orderedBots.map { botID in
             let name = (botID == .butler) ? CotButlerManager.shared.name : botStore.resolvedName(for: botID)
             let nickname = (botID == .butler) ? CotButlerManager.shared.nickname : botStore.resolvedNickname(for: botID)
             let telemetry = telemetryMap[botID]
@@ -323,6 +345,18 @@ final class ButlerMeetingRoomManager {
                 todayBadge: telemetry?.badgeText ?? ""
             )
         }
+        self.cachedRosterKey = cacheKey
+        self.cachedRosterAt = now
+        self.cachedRoster = roster
+        return roster
+    }
+    
+    
+    /// Appends a pre-built message (e.g. from the daily report scheduler) and persists.
+    func appendExternalMessage(_ message: MeetingRoomMessage) {
+        self.messages.append(message)
+        self.persistMessages()
+        self.revision &+= 1
     }
     
     
@@ -345,13 +379,21 @@ final class ButlerMeetingRoomManager {
         let telemetryMap = self.collectDailyTelemetryByBot()
         let activeTodayBots = Set(telemetryMap.values.filter { $0.todayCallCount > 0 }.map(\.botID))
         let explicitBot = explicitBotID.flatMap(AIBotID.init(rawValue:))
+        var customBotAliases: [AIBotID: [String]] = [:]
+        for botID in enabledBots where botID != .butler {
+            customBotAliases[botID] = [
+                botStore.resolvedName(for: botID),
+                botStore.resolvedNickname(for: botID),
+            ]
+        }
         
         let plan = MeetingRoomRouter.parsePrompt(
             trimmed,
             explicitBotID: explicitBot,
             butlerAliases: [CotButlerManager.shared.name, CotButlerManager.shared.nickname, "总管", "Butler"],
             availableBots: enabledBots,
-            activeTodayBots: activeTodayBots
+            activeTodayBots: activeTodayBots,
+            customBotAliases: customBotAliases
         )
         
         let userMsg = MeetingRoomMessage(
@@ -412,6 +454,8 @@ final class ButlerMeetingRoomManager {
                         telemetry: telemetryMap[botID],
                         shouldRefresh: false,
                         delegatedFromButler: false,
+                        isMentioned: false,
+                        isButlerSynthesis: false,
                         subordinateReports: [],
                         generation: generation,
                         allowRemoteAI: allowRemoteAI,
@@ -428,6 +472,8 @@ final class ButlerMeetingRoomManager {
                     telemetry: telemetryMap[.butler],
                     shouldRefresh: false,
                     delegatedFromButler: false,
+                    isMentioned: true,
+                    isButlerSynthesis: true,
                     subordinateReports: reports,
                     generation: generation,
                     allowRemoteAI: allowRemoteAI,
@@ -443,6 +489,8 @@ final class ButlerMeetingRoomManager {
                         telemetry: telemetryMap[botID],
                         shouldRefresh: shouldRefresh,
                         delegatedFromButler: false,
+                        isMentioned: true,
+                        isButlerSynthesis: false,
                         subordinateReports: [],
                         generation: generation,
                         allowRemoteAI: allowRemoteAI,
@@ -451,16 +499,19 @@ final class ButlerMeetingRoomManager {
                 }
                 
             case .butlerGoverned(let subordinates, let shouldRefresh):
-                // Chief Butler governs subordinate Bots first, then delivers one executive synthesis back to user.
                 var reports: [(botID: AIBotID, name: String, text: String)] = []
+                let explicitlyTargeted = subordinates.count <= 3
                 for botID in subordinates {
                     guard self.activeGeneration == generation, !Task.isCancelled else { return }
+                    let mustReply = plan.mentionedBots.contains(botID) || explicitlyTargeted
                     let report = await self.runBotReportTurn(
                         botID: botID,
                         userPrompt: plan.cleanedPrompt,
                         telemetry: telemetryMap[botID],
                         shouldRefresh: shouldRefresh,
                         delegatedFromButler: true,
+                        isMentioned: mustReply,
+                        isButlerSynthesis: false,
                         subordinateReports: [],
                         generation: generation,
                         allowRemoteAI: allowRemoteAI,
@@ -477,6 +528,8 @@ final class ButlerMeetingRoomManager {
                     telemetry: telemetryMap[.butler],
                     shouldRefresh: shouldRefresh,
                     delegatedFromButler: false,
+                    isMentioned: true,
+                    isButlerSynthesis: true,
                     subordinateReports: reports,
                     generation: generation,
                     allowRemoteAI: allowRemoteAI,
@@ -492,6 +545,8 @@ final class ButlerMeetingRoomManager {
         telemetry: MeetingBotDailyTelemetry?,
         shouldRefresh: Bool,
         delegatedFromButler: Bool,
+        isMentioned: Bool,
+        isButlerSynthesis: Bool,
         subordinateReports: [(botID: AIBotID, name: String, text: String)],
         generation: UInt64,
         allowRemoteAI: Bool,
@@ -499,16 +554,15 @@ final class ButlerMeetingRoomManager {
     ) async -> (botID: AIBotID, name: String, text: String)? {
         let botName = (botID == .butler) ? CotButlerManager.shared.name : botStore.resolvedName(for: botID)
         let roleLabel: String = if botID == .butler {
-            subordinateReports.isEmpty
-                ? AppLanguage.text("总管汇报", en: "Chief")
-                : AppLanguage.text("总管统筹总结", en: "Chief Summary")
+            isButlerSynthesis
+                ? AppLanguage.text("总管收口", en: "Chief")
+                : AppLanguage.text("总管", en: "Chief")
         } else if delegatedFromButler {
             AppLanguage.text("总管调度", en: "Dispatched")
         } else {
             botID.defaultNickname
         }
         
-        let msgID = "mr-bot-\(botID.rawValue)-\(UUID().uuidString)"
         var receipts: [String] = []
         if shouldRefresh {
             if let receipt = self.executeBotRefreshAction(for: botID) {
@@ -517,6 +571,15 @@ final class ButlerMeetingRoomManager {
         }
         
         let refreshedTelemetry = shouldRefresh ? (self.collectDailyTelemetryByBot()[botID] ?? telemetry) : telemetry
+        let config = botStore.resolvedConfiguration(for: botID)
+        let canCallRemote = allowRemoteAI && AIService.shared.isConfigured && !config.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        
+        // In offline mode, bots that were not @-mentioned and have no activity/receipts quietly stay silent.
+        if !canCallRemote && !isMentioned && !isButlerSynthesis && !(refreshedTelemetry?.hasTodayActivity ?? false) && receipts.isEmpty {
+            return nil
+        }
+        
+        let msgID = "mr-bot-\(botID.rawValue)-\(UUID().uuidString)"
         let placeholder = MeetingRoomMessage(
             id: msgID,
             role: "bot",
@@ -540,12 +603,23 @@ final class ButlerMeetingRoomManager {
             botName: botName,
             userPrompt: userPrompt,
             telemetry: refreshedTelemetry,
+            isMentioned: isMentioned,
+            isButlerSynthesis: isButlerSynthesis,
             subordinateReports: subordinateReports,
             receipts: receipts,
+            placeholderID: msgID,
             allowRemoteAI: allowRemoteAI,
             botStore: botStore
         )
         guard self.activeGeneration == generation else { return nil }
+        
+        if !isMentioned && !isButlerSynthesis && MeetingRoomPersona.isPass(finalText) {
+            self.messages.removeAll { $0.id == msgID }
+            self.botStatuses[botID.rawValue] = "idle"
+            self.persistMessages()
+            self.revision &+= 1
+            return nil
+        }
         
         if let idx = self.messages.firstIndex(where: { $0.id == msgID }) {
             self.messages[idx].text = finalText
@@ -563,13 +637,19 @@ final class ButlerMeetingRoomManager {
         botName: String,
         userPrompt: String,
         telemetry: MeetingBotDailyTelemetry?,
+        isMentioned: Bool,
+        isButlerSynthesis: Bool,
         subordinateReports: [(botID: AIBotID, name: String, text: String)],
         receipts: [String],
+        placeholderID: String,
         allowRemoteAI: Bool,
         botStore: AIBotStore
     ) async -> String {
         let evidence = telemetry?.evidenceSummary ?? AppLanguage.text("今日暂无额外记录。", en: "No additional records today.")
-        let config = botStore.resolvedConfiguration(for: botID)
+        var config = botStore.resolvedConfiguration(for: botID)
+        if botStore.config(for: botID).temperature == nil {
+            config.temperature = 0.85
+        }
         let canCallRemote = allowRemoteAI && AIService.shared.isConfigured && !config.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         
         guard canCallRemote else {
@@ -577,37 +657,55 @@ final class ButlerMeetingRoomManager {
                 botID: botID,
                 botName: botName,
                 evidence: evidence,
+                isButlerSynthesis: isButlerSynthesis,
                 subordinateReports: subordinateReports,
                 receipts: receipts
             )
         }
         
-        let systemPrompt = Self.buildBotSystemPrompt(
-            botID: botID,
-            botName: botName,
-            hasSubordinateReports: !subordinateReports.isEmpty
+        let systemPrompt = MeetingRoomPersona.systemPrompt(
+            bot: botID,
+            name: botName,
+            isMentioned: isMentioned,
+            isButlerSynthesis: isButlerSynthesis,
+            customPersona: botStore.config(for: botID).customPersona
         )
         
+        let recentChat = self.recentGroupChatContext(excludingMessageID: placeholderID, limit: 10)
         var contextLines: [String] = [
-            "【用户议题】\(userPrompt)",
+            "【用户刚说】\(userPrompt)",
             "【你的真实本地数据】\n\(evidence)",
         ]
+        if !recentChat.isEmpty {
+            contextLines.append("【群聊最近消息】\n\(recentChat)")
+        }
         if !receipts.isEmpty {
-            contextLines.append("【刚完成的更新动作】\(receipts.joined(separator: "；"))")
+            contextLines.append("【刚完成的动作】\(receipts.joined(separator: "；"))")
         }
         if !subordinateReports.isEmpty {
-            let merged = subordinateReports.map { "### \($0.name)\n\($0.text)" }.joined(separator: "\n\n")
-            contextLines.append("【各 Bot 刚刚向你/用户提交的汇报】\n\(merged)")
+            let merged = subordinateReports.map { "\($0.name)：\($0.text)" }.joined(separator: "\n")
+            contextLines.append("【刚才有发言的同事】\n\(merged)")
         }
+        let userContext = contextLines.joined(separator: "\n\n")
         
         do {
             let raw = try await AIService.shared.chat(
-                [.system(systemPrompt), .user(contextLines.joined(separator: "\n\n"))],
+                [.system(systemPrompt), .user(userContext)],
                 configuration: config,
                 analyticsFeature: "meeting_\(botID.rawValue)"
             )
             let clean = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !clean.isEmpty {
+            if isMentioned && MeetingRoomPersona.isPass(clean) {
+                let retryRaw = try await AIService.shared.chat(
+                    [.system(systemPrompt), .user(userContext + "\n\n注意：用户明确点名了你，必须用你自己的口吻给出自然答复，禁止回复 [PASS]。")],
+                    configuration: config,
+                    analyticsFeature: "meeting_\(botID.rawValue)"
+                )
+                let retryClean = retryRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !MeetingRoomPersona.isPass(retryClean) {
+                    return retryClean
+                }
+            } else if !clean.isEmpty {
                 return clean
             }
         } catch {
@@ -618,31 +716,22 @@ final class ButlerMeetingRoomManager {
             botID: botID,
             botName: botName,
             evidence: evidence,
+            isButlerSynthesis: isButlerSynthesis,
             subordinateReports: subordinateReports,
             receipts: receipts
         )
     }
     
     
-    private static func buildBotSystemPrompt(botID: AIBotID, botName: String, hasSubordinateReports: Bool) -> String {
-        if botID == .butler && hasSubordinateReports {
-            return """
-            你是用户的首席总管「\(botName)」，正在主持今天的复盘会议室。
-            各专业 Bot 已分别向用户完成汇报。请你直接面向用户做最终统筹收口：
-            1. **今日总览**：用 2-3 条精炼归纳用户今天实际推进的核心事项；
-            2. **明日重点**：给出 2-3 条具体可执行建议；
-            3. **总管调度**：说明你已替用户拉齐哪些 Bot 状态，以及接下来可由你统一跟进的事项。
-            要求：只基于真实数据，绝不编造；语言自然克制、结构清晰，总字数控制在 220 字以内。
-            """
-        }
-        return """
-        你是工作区中的专业助手「\(botName)」（职责：\(botID.tagline)），正在会议室里直接向用户本人做简短站会汇报。
-        规则：
-        - 只向用户本人汇报，不要与其他 Bot 对话，不要开场寒暄；
-        - 紧扣你的真实本地数据，按「今日事项 / 对你的观察 / 明日建议」用 2-3 条简短要点汇报；
-        - 严禁编造数据中不存在的事实；若某项今日无记录，如实简短说明即可；
-        - 总字数控制在 120 字以内，克制干练。
-        """
+    private func recentGroupChatContext(excludingMessageID: String, limit: Int) -> String {
+        let history = self.messages
+            .filter { $0.id != excludingMessageID && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .suffix(limit)
+        return history.map { msg in
+            let speaker = msg.role == "user" ? "用户" : (msg.botName ?? msg.botID ?? "Bot")
+            let snippet = String(msg.text.replacingOccurrences(of: "\n", with: " ").prefix(140))
+            return "\(speaker)：\(snippet)"
+        }.joined(separator: "\n")
     }
     
     
@@ -650,25 +739,32 @@ final class ButlerMeetingRoomManager {
         botID: AIBotID,
         botName: String,
         evidence: String,
+        isButlerSynthesis: Bool,
         subordinateReports: [(botID: AIBotID, name: String, text: String)],
         receipts: [String]
     ) -> String {
-        if botID == .butler && !subordinateReports.isEmpty {
-            let names = subordinateReports.map(\.name).joined(separator: "、")
-            var lines: [String] = [
-                AppLanguage.text("**今日统筹汇总**（已收齐 \(names) 汇报）", en: "**Daily Summary** (collected from \(names))"),
-                evidence,
-            ]
-            if !receipts.isEmpty {
-                lines.append(AppLanguage.text("- 已同步更新：\(receipts.joined(separator: "、"))", en: "- Updated: \(receipts.joined(separator: ", "))"))
+        if botID == .butler && isButlerSynthesis {
+            if subordinateReports.isEmpty {
+                return AppLanguage.text(
+                    "今天大家手头都没太多新动静，我也先替你看着，有什么需要直接点名就好。",
+                    en: "Pretty quiet across the workspace today—just ping any of us whenever you need a hand."
+                )
             }
-            lines.append(AppLanguage.text("- 后续需要调整任意模块状态，直接告诉我即可，我来统一调度各助手。", en: "- Tell me anytime and I will coordinate the other bots for you."))
-            return lines.joined(separator: "\n")
+            let names = subordinateReports.map(\.name).joined(separator: "、")
+            var summary = AppLanguage.text("刚听完 \(names) 冒泡，今天重点已经对齐。", en: "Heard back from \(names); we're all synced up.")
+            if !evidence.isEmpty {
+                summary += " " + evidence.replacingOccurrences(of: "\n", with: " ")
+            }
+            if !receipts.isEmpty {
+                summary += " " + receipts.joined(separator: "、") + "。"
+            }
+            return summary
         }
+        var result = evidence.replacingOccurrences(of: "\n", with: " ")
         if !receipts.isEmpty {
-            return "\(evidence)\n- \(receipts.joined(separator: "；"))"
+            result += "（\(receipts.joined(separator: "、"))）"
         }
-        return evidence
+        return result
     }
     
     
@@ -712,7 +808,7 @@ final class ButlerMeetingRoomManager {
         for botID in AIBotID.allCases {
             let featureKey = botID.analyticsFeatureKey.lowercased()
             let usage = usageByFeature.first { $0.key.lowercased().contains(featureKey) }?.value ?? (0, 0)
-            let (badge, evidence) = self.buildBotEvidence(
+            let result = self.buildBotEvidence(
                 botID: botID,
                 todayKey: todayKey,
                 startOfDay: startOfDay,
@@ -723,21 +819,22 @@ final class ButlerMeetingRoomManager {
                 botID: botID,
                 todayCallCount: usage.0,
                 todayTokens: usage.1,
-                badgeText: badge,
-                evidenceSummary: evidence
+                badgeText: result.badge,
+                evidenceSummary: result.evidence,
+                hasTodayActivity: result.hasTodayActivity
             )
         }
         return map
     }
     
     
-    private func buildBotEvidence(
+    func buildBotEvidence(
         botID: AIBotID,
         todayKey: String,
         startOfDay: TimeInterval,
         callCount: Int,
         tokens: Int
-    ) -> (badge: String, evidence: String) {
+    ) -> (badge: String, evidence: String, hasTodayActivity: Bool) {
         switch botID {
             case .organizeAndMerge:
                 let activeDocs = self.database.documents.filter { $0.deletedAt == nil }
@@ -747,56 +844,54 @@ final class ButlerMeetingRoomManager {
                 }.count
                 let titles = todayDocs.prefix(4).map(\.title).joined(separator: "、")
                 let badge = todayDocs.isEmpty ? "\(activeDocs.count) 篇" : "今日 \(todayDocs.count) 篇"
-                let line1 = "- 今日编辑文档 \(todayDocs.count) 篇（库内共 \(activeDocs.count) 篇）" + (titles.isEmpty ? "" : "：\(titles)")
-                let line2 = untitledCount > 0
-                    ? "- 当前仍有 \(untitledCount) 篇未命名草稿，明天可一键整理归档。"
-                    : "- 文档标题与分组均保持整洁，无积压杂乱草稿。"
-                return (badge, "\(line1)\n\(line2)")
+                let line1 = "今日动了 \(todayDocs.count) 篇文档（库里一共 \(activeDocs.count) 篇）" + (titles.isEmpty ? "。" : "：\(titles)。")
+                let line2 = untitledCount > 0 ? "还有 \(untitledCount) 篇未命名草稿待归类。" : "文档都归拢得挺整齐。"
+                return (badge, "\(line1)\(line2)", !todayDocs.isEmpty || untitledCount > 0 || callCount > 0)
                 
             case .ghost:
                 let stats = self.queryTodayWritingRow(dateKey: todayKey)
                 let badge = stats.typed > 0 ? "\(stats.typed) 字" : "待命"
-                let evidence = "- 今日手写 \(stats.typed) 字，AI 续写采纳 \(stats.aiChars) 字（\(stats.accepts) 次）。\n- 建议明天延续高专注写作时段。"
-                return (badge, evidence)
+                let evidence = "今天手写了 \(stats.typed) 字，采纳了我 \(stats.aiChars) 字续写（\(stats.accepts) 次）。"
+                return (badge, evidence, stats.typed > 0 || stats.aiChars > 0 || callCount > 0)
                 
             case .weeklyReport:
                 let reports = self.database.weeklyReports
                 let openTasks = self.queryInt("SELECT COUNT(*) FROM user_reminders WHERE is_completed = 0;")
                 let latestTitle = reports.first?.title ?? "暂无周报"
                 let badge = "\(reports.count) 份"
-                let evidence = "- 已归档周报 \(reports.count) 份（最近：\(latestTitle)），当前未完成待办 \(openTasks) 项。\n- 明天可将今日核心文档沉淀为本周进展要点。"
-                return (badge, evidence)
+                let evidence = "手头存着 \(reports.count) 份周报（最近是「\(latestTitle)」），还有 \(openTasks) 项未完待办。"
+                return (badge, evidence, callCount > 0 || openTasks > 0)
                 
             case .persona:
                 let memories = self.queryTopMemoryTitles(limit: 4)
                 let todayJournals = self.queryInt("SELECT COUNT(*) FROM user_memory_journal WHERE timestamp >= \(startOfDay);")
                 let badge = "\(memories.count) 记忆"
-                let memText = memories.isEmpty ? "仍在持续学习你的写作与工作风格" : memories.joined(separator: "；")
-                let evidence = "- 今日记忆更新 \(todayJournals) 条；对你的近期印象：\(memText)。\n- 如需重新校准画像，随时 @观察 更新。"
-                return (badge, evidence)
+                let memText = memories.isEmpty ? "还在慢慢熟悉你的习惯" : memories.joined(separator: "、")
+                let evidence = "今天记下 \(todayJournals) 条新观察，最近对你的印象是：\(memText)。"
+                return (badge, evidence, todayJournals > 0 || callCount > 0)
                 
             case .readingCompanion:
                 let stocks = self.queryInt("SELECT COUNT(*) FROM user_watchlist_stocks;")
                 let podcasts = self.queryInt("SELECT COUNT(*) FROM user_podcasts;")
                 let feeds = self.queryInt("SELECT COUNT(*) FROM user_followed_feeds;")
                 let badge = stocks + podcasts + feeds > 0 ? "\(stocks + podcasts + feeds) 订阅" : "待命"
-                let evidence = "- 当前跟踪自选股 \(stocks) 只、播客 \(podcasts) 条、订阅资讯源 \(feeds) 个，今日资讯对话 \(callCount) 次。"
-                return (badge, evidence)
+                let evidence = "目前盯着 \(stocks) 只自选股、\(podcasts) 条播客和 \(feeds) 个资讯源，今天聊了 \(callCount) 次。"
+                return (badge, evidence, callCount > 0)
                 
             case .butler:
                 let todayMsgs = self.queryInt("SELECT COUNT(*) FROM butler_messages WHERE created_at >= \(startOfDay);")
                 let openReminders = self.queryOpenReminderTitles(limit: 3)
                 let badge = todayMsgs > 0 ? "\(todayMsgs) 条" : "在线"
-                let remText = openReminders.isEmpty ? "暂无未完成待办" : openReminders.joined(separator: "；")
-                let evidence = "- 今日总管对话 \(todayMsgs) 条；待办焦点：\(remText)。"
-                return (badge, evidence)
+                let remText = openReminders.isEmpty ? "眼下没有卡住的待办" : openReminders.joined(separator: "、")
+                let evidence = "今天总管这边聊了 \(todayMsgs) 条，手头待办是：\(remText)。"
+                return (badge, evidence, todayMsgs > 0 || !openReminders.isEmpty)
                 
             default:
                 let badge = callCount > 0 ? "\(callCount) 次" : "待命"
                 let evidence = callCount > 0
-                    ? "- 今日协助 \(callCount) 次（消耗 \(tokens) tokens）。"
-                    : "- 今日暂无触发记录，随时待命。"
-                return (badge, evidence)
+                    ? "今天帮了 \(callCount) 次忙（用了 \(tokens) tokens）。"
+                    : "今天还没派上用场，先候着。"
+                return (badge, evidence, callCount > 0)
         }
     }
     

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { copyTextWithFallback } from "../bridge";
 import LoadingState from "./LoadingState";
 import MarkdownProse from "./MarkdownProse";
@@ -24,14 +24,12 @@ type MeetingRoomViewProps = {
   onOpenSettings: () => void;
 };
 
-function BotSpeakerTurn({
+const BotSpeakerTurn = memo(function BotSpeakerTurn({
   message,
   locale,
-  onMentionBot,
 }: {
   message: MeetingRoomMessage;
   locale: "zh" | "en";
-  onMentionBot: (handleOrName: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const accentColor = message.botAccentHex || "var(--accent)";
@@ -49,10 +47,6 @@ function BotSpeakerTurn({
       className={`min-w-0 rounded-[12px] border border-line px-4 py-3 ${
         isButler ? "bg-surface shadow-hairline" : "bg-canvas/55"
       }`}
-      style={{
-        borderLeftWidth: "2.5px",
-        borderLeftColor: accentColor,
-      }}
     >
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <span
@@ -74,22 +68,13 @@ function BotSpeakerTurn({
         )}
         <div className="ml-auto flex items-center gap-1.5">
           {!isSpeaking && message.text.trim().length > 0 && (
-            <>
-              <button
-                type="button"
-                onClick={() => onMentionBot(message.botName || message.botHandle || "")}
-                className="rounded-[6px] px-2 py-0.5 text-[12.5px] text-ink-3 transition-colors hover:bg-hover hover:text-ink"
-              >
-                @{locale === "zh" ? "追问" : "Ping"}
-              </button>
-              <button
-                type="button"
-                onClick={handleCopy}
-                className="rounded-[6px] px-2 py-0.5 text-[12.5px] text-ink-3 transition-colors hover:bg-hover hover:text-ink"
-              >
-                {copied ? (locale === "zh" ? "已复制" : "Copied") : locale === "zh" ? "复制" : "Copy"}
-              </button>
-            </>
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="rounded-[6px] px-2 py-0.5 text-[12.5px] text-ink-3 transition-colors hover:bg-hover hover:text-ink"
+            >
+              {copied ? (locale === "zh" ? "已复制" : "Copied") : locale === "zh" ? "复制" : "Copy"}
+            </button>
           )}
         </div>
       </div>
@@ -119,9 +104,9 @@ function BotSpeakerTurn({
       )}
     </article>
   );
-}
+});
 
-export default function MeetingRoomView({
+const MeetingRoomView = memo(function MeetingRoomView({
   locale,
   messages,
   participants,
@@ -157,11 +142,21 @@ export default function MeetingRoomView({
   useEffect(() => {
     const el = composerRef.current;
     if (!el) return;
-    const measure = () => setComposerH(el.offsetHeight);
+    let rafId = 0;
+    const measure = () => {
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        const nextH = el.offsetHeight;
+        setComposerH((prev) => (prev === nextH ? prev : nextH));
+      });
+    };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      cancelAnimationFrame(rafId);
+      ro.disconnect();
+    };
   }, [hasMessages]);
 
   useEffect(() => {
@@ -173,46 +168,12 @@ export default function MeetingRoomView({
     return () => cancelAnimationFrame(raf);
   }, [messages]);
 
-  const insertBotMention = (label: string) => {
+  const insertBotMention = useCallback((label: string) => {
     const clean = label.replace(/^@+/, "").trim();
     if (!clean) return;
     promptBarRef.current?.setDraft(`@${clean} `);
     promptBarRef.current?.focus();
-  };
-
-  const quickAgendas = useMemo(
-    () =>
-      locale === "zh"
-        ? [
-            {
-              label: "汇总今日信息",
-              prompt: "汇总一下今天的信息，各自汇报做了什么、对我的印象和明天的建议",
-            },
-            {
-              label: "总管统一调度更新",
-              prompt: "@总管 帮我统一调度其他 Bot 更新一下状态并做个总结",
-            },
-            {
-              label: "@观察 更新印象",
-              prompt: "@观察 更新一下今天对我的印象与记忆",
-            },
-          ]
-        : [
-            {
-              label: "Daily Standup",
-              prompt: "Summarize today's updates, impressions, and tomorrow's priorities",
-            },
-            {
-              label: "Chief Sync All",
-              prompt: "@Butler coordinate all bots to refresh their state and report back",
-            },
-            {
-              label: "Refresh Persona",
-              prompt: "@PersonaBot update your latest impression and memory profile",
-            },
-          ],
-    [locale],
-  );
+  }, []);
 
   const chief = participants.find((p) => p.id === "butler");
   const specialists = participants.filter((p) => p.id !== "butler");
@@ -231,23 +192,9 @@ export default function MeetingRoomView({
         {!hasMessages ? (
           <div className="bui-scroll flex min-h-0 flex-1 flex-col justify-center overflow-y-auto px-5 py-6">
             <div className="mx-auto flex w-full max-w-[620px] flex-col gap-5">
-              <div className="flex flex-col gap-3">
-                <h1 className="text-[21px] font-semibold tracking-[-0.02em] text-ink">
-                  {locale === "zh" ? "复盘会议室" : "Meeting Room"}
-                </h1>
-                <div className="flex flex-wrap gap-2">
-                  {quickAgendas.map((item) => (
-                    <button
-                      key={item.label}
-                      type="button"
-                      onClick={() => onSend(item.prompt, null)}
-                      className="h-8.5 rounded-[9px] border border-line bg-surface px-3 text-[13px] font-medium text-ink transition-colors hover:bg-hover-2"
-                    >
-                      {item.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              <h1 className="text-[21px] font-semibold tracking-[-0.02em] text-ink">
+                {locale === "zh" ? "复盘会议室" : "Meeting Room"}
+              </h1>
 
               <PromptBar
                 ref={promptBarRef}
@@ -294,7 +241,6 @@ export default function MeetingRoomView({
                       key={msg.id}
                       message={msg}
                       locale={locale}
-                      onMentionBot={insertBotMention}
                     />
                   ),
                 )}
@@ -375,48 +321,31 @@ export default function MeetingRoomView({
           {specialists.map((bot) => {
             const st = statusLabel(bot.status);
             return (
-              <div
+              <button
                 key={bot.id}
-                className="group flex items-center gap-2 rounded-[8px] px-2 py-1.5 transition-colors hover:bg-hover-2"
+                type="button"
+                onClick={() => insertBotMention(bot.nickname || bot.name)}
+                className="group flex items-center gap-2 rounded-[8px] px-2 py-1.5 text-left transition-colors hover:bg-hover-2"
               >
-                <button
-                  type="button"
-                  onClick={() => insertBotMention(bot.nickname || bot.name)}
-                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                >
-                  <span
-                    className={`size-2 shrink-0 rounded-full ${
-                      bot.status === "speaking" ? "animate-pulse" : ""
-                    }`}
-                    style={{ backgroundColor: bot.accentHex }}
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[13px] font-medium text-ink">{bot.name}</div>
-                    <div className="truncate text-[12px] text-ink-3 tabular-nums">
-                      {st || bot.todayBadge || bot.roleLabel}
-                    </div>
+                <span
+                  className={`size-2 shrink-0 rounded-full ${
+                    bot.status === "speaking" ? "animate-pulse" : ""
+                  }`}
+                  style={{ backgroundColor: bot.accentHex }}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[13px] font-medium text-ink">{bot.name}</div>
+                  <div className="truncate text-[12px] text-ink-3 tabular-nums">
+                    {st || bot.todayBadge || bot.roleLabel}
                   </div>
-                </button>
-                <button
-                  type="button"
-                  disabled={isConvening}
-                  onClick={() =>
-                    onSend(
-                      locale === "zh"
-                        ? `@${bot.nickname || bot.name} 更新一下并汇报今天状态`
-                        : `@${bot.handle.replace(/^@/, "")} refresh and report`,
-                      bot.id,
-                    )
-                  }
-                  className="shrink-0 rounded-[5px] px-1.5 py-0.5 text-[12px] text-ink-3 opacity-0 transition-opacity hover:bg-surface hover:text-ink group-hover:opacity-100 disabled:pointer-events-none"
-                >
-                  {locale === "zh" ? "更新" : "Sync"}
-                </button>
-              </div>
+                </div>
+              </button>
             );
           })}
         </div>
       </aside>
     </div>
   );
-}
+});
+
+export default MeetingRoomView;

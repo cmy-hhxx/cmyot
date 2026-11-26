@@ -490,6 +490,22 @@ final class ProactiveDailyJournalService {
     }
     
     
+    /// Publishes an external tip (such as the evening daily report digest) to the unread badge and floating bubble.
+    func publishExternalTip(_ tip: ProactiveTipItem, showFloatingTip: Bool = true) {
+        guard !self.todayTips.contains(where: { $0.dedupKey == tip.dedupKey }) else { return }
+        self.todayTips.insert(tip, at: 0)
+        if self.todayTips.count > 24 {
+            self.todayTips = Array(self.todayTips.prefix(24))
+        }
+        self.activeFloatingTip = tip
+        self.persistLedger()
+        self.revision &+= 1
+        if showFloatingTip && self.tipsEnabled {
+            self.onTipPublished?(tip)
+        }
+    }
+    
+    
     /// Opens today's daily plain-text journal document inside CotEditor, marks tips read, and dismisses active bubbles.
     func openTodayJournalWindow(preferredWindow: NSWindow? = nil, now: Date = Date()) {
         let record = self.ensureTodayDocument(now: now)

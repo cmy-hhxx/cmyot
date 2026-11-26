@@ -175,6 +175,7 @@ struct DocumentCenterView: View {
                     panRequestToken: self.panRequestToken,
                     fitRequestToken: self.fitRequestToken,
                     isOverlayBlockingInteraction: self.quickLook.mountedID != nil,
+                    layoutStyle: .orbital,
                     onSelectedLeafFrameChange: { rect in
                         self.quickLook.anchorRect = rect.map { $0.offsetBy(dx: 0, dy: 49) }
                     },
@@ -201,15 +202,13 @@ struct DocumentCenterView: View {
                         }
                     },
                     onToggleCluster: { clusterID in
-                        withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.20)) {
-                            if self.state.collapsedClusterIDs.contains(clusterID) {
-                                self.state.collapsedClusterIDs.remove(clusterID)
-                                self.focusedClusterID = clusterID
-                            } else {
-                                self.state.collapsedClusterIDs.insert(clusterID)
-                                if self.focusedClusterID == clusterID {
-                                    self.focusedClusterID = nil
-                                }
+                        if self.state.collapsedClusterIDs.contains(clusterID) {
+                            self.state.collapsedClusterIDs.remove(clusterID)
+                            self.focusedClusterID = clusterID
+                        } else {
+                            self.state.collapsedClusterIDs.insert(clusterID)
+                            if self.focusedClusterID == clusterID {
+                                self.focusedClusterID = nil
                             }
                         }
                     },
@@ -404,8 +403,8 @@ struct DocumentCenterView: View {
                     .foregroundStyle(tokens.primaryInk.opacity(0.84))
                     .padding(.horizontal, 10)
                     .frame(height: 28)
-                    .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .background(tokens.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .pointerStyle(.link)
@@ -447,7 +446,7 @@ struct DocumentCenterView: View {
             }
         }
         .padding(2.5)
-        .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .background(tokens.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
     
     
@@ -498,7 +497,7 @@ struct DocumentCenterView: View {
                     Image(systemName: "folder")
                         .font(.system(size: 10.5, weight: .medium))
                     Text(activeLabel)
-                        .font(.system(size: 11.5, weight: .medium))
+                        .font(.system(size: 12, weight: .medium))
                     Image(systemName: "chevron.down")
                         .font(.system(size: 9.5, weight: .semibold))
                         .foregroundStyle(tokens.primaryInk.opacity(0.5))
@@ -506,7 +505,7 @@ struct DocumentCenterView: View {
                 .foregroundStyle(tokens.primaryInk.opacity(0.84))
                 .padding(.horizontal, 9)
                 .frame(height: 28)
-                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
@@ -532,7 +531,7 @@ struct DocumentCenterView: View {
                     .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(self.state.timeHorizon == .all ? tokens.primaryInk.opacity(0.60) : tokens.accentText)
                 Text(self.state.timeHorizon.rawValue)
-                    .font(.system(size: 11.5, weight: .medium))
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(self.state.timeHorizon == .all ? tokens.primaryInk.opacity(0.84) : tokens.accentText)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9.5, weight: .semibold))
@@ -542,7 +541,7 @@ struct DocumentCenterView: View {
             .frame(height: 28)
             .background(
                 self.state.timeHorizon == .all ? tokens.inset : tokens.accent.opacity(0.12),
-                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
             )
         }
         .menuStyle(.borderlessButton)
@@ -566,13 +565,13 @@ struct DocumentCenterView: View {
                     Image(systemName: allCollapsed ? "arrow.up.left.and.arrow.down.right" : "arrow.down.right.and.arrow.up.left")
                         .font(.system(size: 9.5, weight: .semibold))
                     Text(allCollapsed ? "展开全部" : "全部折叠")
-                        .font(.system(size: 11.5, weight: .medium))
+                        .font(.system(size: 12, weight: .medium))
                 }
                 .foregroundStyle(tokens.primaryInk.opacity(0.80))
                 .padding(.horizontal, 9)
                 .frame(height: 28)
-                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .background(tokens.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .buttonStyle(.plain)
             .pointerStyle(.link)
@@ -581,51 +580,28 @@ struct DocumentCenterView: View {
     
     
     private func searchField(tokens: StudioColorTokens) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(self.isSearchFocused ? tokens.accent : tokens.primaryInk.opacity(0.45))
-            TextField("搜索文档", text: self.$searchDraft)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12))
-                .focused(self.$isSearchFocused)
-                .frame(minWidth: 160, maxWidth: 230)
-                .onSubmit {
-                    self.searchDebounceTask?.cancel()
-                    let query = self.searchDraft
-                    self.unfocusSearchField()
-                    self.searchDebounceTask = Task {
-                        guard await self.state.applySearch(query), let firstHit = self.state.searchHits.first else { return }
-                        self.state.selectedID = firstHit.id
-                        self.panRequestToken &+= 1
-                    }
+        StarMapSearchField(
+            placeholder: "搜索文档",
+            text: self.$searchDraft,
+            hitCount: self.state.searchHits.count,
+            showCount: !self.searchDraft.isEmpty,
+            isFocused: self.$isSearchFocused,
+            tokens: tokens,
+            onSubmit: {
+                self.searchDebounceTask?.cancel()
+                let query = self.searchDraft
+                self.unfocusSearchField()
+                self.searchDebounceTask = Task {
+                    guard await self.state.applySearch(query), let firstHit = self.state.searchHits.first else { return }
+                    self.state.selectedID = firstHit.id
+                    self.panRequestToken &+= 1
                 }
-            if !self.searchDraft.isEmpty {
-                Text("\(self.state.searchHits.count) 篇")
-                    .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
-                    .foregroundStyle(tokens.accentText)
-                    .padding(.horizontal, 5.5)
-                    .padding(.vertical, 1.5)
-                    .background(tokens.positivePillBg, in: Capsule())
-                
-                Button {
-                    self.searchDebounceTask?.cancel()
-                    self.searchDraft = ""
-                    self.state.searchText = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(tokens.primaryInk.opacity(0.42))
-                }
-                .buttonStyle(.plain)
+            },
+            onClear: {
+                self.searchDebounceTask?.cancel()
+                self.searchDraft = ""
+                self.state.searchText = ""
             }
-        }
-        .padding(.horizontal, 9)
-        .frame(height: 28)
-        .background(tokens.inset, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(self.isSearchFocused ? tokens.accent.opacity(0.65) : tokens.hairline, lineWidth: self.isSearchFocused ? 1.1 : 0.75)
         )
     }
     
@@ -636,11 +612,11 @@ struct DocumentCenterView: View {
             Button("清空废纸篓") {
                 self.confirmEmptyTrash()
             }
-            .font(.system(size: 11.5, weight: .medium))
+            .font(.system(size: 12, weight: .medium))
             .foregroundStyle(.red)
             .padding(.horizontal, 10)
             .frame(height: 28)
-            .background(Color.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .background(Color.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             .buttonStyle(.plain)
             .pointerStyle(.link)
         }
@@ -649,19 +625,19 @@ struct DocumentCenterView: View {
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
                 Text(self.state.agentOrganizeProgressText)
-                    .font(.system(size: 11.5, weight: .medium).monospacedDigit())
+                    .font(.system(size: 12, weight: .medium).monospacedDigit())
                     .foregroundStyle(tokens.accentText)
                 Button("取消") {
                     self.cancelAgentOrganize()
                 }
-                .font(.system(size: 11.5, weight: .medium))
+                .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(tokens.primaryInk.opacity(0.65))
                 .buttonStyle(.plain)
                 .pointerStyle(.link)
             }
             .padding(.horizontal, 10)
             .frame(height: 28)
-            .background(tokens.positivePillBg, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .background(tokens.positivePillBg, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         } else {
             if let summary = self.state.agentOrganizeSummary {
                 let hasLogs = !self.state.lastOrganizeLogEntries.isEmpty || !self.state.lastOrganizeMergeLogs.isEmpty
@@ -673,7 +649,7 @@ struct DocumentCenterView: View {
                     } label: {
                         HStack(spacing: 4) {
                             Text(summary)
-                                .font(.system(size: 11.5, weight: .medium).monospacedDigit())
+                                .font(.system(size: 12, weight: .medium).monospacedDigit())
                                 .foregroundStyle(tokens.accentText)
                             if hasLogs {
                                 Image(systemName: "chevron.down")
@@ -713,7 +689,7 @@ struct DocumentCenterView: View {
                 }
                 .padding(.horizontal, 9)
                 .frame(height: 28)
-                .background(tokens.positivePillBg, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .background(tokens.positivePillBg, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             
             Button {
@@ -723,14 +699,14 @@ struct DocumentCenterView: View {
                     Image(systemName: "square.stack.3d.up")
                         .font(.system(size: 10.5, weight: .semibold))
                     Text("一键整理")
-                        .font(.system(size: 11.5, weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold))
                 }
                 .foregroundStyle(tokens.accentText)
                 .padding(.horizontal, 10)
                 .frame(height: 28)
-                .background(tokens.positivePillBg, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(tokens.accent.opacity(0.28), lineWidth: 0.75))
-                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .background(tokens.positivePillBg, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(tokens.accent.opacity(0.28), lineWidth: 0.75))
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .buttonStyle(.plain)
             .pointerStyle(.link)
@@ -744,13 +720,13 @@ struct DocumentCenterView: View {
                     Image(systemName: "plus")
                         .font(.system(size: 10.5, weight: .bold))
                     Text("新建")
-                        .font(.system(size: 11.5, weight: .semibold))
+                        .font(.system(size: 12, weight: .semibold))
                 }
                 .foregroundStyle(tokens.onAccentInk)
                 .padding(.horizontal, 10)
                 .frame(height: 28)
-                .background(tokens.accent, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .background(tokens.accent, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .buttonStyle(.plain)
             .pointerStyle(.link)
@@ -938,9 +914,9 @@ struct DocumentCenterView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .frame(maxWidth: 660)
+        .frame(maxWidth: 680)
         .background(tokens.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(tokens.hairlineStrong, lineWidth: 0.9))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(tokens.hairlineStrong, lineWidth: 0.8))
         .shadow(color: tokens.cardShadow, radius: 10, y: 4)
         .padding(.horizontal, 24)
     }
@@ -1029,7 +1005,7 @@ struct DocumentCenterView: View {
                     }
                     Button("多选合并…") {
                         self.multiSelectedIDs = [item.id]
-                        self.showToast("继续点选要合并的文档")
+                        self.showToast("已选 \(self.multiSelectedIDs.count) 篇")
                     }
                 } label: {
                     HStack(spacing: 4) {

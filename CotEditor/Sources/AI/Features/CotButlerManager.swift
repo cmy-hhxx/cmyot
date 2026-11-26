@@ -174,6 +174,8 @@ final class CotButlerManager {
     @ObservationIgnored private var activeTurnTask: Task<Void, Never>?
     @ObservationIgnored private var activeTurnGeneration: UInt64 = 0
     @ObservationIgnored private var streamPatchListeners: [UUID: @MainActor (BeautifulAgentStreamPatchPayload) -> Void] = [:]
+    @ObservationIgnored private var cachedAvatarDataURLKey: String?
+    @ObservationIgnored private var cachedAvatarDataURLValue: String?
     
     
     init(
@@ -315,6 +317,8 @@ final class CotButlerManager {
         self.isSyncingIdentity = false
         
         self.bootstrapSessionsAndMessages()
+        self.cachedAvatarDataURLKey = nil
+        self.cachedAvatarDataURLValue = nil
         NotificationCenter.default.post(name: Self.identityDidChangeNotification, object: self)
     }
     
@@ -332,6 +336,8 @@ final class CotButlerManager {
             self.database.set("", forKey: CotLocalDatabase.ConfigKey.butlerCustomAvatarBase64)
             self.customAvatarImage = nil
         }
+        self.cachedAvatarDataURLKey = nil
+        self.cachedAvatarDataURLValue = nil
         NotificationCenter.default.post(name: Self.identityDidChangeNotification, object: self)
     }
     
@@ -367,6 +373,12 @@ final class CotButlerManager {
     
     
     func resolvedAvatarDataURL(pointSize: CGFloat = 64) -> String? {
+        let cfg = AIBotStore.shared.config(for: .butler)
+        let customID = self.customAvatarImage.map { String(UInt(bitPattern: ObjectIdentifier($0))) } ?? "none"
+        let cacheKey = "\(Int(pointSize))|\(self.avatarVariantIndex ?? -1)|\(customID)|\(cfg.artworkVariantIndex ?? -1)|\(cfg.endpointID?.uuidString ?? "")|\(cfg.modelOverride)"
+        if self.cachedAvatarDataURLKey == cacheKey {
+            return self.cachedAvatarDataURLValue
+        }
         let image = AIBotStore.shared.resolvedAvatarImage(for: .butler, pointSize: pointSize)
             ?? self.customAvatarImage
             ?? AIGijinkaImageLoader.shared.thumbnail(for: self.resolvedArtwork(), maxPixelSize: pointSize)
@@ -374,8 +386,15 @@ final class CotButlerManager {
               let tiff = image.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),
               let png = rep.representation(using: .png, properties: [:])
-        else { return nil }
-        return "data:image/png;base64,\(png.base64EncodedString())"
+        else {
+            self.cachedAvatarDataURLKey = cacheKey
+            self.cachedAvatarDataURLValue = nil
+            return nil
+        }
+        let dataURL = "data:image/png;base64,\(png.base64EncodedString())"
+        self.cachedAvatarDataURLKey = cacheKey
+        self.cachedAvatarDataURLValue = dataURL
+        return dataURL
     }
     
     
@@ -1294,7 +1313,7 @@ final class CotButlerManager {
                     thinkingDurationMs: result.thinkingDurationMs > 0 ? result.thinkingDurationMs : latencyMs,
                     steps: finalSteps,
                     toolChips: [botName] + result.toolNames.map { PiToolDisplayMeta.label(for: $0) },
-                    followUps: Self.suggestDelegatedFollowUps(for: botID),
+                    followUps: [],
                     attachedDocuments: docTitles,
                     delegatedBotID: botID.rawValue,
                     delegatedBotName: botName,
@@ -1362,7 +1381,7 @@ final class CotButlerManager {
                 thinkingDurationMs: latencyMs,
                 steps: [doneStep],
                 toolChips: [botName],
-                followUps: Self.suggestDelegatedFollowUps(for: botID),
+                followUps: [],
                 attachedDocuments: docTitles,
                 delegatedBotID: botID.rawValue,
                 delegatedBotName: botName,
@@ -1430,35 +1449,6 @@ final class CotButlerManager {
             parts.append("当前会话所在逻辑工作区：\(wsName)（逻辑主题分区，围绕用户的提问自由展开解答）。")
         }
         return parts.joined(separator: "\n\n")
-    }
-    
-    
-    private static func suggestDelegatedFollowUps(for botID: AIBotID) -> [String] {
-        switch botID {
-            case .translate:
-                [
-                    AppLanguage.text("把译文润色得更地道口语化一些", en: "Make the translation more natural"),
-                    AppLanguage.text("整理成中英对照格式", en: "Format as bilingual side-by-side"),
-                ]
-            case .summarize:
-                [
-                    AppLanguage.text("把这些要点扩写成完整行动清单", en: "Expand into an action checklist"),
-                    AppLanguage.text("再精简成 3 句话版本", en: "Condense into 3 sentences"),
-                ]
-            case .weeklyReport, .weeklyReportItem:
-                [
-                    AppLanguage.text("再精炼一点，方便直接发给团队", en: "Make it tighter for team sharing"),
-                    AppLanguage.text("补充下周计划与风险提示", en: "Add next week plan and risks"),
-                ]
-            case .explain:
-                [
-                    AppLanguage.text("举一个具体生活例子再讲一遍", en: "Give a concrete real-world example"),
-                ]
-            default:
-                [
-                    AppLanguage.text("继续完善这份结果", en: "Refine this result"),
-                ]
-        }
     }
     
     
@@ -1567,7 +1557,7 @@ final class CotButlerManager {
                     thinkingDurationMs: result.thinkingDurationMs,
                     steps: result.steps,
                     toolChips: toolChips,
-                    followUps: Self.suggestFollowUps(userText: userText, toolNames: result.toolNames)
+                    followUps: []
                 )
                 
                 self.appendAssistantMessage(replyText, metadata: meta, sessionID: sessionID)
@@ -1649,17 +1639,12 @@ final class CotButlerManager {
                 ? (receipts.isEmpty ? "已处理。" : receipts.map(\.summary).joined(separator: " · "))
                 : extracted.cleanText
             let totalToolMs = enriched.steps.compactMap(\.durationMs).reduce(0, +)
-            let toolNames: [String] = enriched.steps.map { step in
-                if step.id.hasPrefix("fallback-quote-") { return "lookup_stock_quote" }
-                if step.id == "fallback-news" { return "search_news" }
-                return step.label
-            }
             let meta = ButlerMessageMetadata(
                 receipts: receipts,
                 thinkingDurationMs: totalToolMs > 0 ? totalToolMs : nil,
                 steps: enriched.steps,
                 toolChips: enriched.steps.map(\.label),
-                followUps: Self.suggestFollowUps(userText: userText, toolNames: toolNames)
+                followUps: []
             )
             self.appendAssistantMessage(replyText, metadata: meta, sessionID: sessionID)
         } catch is CancellationError {
@@ -1808,6 +1793,18 @@ final class CotButlerManager {
     }
     
     
+    /// Posts a proactive daily report message from the Butler into the active session.
+    func postDailyReport(text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if self.activeSessionID.isEmpty {
+            self.startNewSession()
+        }
+        guard !self.activeSessionID.isEmpty else { return }
+        self.appendAssistantMessage(trimmed, metadata: ButlerMessageMetadata(), sessionID: self.activeSessionID)
+    }
+    
+    
     private func appendAssistantMessage(_ text: String, metadata: ButlerMessageMetadata, sessionID: String) {
         let assistantMsg = ButlerChatMessage(
             id: UUID().uuidString,
@@ -1910,36 +1907,6 @@ final class CotButlerManager {
             let speaker = msg.role == "user" ? "用户" : self.name
             return "[\(speaker)]: \(String(msg.content.prefix(700)))"
         }.joined(separator: "\n\n")
-    }
-    
-    
-    private static func suggestFollowUps(userText: String, toolNames: [String]) -> [String] {
-        if toolNames.contains("lookup_stock_quote") {
-            return [
-                AppLanguage.text("顺便在右侧打开看盘 K 线", en: "Open Market K-Line"),
-                AppLanguage.text("查一下相关最新新闻与公告", en: "Check latest news"),
-                AppLanguage.text("加入我的自选股清单", en: "Add to watchlist"),
-            ]
-        }
-        if toolNames.contains("search_news") || toolNames.contains("web_search") {
-            return [
-                AppLanguage.text("提炼成简明要点清单", en: "Summarize into bullet points"),
-                AppLanguage.text("帮我深挖背后的影响与风险", en: "Analyze deeper impact"),
-            ]
-        }
-        if toolNames.contains("read_document") || toolNames.contains("search_documents") {
-            return [
-                AppLanguage.text("帮我梳理下一步行动建议", en: "Outline next action items"),
-                AppLanguage.text("帮我润色或重写重点段落", en: "Polish key paragraphs"),
-            ]
-        }
-        if userText.count > 24 {
-            return [
-                AppLanguage.text("展开具体细节", en: "Expand details"),
-                AppLanguage.text("继续深入分析关键问题", en: "Analyze key points deeper"),
-            ]
-        }
-        return []
     }
     
     

@@ -1597,10 +1597,7 @@ struct Round33FeatureTests {
         
         let dummyCover = NSImage(size: NSSize(width: 320, height: 180))
         for item in sampleItems {
-            let hBefore = DashboardNewsCenterView.waterfallCoverHeight(for: item, cardWidth: 240)
             service.storeCoverImage(dummyCover, for: item.id)
-            let hAfter = DashboardNewsCenterView.waterfallCoverHeight(for: item, cardWidth: 240)
-            #expect(hBefore == hAfter)
         }
         // All 60 active feed covers stay resident without thrashing eviction
         #expect(service.coverImages.count == 60)

@@ -362,11 +362,22 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
         return formatter
     }()
     
+    private final class CachedCGThumbnail: NSObject {
+        let image: CGImage
+        init(_ image: CGImage) { self.image = image }
+    }
+    
     private let lock = NSLock()
     private let imageCache: NSCache<NSString, NSImage> = {
         let cache = NSCache<NSString, NSImage>()
         cache.countLimit = 64
         cache.totalCostLimit = 96 * 1024 * 1024
+        return cache
+    }()
+    private let thumbnailCache: NSCache<NSString, CachedCGThumbnail> = {
+        let cache = NSCache<NSString, CachedCGThumbnail>()
+        cache.countLimit = 128
+        cache.totalCostLimit = 64 * 1024 * 1024
         return cache
     }()
     private var missingImageKeys: Set<String> = []
@@ -548,6 +559,44 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
             self.missingImageKeys.insert(cacheKey)
         }
         return nil
+    }
+    
+    
+    private static let thumbnailPixelBuckets: [Int] = [128, 181, 256, 362, 512, 724, 1024, 1448, 2048, 2896, 4096]
+    
+    
+    /// Returns a cached downsampled `CGImage` sized to the nearest power-of-√2 bucket >= `maxPixel`.
+    func displayImage(for identifier: String, documentURL: URL?, maxPixel: CGFloat) -> CGImage? {
+        let requested = max(128, Int(ceil(maxPixel)))
+        let bucket = Self.thumbnailPixelBuckets.first(where: { $0 >= requested }) ?? 4096
+        let baseKey = self.cacheKey(for: identifier, documentURL: documentURL)
+        let thumbKey = "\(baseKey)|\(bucket)" as NSString
+        
+        if let cached = self.lock.withLock({ self.thumbnailCache.object(forKey: thumbKey) }) {
+            return cached.image
+        }
+        if self.lock.withLock({ self.missingImageKeys.contains(baseKey) }) {
+            return nil
+        }
+        guard let url = self.imageURL(for: identifier, documentURL: documentURL),
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil)
+        else {
+            return nil
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: bucket,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+        ]
+        guard let cgThumb = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        let cost = max(1, cgThumb.width * cgThumb.height * 4)
+        self.lock.withLock {
+            self.thumbnailCache.setObject(CachedCGThumbnail(cgThumb), forKey: thumbKey, cost: cost)
+        }
+        return cgThumb
     }
     
     

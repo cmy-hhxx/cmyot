@@ -170,6 +170,12 @@ struct CenterPreviewTextView: NSViewRepresentable {
 
 // MARK: - Structured Bidirectional Tree Layout Engine (整齐左右分栏 · 零交叉 · O(N) 确定性布局)
 
+nonisolated enum StarMapLayoutStyle: Equatable, Sendable {
+    case timeline
+    case orbital
+}
+
+
 nonisolated enum StarMapLayoutEngine {
     
     struct PositionedCluster: Identifiable, Equatable {
@@ -194,6 +200,7 @@ nonisolated enum StarMapLayoutEngine {
 
         let hubPoint: CGPoint
         let usesTimelineSpine: Bool
+        let usesOrbitalLayout: Bool
         let clusters: [PositionedCluster]
         let leaves: [PositionedLeaf]
         let bounds: CGRect
@@ -203,12 +210,14 @@ nonisolated enum StarMapLayoutEngine {
         init(
             hubPoint: CGPoint = .zero,
             usesTimelineSpine: Bool = false,
+            usesOrbitalLayout: Bool = false,
             clusters: [PositionedCluster],
             leaves: [PositionedLeaf],
             bounds: CGRect
         ) {
             self.hubPoint = hubPoint
             self.usesTimelineSpine = usesTimelineSpine
+            self.usesOrbitalLayout = usesOrbitalLayout
             self.clusters = clusters
             self.leaves = leaves
             self.bounds = bounds
@@ -444,6 +453,170 @@ nonisolated enum StarMapLayoutEngine {
             leaves: orderedLeaves,
             bounds: CGRect(x: minX, y: minY, width: max(380, maxX - minX), height: max(300, maxY - minY))
         )
+    }
+    
+    
+    /// Pure deterministic non-overlapping orbital universe layout for Document Center.
+    static func computeOrbital(
+        clusterIDs: [String],
+        collapsedClusterIDs: Set<String>,
+        leafIDsByCluster: [String: [String]]
+    ) -> LayoutResult {
+        guard !clusterIDs.isEmpty else {
+            return LayoutResult(
+                hubPoint: .zero,
+                usesTimelineSpine: false,
+                usesOrbitalLayout: true,
+                clusters: [],
+                leaves: [],
+                bounds: CGRect(x: -180, y: -140, width: 360, height: 280)
+            )
+        }
+        
+        let hubClearanceBox = CGRect(
+            x: -Self.hubFootprint.width * 0.5 - 16,
+            y: -Self.hubFootprint.height * 0.5 - 16,
+            width: Self.hubFootprint.width + 32,
+            height: Self.hubFootprint.height + 32
+        )
+        
+        var placedBoxes: [CGRect] = [hubClearanceBox]
+        var orderedClusters: [PositionedCluster] = []
+        var orderedLeaves: [PositionedLeaf] = []
+        orderedClusters.reserveCapacity(clusterIDs.count)
+        
+        let goldenAngle = 2.39996322972865332
+        let baseClusterGapX: CGFloat = Self.clusterFootprint.width * 0.5 + 48 + Self.leafFootprint.width * 0.5
+        
+        for (idx, cid) in clusterIDs.enumerated() {
+            let ringIndex = Self.orbitalRingIndex(forClusterIndex: idx)
+            let ringStart = Self.orbitalRingFirstIndex(ringIndex)
+            let ringCapacity = Self.orbitalRingCapacity(ringIndex)
+            let countInRing = min(ringCapacity, clusterIDs.count - ringStart)
+            let posInRing = idx - ringStart
+            let baseAngle = (Double(posInRing) / Double(max(1, countInRing))) * (.pi * 2.0) + goldenAngle * Double(ringIndex)
+            let dirX = CGFloat(cos(baseAngle))
+            let dirY = CGFloat(sin(baseAngle))
+            let side: CGFloat = dirX >= 0 ? 1.0 : -1.0
+            
+            let leafIDs = collapsedClusterIDs.contains(cid) ? [] : (leafIDsByCluster[cid] ?? [])
+            var radius: CGFloat = 250 + CGFloat(ringIndex) * 320
+            var candidateClusterPt = CGPoint(x: dirX * radius, y: dirY * radius)
+            var candidateLeaves: [PositionedLeaf] = []
+            var candidateBox = CGRect.zero
+            
+            for _ in 0..<260 {
+                candidateClusterPt = CGPoint(x: dirX * radius, y: dirY * radius)
+                (candidateLeaves, candidateBox) = Self.orbitalClusterBlock(
+                    clusterID: cid,
+                    clusterPt: candidateClusterPt,
+                    side: side,
+                    baseOffsetX: baseClusterGapX,
+                    leafIDs: leafIDs
+                )
+                let padded = candidateBox.insetBy(dx: -10, dy: -10)
+                if !placedBoxes.contains(where: { $0.intersects(padded) }) {
+                    break
+                }
+                radius += 58
+            }
+            
+            placedBoxes.append(candidateBox)
+            orderedClusters.append(PositionedCluster(
+                id: cid,
+                worldPoint: candidateClusterPt,
+                angle: atan2(Double(candidateClusterPt.y), Double(candidateClusterPt.x))
+            ))
+            orderedLeaves.append(contentsOf: candidateLeaves)
+        }
+        
+        let unionBounds = placedBoxes.reduce(CGRect.null) { $0.union($1) }.insetBy(dx: -24, dy: -24)
+        return LayoutResult(
+            hubPoint: .zero,
+            usesTimelineSpine: false,
+            usesOrbitalLayout: true,
+            clusters: orderedClusters,
+            leaves: orderedLeaves,
+            bounds: CGRect(
+                x: unionBounds.minX,
+                y: unionBounds.minY,
+                width: max(380, unionBounds.width),
+                height: max(300, unionBounds.height)
+            )
+        )
+    }
+    
+    
+    private static func orbitalRingIndex(forClusterIndex index: Int) -> Int {
+        var ring = 0
+        var remaining = index
+        while true {
+            let cap = Self.orbitalRingCapacity(ring)
+            if remaining < cap { return ring }
+            remaining -= cap
+            ring += 1
+        }
+    }
+    
+    
+    private static func orbitalRingFirstIndex(_ ring: Int) -> Int {
+        guard ring > 0 else { return 0 }
+        var total = 0
+        for r in 0..<ring {
+            total += Self.orbitalRingCapacity(r)
+        }
+        return total
+    }
+    
+    
+    private static func orbitalRingCapacity(_ ring: Int) -> Int {
+        6 + ring * 6
+    }
+    
+    
+    private static func orbitalClusterBlock(
+        clusterID: String,
+        clusterPt: CGPoint,
+        side: CGFloat,
+        baseOffsetX: CGFloat,
+        leafIDs: [String]
+    ) -> (leaves: [PositionedLeaf], bounds: CGRect) {
+        var box = CGRect(
+            x: clusterPt.x - Self.clusterFootprint.width * 0.5,
+            y: clusterPt.y - Self.clusterFootprint.height * 0.5,
+            width: Self.clusterFootprint.width,
+            height: Self.clusterFootprint.height
+        )
+        guard !leafIDs.isEmpty else { return ([], box) }
+        
+        var leaves: [PositionedLeaf] = []
+        leaves.reserveCapacity(leafIDs.count)
+        let subcolCount = Int(ceil(Double(leafIDs.count) / Double(Self.rowsPerSubcolumn)))
+        for colIdx in 0..<subcolCount {
+            let start = colIdx * Self.rowsPerSubcolumn
+            let end = min(leafIDs.count, start + Self.rowsPerSubcolumn)
+            let slice = leafIDs[start..<end]
+            let colX = clusterPt.x + side * (baseOffsetX + CGFloat(colIdx) * Self.subcolumnStrideX)
+            let startY = clusterPt.y - CGFloat(slice.count - 1) * Self.rowStep * 0.5
+            for (rowOffset, leafID) in slice.enumerated() {
+                let pt = CGPoint(x: colX, y: startY + CGFloat(rowOffset) * Self.rowStep)
+                leaves.append(PositionedLeaf(
+                    id: leafID,
+                    clusterID: clusterID,
+                    worldPoint: pt,
+                    parentPoint: clusterPt,
+                    angle: atan2(Double(pt.y), Double(pt.x))
+                ))
+                let leafRect = CGRect(
+                    x: pt.x - Self.leafFootprint.width * 0.5,
+                    y: pt.y - Self.leafFootprint.height * 0.5,
+                    width: Self.leafFootprint.width,
+                    height: Self.leafFootprint.height
+                )
+                box = box.union(leafRect)
+            }
+        }
+        return (leaves, box)
     }
 }
 
@@ -2453,7 +2626,7 @@ nonisolated struct StarMapZoomMetrics: Equatable, Sendable {
     
     @inline(__always)
     func fontSize(_ base: CGFloat) -> CGFloat {
-        max(5.5, base * self.zoom)
+        self.zoom >= 0.6 ? max(11.0, base) : max(10.5, base)
     }
     
     @inline(__always)
@@ -2497,6 +2670,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
     let panRequestToken: Int
     let fitRequestToken: Int
     let isOverlayBlockingInteraction: Bool
+    let layoutStyle: StarMapLayoutStyle
     let onSelectedLeafFrameChange: ((CGRect?) -> Void)?
     let onSelectLeaf: (String) -> Void
     let onCommandSelectLeaf: ((String) -> Void)?
@@ -2517,6 +2691,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
         panRequestToken: Int = 0,
         fitRequestToken: Int = 0,
         isOverlayBlockingInteraction: Bool = false,
+        layoutStyle: StarMapLayoutStyle = .timeline,
         onSelectedLeafFrameChange: ((CGRect?) -> Void)? = nil,
         onSelectLeaf: @escaping (String) -> Void,
         onCommandSelectLeaf: ((String) -> Void)? = nil,
@@ -2536,6 +2711,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
         self.panRequestToken = panRequestToken
         self.fitRequestToken = fitRequestToken
         self.isOverlayBlockingInteraction = isOverlayBlockingInteraction
+        self.layoutStyle = layoutStyle
         self.onSelectedLeafFrameChange = onSelectedLeafFrameChange
         self.onSelectLeaf = onSelectLeaf
         self.onCommandSelectLeaf = onCommandSelectLeaf
@@ -2553,16 +2729,25 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
     @State private var pinchBasePan: CGSize?
     @State private var hasAutoFitted = false
     @State private var cachedClustersSnapshot: [StarMapClusterNode] = []
+    @State private var cachedLayoutStyle: StarMapLayoutStyle = .timeline
     @State private var cachedLayout = StarMapLayoutEngine.LayoutResult(
         clusters: [],
         leaves: [],
         bounds: CGRect(x: -180, y: -140, width: 360, height: 280)
     )
+    @State private var cachedClusterMap: [String: StarMapClusterNode] = [:]
+    @State private var cachedLeafMap: [String: StarMapLeafNode] = [:]
+    
+    private static var cameraSpring: Animation {
+        .spring(response: 0.38, dampingFraction: 0.9)
+    }
     
     
-    private static func computeLayout(for clusters: [StarMapClusterNode]) -> StarMapLayoutEngine.LayoutResult {
+    private static func computeLayout(
+        for clusters: [StarMapClusterNode],
+        layoutStyle: StarMapLayoutStyle
+    ) -> StarMapLayoutEngine.LayoutResult {
         let clusterIDs = clusters.map(\.id)
-        let usesTimeline = clusters.contains(where: { $0.timelineLabel != nil })
         var counts: [String: Int] = [:]
         var collapsed = Set<String>()
         var leafIDsByCluster: [String: [String]] = [:]
@@ -2575,18 +2760,51 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                 leafIDsByCluster[cluster.id] = leafIDs
             }
         }
-        return StarMapLayoutEngine.compute(
-            clusterIDs: clusterIDs,
-            leafCountsByCluster: counts,
-            collapsedClusterIDs: collapsed,
-            leafIDsByCluster: leafIDsByCluster,
-            usesTimelineSpine: usesTimeline
-        )
+        switch layoutStyle {
+            case .orbital:
+                return StarMapLayoutEngine.computeOrbital(
+                    clusterIDs: clusterIDs,
+                    collapsedClusterIDs: collapsed,
+                    leafIDsByCluster: leafIDsByCluster
+                )
+            case .timeline:
+                let usesTimeline = clusters.contains(where: { $0.timelineLabel != nil })
+                return StarMapLayoutEngine.compute(
+                    clusterIDs: clusterIDs,
+                    leafCountsByCluster: counts,
+                    collapsedClusterIDs: collapsed,
+                    leafIDsByCluster: leafIDsByCluster,
+                    usesTimelineSpine: usesTimeline
+                )
+        }
     }
     
     
-    private static func hasSameLayoutInputs(_ previous: [StarMapClusterNode], _ current: [StarMapClusterNode]) -> Bool {
-        previous.contains(where: { $0.timelineLabel != nil }) == current.contains(where: { $0.timelineLabel != nil })
+    private static func buildNodeMaps(for clusters: [StarMapClusterNode]) -> (
+        clusterMap: [String: StarMapClusterNode],
+        leafMap: [String: StarMapLeafNode]
+    ) {
+        var cMap: [String: StarMapClusterNode] = [:]
+        cMap.reserveCapacity(clusters.count)
+        var lMap: [String: StarMapLeafNode] = [:]
+        for c in clusters {
+            cMap[c.id] = c
+            for l in c.leaves.prefix(40) {
+                lMap[l.id] = l
+            }
+        }
+        return (cMap, lMap)
+    }
+    
+    
+    private static func hasSameLayoutInputs(
+        _ previous: [StarMapClusterNode],
+        _ current: [StarMapClusterNode],
+        previousStyle: StarMapLayoutStyle,
+        currentStyle: StarMapLayoutStyle
+    ) -> Bool {
+        previousStyle == currentStyle
+            && previous.contains(where: { $0.timelineLabel != nil }) == current.contains(where: { $0.timelineLabel != nil })
             && previous.elementsEqual(current) { previous, current in
                 previous.id == current.id && previous.isCollapsed == current.isCollapsed
                     && (current.isCollapsed || previous.leaves.prefix(40).elementsEqual(current.leaves.prefix(40)) { $0.id == $1.id })
@@ -2597,25 +2815,33 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
     var body: some View {
         let isDark = (self.colorScheme == .dark)
         let tokens = DashPalette.editorialTokens(isDark: isDark)
-        let layout = (self.cachedClustersSnapshot == self.clusters || Self.hasSameLayoutInputs(self.cachedClustersSnapshot, self.clusters))
-            ? self.cachedLayout
-            : Self.computeLayout(for: self.clusters)
+        let reuseCached = (self.cachedClustersSnapshot == self.clusters
+            || Self.hasSameLayoutInputs(self.cachedClustersSnapshot, self.clusters, previousStyle: self.cachedLayoutStyle, currentStyle: self.layoutStyle))
+        let layout = reuseCached ? self.cachedLayout : Self.computeLayout(for: self.clusters, layoutStyle: self.layoutStyle)
+        let maps: (clusterMap: [String: StarMapClusterNode], leafMap: [String: StarMapLeafNode]) = (self.cachedClustersSnapshot == self.clusters && !self.cachedClusterMap.isEmpty)
+            ? (self.cachedClusterMap, self.cachedLeafMap)
+            : Self.buildNodeMaps(for: self.clusters)
         
         GeometryReader { geo in
             let viewportCenter = CGPoint(x: geo.size.width * 0.5, y: geo.size.height * 0.5 + 8)
+            let clusterGlows: [StarMapClusterGlow] = layout.clusters.compactMap { cPos in
+                guard let cluster = maps.clusterMap[cPos.id] else { return nil }
+                return StarMapClusterGlow(id: cPos.id, worldPoint: cPos.worldPoint, color: cluster.accent)
+            }
             
             ZStack {
-                // 1. Static GPU-cached architectural backdrop
-                StarMapStaticBackdropView(
+                StarMapStarfieldBackdrop(
                     canvasColor: tokens.canvasTop,
-                    dotColor: tokens.architecturalDot,
                     accentColor: tokens.accent,
-                    isDark: isDark
+                    isDark: isDark,
+                    viewportCenter: viewportCenter,
+                    panOffset: self.panOffset,
+                    zoomScale: self.zoomScale,
+                    clusterGlows: clusterGlows
                 )
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
                 
-                // 2. Two-finger trackpad scroll & pinch zoom catcher
                 StarMapTrackpadPanZoomRepresentable(
                     onPan: { dx, dy in
                         self.panOffset.width += dx
@@ -2628,11 +2854,12 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 
-                // 3. Viewport-sized crisp vector tree & focused relation connectors
                 StarMapViewportConnectorsCanvas(
                     clusters: self.clusters,
                     relations: self.relations,
                     layout: layout,
+                    clusterMap: maps.clusterMap,
+                    leafMap: maps.leafMap,
                     selectedLeafID: self.selectedLeafID,
                     focusedClusterID: self.focusedClusterID,
                     viewportCenter: viewportCenter,
@@ -2642,13 +2869,14 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                 )
                 .allowsHitTesting(false)
                 
-                // 4. Lossless Native-Vector Node Cards Stage (re-rasterizes crisp typography & shapes at true zoom scale)
                 StarMapWorldStageView(
                     hubTitle: self.hubTitle,
                     hubSubtitle: self.hubSubtitle,
                     clusters: self.clusters,
                     relations: self.relations,
                     layout: layout,
+                    clusterMap: maps.clusterMap,
+                    leafMap: maps.leafMap,
                     selectedLeafID: self.selectedLeafID,
                     multiSelectedLeafIDs: self.multiSelectedLeafIDs,
                     focusedClusterID: self.focusedClusterID,
@@ -2668,56 +2896,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                 .equatable()
                 .frame(width: geo.size.width, height: geo.size.height)
                 
-                // 5. Minimal Zoom Controls (Bottom-Right)
-                VStack {
-                    Spacer()
-                    HStack {
-                        Spacer()
-                        HStack(spacing: 2) {
-                            Button {
-                                self.applyZoom(to: self.zoomScale - 0.15, animated: true)
-                            } label: {
-                                Image(systemName: "minus")
-                                    .font(.system(size: 10.5, weight: .semibold))
-                                    .frame(width: 26, height: 26)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .pointerStyle(.link)
-                            
-                            Button {
-                                self.fitViewport(bounds: layout.bounds, size: geo.size, animated: true)
-                            } label: {
-                                Text("\(Int((self.zoomScale * 100).rounded()))%")
-                                    .font(.system(size: 10.5, weight: .medium, design: .monospaced).monospacedDigit())
-                                    .frame(minWidth: 42, minHeight: 26)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .pointerStyle(.link)
-                            .help("重置视角以适配全部节点")
-                            
-                            Button {
-                                self.applyZoom(to: self.zoomScale + 0.15, animated: true)
-                            } label: {
-                                Image(systemName: "plus")
-                                    .font(.system(size: 10.5, weight: .semibold))
-                                    .frame(width: 26, height: 26)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .pointerStyle(.link)
-                        }
-                        .foregroundStyle(tokens.primaryInk.opacity(0.76))
-                        .padding(.horizontal, 4)
-                        .background(tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(tokens.hairlineStrong, lineWidth: 0.75)
-                        )
-                        .padding(16)
-                    }
-                }
+                self.zoomHUD(layout: layout, size: geo.size, tokens: tokens)
             }
             .contentShape(Rectangle())
             .gesture(
@@ -2757,7 +2936,10 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
             )
             .onAppear {
                 self.cachedLayout = layout
+                self.cachedLayoutStyle = self.layoutStyle
                 self.cachedClustersSnapshot = self.clusters
+                self.cachedClusterMap = maps.clusterMap
+                self.cachedLeafMap = maps.leafMap
                 if !self.hasAutoFitted && geo.size.width > 100 {
                     self.hasAutoFitted = true
                     self.fitViewport(bounds: layout.bounds, size: geo.size, animated: false)
@@ -2765,9 +2947,13 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                 self.reportSelectedLeafFrame(layout: layout, viewportCenter: viewportCenter)
             }
             .onChange(of: self.clusters) { _, nextClusters in
-                self.cachedLayout = layout
+                let nextMaps = Self.buildNodeMaps(for: nextClusters)
+                self.cachedLayout = Self.computeLayout(for: nextClusters, layoutStyle: self.layoutStyle)
+                self.cachedLayoutStyle = self.layoutStyle
                 self.cachedClustersSnapshot = nextClusters
-                self.reportSelectedLeafFrame(layout: layout, viewportCenter: viewportCenter)
+                self.cachedClusterMap = nextMaps.clusterMap
+                self.cachedLeafMap = nextMaps.leafMap
+                self.reportSelectedLeafFrame(layout: self.cachedLayout, viewportCenter: viewportCenter)
             }
             .onChange(of: self.selectedLeafID) { _, _ in
                 self.reportSelectedLeafFrame(layout: layout, viewportCenter: viewportCenter)
@@ -2792,8 +2978,8 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
             .onChange(of: self.panRequestToken) { _, _ in
                 guard let selectedLeafID = self.selectedLeafID, geo.size.width > 100 else { return }
                 if let lPos = layout.leaves.first(where: { $0.id == selectedLeafID }) {
-                    let targetZoom: CGFloat = max(self.zoomScale, 0.84)
-                    withAnimation(.snappy(duration: 0.24, extraBounce: 0)) {
+                    let targetZoom: CGFloat = max(self.zoomScale, 1.0)
+                    withAnimation(Self.cameraSpring) {
                         self.zoomScale = targetZoom
                         self.panOffset = CGSize(
                             width: -lPos.worldPoint.x * targetZoom * 0.72,
@@ -2804,16 +2990,20 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
             }
             .onChange(of: self.fitRequestToken) { _, _ in
                 guard geo.size.width > 100 else { return }
-                let freshLayout = Self.computeLayout(for: self.clusters)
+                let freshLayout = Self.computeLayout(for: self.clusters, layoutStyle: self.layoutStyle)
+                let freshMaps = Self.buildNodeMaps(for: self.clusters)
                 self.cachedLayout = freshLayout
+                self.cachedLayoutStyle = self.layoutStyle
                 self.cachedClustersSnapshot = self.clusters
+                self.cachedClusterMap = freshMaps.clusterMap
+                self.cachedLeafMap = freshMaps.leafMap
                 self.fitViewport(bounds: freshLayout.bounds, size: geo.size, animated: true)
             }
             .onChange(of: self.focusedClusterID) { _, nextCID in
                 guard geo.size.width > 100 else { return }
                 if let nextCID, let cPos = layout.clusters.first(where: { $0.id == nextCID }) {
-                    let targetZoom: CGFloat = max(self.zoomScale, 0.88)
-                    withAnimation(.snappy(duration: 0.24, extraBounce: 0)) {
+                    let targetZoom: CGFloat = max(self.zoomScale, 0.92)
+                    withAnimation(Self.cameraSpring) {
                         self.zoomScale = targetZoom
                         self.panOffset = CGSize(
                             width: -cPos.worldPoint.x * targetZoom * 0.72,
@@ -2823,6 +3013,79 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                 } else {
                     self.fitViewport(bounds: layout.bounds, size: geo.size, animated: true)
                 }
+            }
+        }
+    }
+    
+    
+    private func zoomHUD(
+        layout: StarMapLayoutEngine.LayoutResult,
+        size: CGSize,
+        tokens: StudioColorTokens
+    ) -> some View {
+        VStack {
+            Spacer()
+            HStack {
+                Spacer()
+                HStack(spacing: 2) {
+                    Button {
+                        self.applyZoom(to: self.zoomScale - 0.15, animated: true)
+                    } label: {
+                        Image(systemName: "minus")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .frame(width: 26, height: 26)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    
+                    Button {
+                        self.fitViewport(bounds: layout.bounds, size: size, animated: true)
+                    } label: {
+                        Text("\(Int((self.zoomScale * 100).rounded()))%")
+                            .font(.system(size: 10.5, weight: .medium, design: .monospaced).monospacedDigit())
+                            .frame(minWidth: 42, minHeight: 26)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    
+                    Button {
+                        self.applyZoom(to: self.zoomScale + 0.15, animated: true)
+                    } label: {
+                        Image(systemName: "plus")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .frame(width: 26, height: 26)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    
+                    Rectangle()
+                        .fill(tokens.hairline)
+                        .frame(width: 1, height: 14)
+                        .padding(.horizontal, 2)
+                    
+                    Button {
+                        self.fitViewport(bounds: layout.bounds, size: size, animated: true)
+                    } label: {
+                        Image(systemName: "scope")
+                            .font(.system(size: 11, weight: .medium))
+                            .frame(width: 26, height: 26)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .help("回到全景")
+                }
+                .foregroundStyle(tokens.primaryInk.opacity(0.76))
+                .padding(.horizontal, 4)
+                .background(tokens.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(tokens.hairlineStrong, lineWidth: 0.75)
+                )
+                .padding(16)
             }
         }
     }
@@ -2856,7 +3119,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
             newZoom: next
         )
         if animated {
-            withAnimation(.snappy(duration: 0.18, extraBounce: 0)) {
+            withAnimation(Self.cameraSpring) {
                 self.zoomScale = next
                 self.panOffset = nextPan
             }
@@ -2878,7 +3141,7 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
             height: -bounds.midY * targetZoom
         )
         if animated {
-            withAnimation(.snappy(duration: 0.24, extraBounce: 0)) {
+            withAnimation(Self.cameraSpring) {
                 self.zoomScale = targetZoom
                 self.panOffset = targetPan
             }
@@ -2890,20 +3153,35 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
 }
 
 
-/// Crisp viewport-sized Canvas drawing clean edge-docked horizontal S-trunks, vertical spine buses,
-/// and at most 2 focused relation arcs (zero crossing over cards, zero background dashed spiderwebs).
-private struct StarMapViewportConnectorsCanvas: View {
+private struct StarMapClusterGlow: Identifiable, Equatable {
+    let id: String
+    let worldPoint: CGPoint
+    let color: Color
+}
+
+
+/// Viewport-sized Animatable Canvas drawing orbital curves, timeline spine buses, far-zoom leaf dots, and focused relation arcs.
+private struct StarMapViewportConnectorsCanvas: View, Animatable {
     
     let clusters: [StarMapClusterNode]
     let relations: [StarMapRelationEdge]
     let layout: StarMapLayoutEngine.LayoutResult
+    let clusterMap: [String: StarMapClusterNode]
+    let leafMap: [String: StarMapLeafNode]
     let selectedLeafID: String?
     let focusedClusterID: String?
     let viewportCenter: CGPoint
-    let panOffset: CGSize
-    let zoomScale: CGFloat
+    var panOffset: CGSize
+    var zoomScale: CGFloat
     let tokens: StudioColorTokens
     
+    var animatableData: AnimatablePair<CGFloat, AnimatablePair<CGFloat, CGFloat>> {
+        get { AnimatablePair(self.zoomScale, AnimatablePair(self.panOffset.width, self.panOffset.height)) }
+        set {
+            self.zoomScale = newValue.first
+            self.panOffset = CGSize(width: newValue.second.first, height: newValue.second.second)
+        }
+    }
     
     @inline(__always)
     private func toScreen(_ worldPt: CGPoint) -> CGPoint {
@@ -2915,7 +3193,6 @@ private struct StarMapViewportConnectorsCanvas: View {
     
     
     var body: some View {
-        let clusterAccentByID: [String: Color] = Dictionary(uniqueKeysWithValues: self.clusters.map { ($0.id, $0.accent) })
         let leafPosByID = self.layout.leafPositionsByID
         let selectedClusterID: String? = self.focusedClusterID
             ?? self.selectedLeafID.flatMap { leafPosByID[$0]?.clusterID }
@@ -2925,190 +3202,262 @@ private struct StarMapViewportConnectorsCanvas: View {
             let metrics = StarMapZoomMetrics(zoom: z)
             let viewportBounds = CGRect(origin: .zero, size: canvasSize).insetBy(dx: -180 * z, dy: -180 * z)
             
-            // 1. Hub -> Cluster connectors (Vertical Chronological Timeline Spine when timeline is active, or horizontal S-curves otherwise)
-            let hubHalfW: CGFloat = (StarMapLayoutEngine.hubFootprint.width - 12) * 0.5
-            let hubHalfH: CGFloat = (StarMapLayoutEngine.hubFootprint.height - 14) * 0.5
-            let milestoneHalfW: CGFloat = (StarMapLayoutEngine.milestoneFootprint.width - 6) * 0.5
-            let clusterHalfW: CGFloat = (StarMapLayoutEngine.clusterFootprint.width - 8) * 0.5
-            let leafHalfW: CGFloat = (StarMapLayoutEngine.leafFootprint.width - 8) * 0.5
-            
-            if self.layout.usesTimelineSpine, let lastCluster = self.layout.clusters.last {
-                let spineStart = self.toScreen(CGPoint(x: 0, y: self.layout.hubPoint.y + hubHalfH))
-                let spineEnd = self.toScreen(CGPoint(x: 0, y: lastCluster.worldPoint.y + 22))
-                var spinePath = Path()
-                spinePath.move(to: spineStart)
-                spinePath.addLine(to: spineEnd)
-                // Subtle downward timeline arrow cap scaled losslessly
-                spinePath.move(to: CGPoint(x: spineEnd.x - 3.5 * z, y: spineEnd.y - 4 * z))
-                spinePath.addLine(to: spineEnd)
-                spinePath.addLine(to: CGPoint(x: spineEnd.x + 3.5 * z, y: spineEnd.y - 4 * z))
-                context.stroke(
-                    spinePath,
-                    with: .color(self.tokens.primaryInk.opacity(0.20)),
-                    style: StrokeStyle(lineWidth: metrics.strokeWidth(1.35), lineCap: .round, lineJoin: .round)
+            if self.layout.usesOrbitalLayout {
+                self.drawOrbitalConnectors(
+                    context: &context,
+                    viewportBounds: viewportBounds,
+                    selectedClusterID: selectedClusterID,
+                    metrics: metrics
                 )
-                
-                for cPos in self.layout.clusters {
-                    let side: CGFloat = cPos.worldPoint.x >= 0 ? 1.0 : -1.0
-                    let p0 = self.toScreen(CGPoint(x: side * milestoneHalfW, y: cPos.worldPoint.y))
-                    let p1 = self.toScreen(CGPoint(x: cPos.worldPoint.x - side * clusterHalfW, y: cPos.worldPoint.y))
-                    guard viewportBounds.contains(p0) || viewportBounds.contains(p1) else { continue }
-                    
-                    let accent = clusterAccentByID[cPos.id] ?? self.tokens.accent
-                    let isActive = (selectedClusterID == nil || selectedClusterID == cPos.id)
-                    
-                    var branch = Path()
-                    branch.move(to: p0)
-                    branch.addLine(to: p1)
-                    context.stroke(
-                        branch,
-                        with: .color(accent.opacity(isActive ? 0.56 : 0.20)),
-                        style: StrokeStyle(lineWidth: metrics.strokeWidth((selectedClusterID == cPos.id) ? 1.75 : 1.2), lineCap: .round)
-                    )
-                }
             } else {
-                for cPos in self.layout.clusters {
-                    let side: CGFloat = cPos.worldPoint.x >= 0 ? 1.0 : -1.0
-                    let p0 = self.toScreen(CGPoint(x: self.layout.hubPoint.x + side * hubHalfW, y: self.layout.hubPoint.y))
-                    let p1 = self.toScreen(CGPoint(x: cPos.worldPoint.x - side * clusterHalfW, y: cPos.worldPoint.y))
-                    guard viewportBounds.contains(p0) || viewportBounds.contains(p1) else { continue }
-                    
-                    let accent = clusterAccentByID[cPos.id] ?? self.tokens.accent
-                    let isActive = (selectedClusterID == nil || selectedClusterID == cPos.id)
-                    let midX = (p0.x + p1.x) * 0.5
-                    
-                    var trunk = Path()
-                    trunk.move(to: p0)
-                    trunk.addCurve(
-                        to: p1,
-                        control1: CGPoint(x: midX, y: p0.y),
-                        control2: CGPoint(x: midX, y: p1.y)
-                    )
-                    context.stroke(
-                        trunk,
-                        with: .color(accent.opacity(isActive ? 0.52 : 0.20)),
-                        style: StrokeStyle(lineWidth: metrics.strokeWidth((selectedClusterID == cPos.id) ? 1.7 : 1.2), lineCap: .round)
-                    )
-                }
+                self.drawTreeConnectors(
+                    context: &context,
+                    viewportBounds: viewportBounds,
+                    selectedClusterID: selectedClusterID,
+                    metrics: metrics
+                )
             }
             
-            // 2. Cluster -> Leaf clean orthogonal bus spines (zero diagonal lines slicing through cards!)
-            for (key, colLeaves) in self.layout.leafColumns {
-                let first = colLeaves[0]
-                let colWorldX = first.worldPoint.x
-                let side: CGFloat = colWorldX >= 0 ? 1.0 : -1.0
-                let parentWorld = first.parentPoint
-                let isSubcolumnContinuation = abs(parentWorld.x) > 350
-                let parentOuterWorldX = parentWorld.x + side * (isSubcolumnContinuation ? leafHalfW : clusterHalfW)
-                let leafInnerWorldX = colWorldX - side * leafHalfW
-                let spineWorldX = (parentOuterWorldX + leafInnerWorldX) * 0.5
-                
-                let accent = clusterAccentByID[key.clusterID] ?? self.tokens.accent
-                let isClusterActive = (selectedClusterID == nil || selectedClusterID == key.clusterID)
-                let baseColor = accent.opacity(isClusterActive ? 0.36 : 0.14)
-                
-                let parentOutScreen = self.toScreen(CGPoint(x: parentOuterWorldX, y: parentWorld.y))
-                let spineScreenX = self.toScreen(CGPoint(x: spineWorldX, y: parentWorld.y)).x
-                let leafInScreenX = self.toScreen(CGPoint(x: leafInnerWorldX, y: parentWorld.y)).x
-                
-                var minY = parentOutScreen.y
-                var maxY = parentOutScreen.y
-                for l in colLeaves {
-                    let sy = self.toScreen(l.worldPoint).y
-                    minY = min(minY, sy)
-                    maxY = max(maxY, sy)
-                }
-                
-                let colBounds = CGRect(
-                    x: min(parentOutScreen.x, leafInScreenX) - 20 * z,
-                    y: minY - 20 * z,
-                    width: abs(leafInScreenX - parentOutScreen.x) + 40 * z,
-                    height: (maxY - minY) + 40 * z
-                )
-                guard viewportBounds.intersects(colBounds) else { continue }
-                
-                var bus = Path()
-                bus.move(to: parentOutScreen)
-                bus.addLine(to: CGPoint(x: spineScreenX, y: parentOutScreen.y))
-                if maxY - minY > 0.5 {
-                    bus.move(to: CGPoint(x: spineScreenX, y: minY))
-                    bus.addLine(to: CGPoint(x: spineScreenX, y: maxY))
-                }
-                for l in colLeaves {
-                    let sy = self.toScreen(l.worldPoint).y
-                    bus.move(to: CGPoint(x: spineScreenX, y: sy))
-                    bus.addLine(to: CGPoint(x: leafInScreenX, y: sy))
-                }
+            if z < 0.60 {
+                self.drawFarZoomLeafDots(context: &context, viewportBounds: viewportBounds)
+            }
+            
+            self.drawSelectedRelationArcs(
+                context: &context,
+                leafPosByID: leafPosByID,
+                metrics: metrics
+            )
+        }
+    }
+    
+    
+    private func drawOrbitalConnectors(
+        context: inout GraphicsContext,
+        viewportBounds: CGRect,
+        selectedClusterID: String?,
+        metrics: StarMapZoomMetrics
+    ) {
+        let hubScreen = self.toScreen(self.layout.hubPoint)
+        for cPos in self.layout.clusters {
+            let cScreen = self.toScreen(cPos.worldPoint)
+            guard viewportBounds.contains(hubScreen) || viewportBounds.contains(cScreen) else { continue }
+            let accent = self.clusterMap[cPos.id]?.accent ?? self.tokens.accent
+            let isActive = (selectedClusterID == nil || selectedClusterID == cPos.id)
+            let dx = cScreen.x - hubScreen.x
+            let dy = cScreen.y - hubScreen.y
+            let control = CGPoint(
+                x: (hubScreen.x + cScreen.x) * 0.5 - dy * 0.18,
+                y: (hubScreen.y + cScreen.y) * 0.5 + dx * 0.18
+            )
+            var path = Path()
+            path.move(to: hubScreen)
+            path.addQuadCurve(to: cScreen, control: control)
+            context.stroke(
+                path,
+                with: .color(accent.opacity(isActive ? 0.36 : 0.14)),
+                style: StrokeStyle(lineWidth: metrics.strokeWidth(0.9), lineCap: .round)
+            )
+        }
+        
+        for lPos in self.layout.leaves {
+            let p0 = self.toScreen(lPos.parentPoint)
+            let p1 = self.toScreen(lPos.worldPoint)
+            guard viewportBounds.contains(p0) || viewportBounds.contains(p1) else { continue }
+            let accent = self.clusterMap[lPos.clusterID]?.accent ?? self.tokens.accent
+            let isSelected = (self.selectedLeafID == lPos.id)
+            let isClusterActive = (selectedClusterID == nil || selectedClusterID == lPos.clusterID)
+            let dx = p1.x - p0.x
+            let dy = p1.y - p0.y
+            let control = CGPoint(
+                x: (p0.x + p1.x) * 0.5 - dy * 0.14,
+                y: (p0.y + p1.y) * 0.5 + dx * 0.14
+            )
+            var curve = Path()
+            curve.move(to: p0)
+            curve.addQuadCurve(to: p1, control: control)
+            context.stroke(
+                curve,
+                with: .color(accent.opacity(isSelected ? 0.85 : (isClusterActive ? 0.22 : 0.10))),
+                style: StrokeStyle(lineWidth: isSelected ? 1.5 : 0.75, lineCap: .round)
+            )
+        }
+    }
+    
+    
+    private func drawTreeConnectors(
+        context: inout GraphicsContext,
+        viewportBounds: CGRect,
+        selectedClusterID: String?,
+        metrics: StarMapZoomMetrics
+    ) {
+        let z = self.zoomScale
+        let hubHalfW: CGFloat = (StarMapLayoutEngine.hubFootprint.width - 12) * 0.5
+        let hubHalfH: CGFloat = (StarMapLayoutEngine.hubFootprint.height - 14) * 0.5
+        let milestoneHalfW: CGFloat = (StarMapLayoutEngine.milestoneFootprint.width - 6) * 0.5
+        let clusterHalfW: CGFloat = (StarMapLayoutEngine.clusterFootprint.width - 8) * 0.5
+        let leafHalfW: CGFloat = (StarMapLayoutEngine.leafFootprint.width - 8) * 0.5
+        
+        if self.layout.usesTimelineSpine, let lastCluster = self.layout.clusters.last {
+            let spineStart = self.toScreen(CGPoint(x: 0, y: self.layout.hubPoint.y + hubHalfH))
+            let spineEnd = self.toScreen(CGPoint(x: 0, y: lastCluster.worldPoint.y + 22))
+            var spinePath = Path()
+            spinePath.move(to: spineStart)
+            spinePath.addLine(to: spineEnd)
+            spinePath.move(to: CGPoint(x: spineEnd.x - 3.5 * z, y: spineEnd.y - 4 * z))
+            spinePath.addLine(to: spineEnd)
+            spinePath.addLine(to: CGPoint(x: spineEnd.x + 3.5 * z, y: spineEnd.y - 4 * z))
+            context.stroke(
+                spinePath,
+                with: .color(self.tokens.primaryInk.opacity(0.20)),
+                style: StrokeStyle(lineWidth: metrics.strokeWidth(1.35), lineCap: .round, lineJoin: .round)
+            )
+            for cPos in self.layout.clusters {
+                let side: CGFloat = cPos.worldPoint.x >= 0 ? 1.0 : -1.0
+                let p0 = self.toScreen(CGPoint(x: side * milestoneHalfW, y: cPos.worldPoint.y))
+                let p1 = self.toScreen(CGPoint(x: cPos.worldPoint.x - side * clusterHalfW, y: cPos.worldPoint.y))
+                guard viewportBounds.contains(p0) || viewportBounds.contains(p1) else { continue }
+                let accent = self.clusterMap[cPos.id]?.accent ?? self.tokens.accent
+                let isActive = (selectedClusterID == nil || selectedClusterID == cPos.id)
+                var branch = Path()
+                branch.move(to: p0)
+                branch.addLine(to: p1)
                 context.stroke(
-                    bus,
-                    with: .color(baseColor),
-                    style: StrokeStyle(lineWidth: metrics.strokeWidth(1.15), lineCap: .round, lineJoin: .round)
+                    branch,
+                    with: .color(accent.opacity(isActive ? 0.56 : 0.20)),
+                    style: StrokeStyle(lineWidth: metrics.strokeWidth((selectedClusterID == cPos.id) ? 1.75 : 1.2), lineCap: .round)
                 )
-                
-                // Highlight selected leaf's exact branch path
-                if let selID = self.selectedLeafID,
-                   let selLeaf = colLeaves.first(where: { $0.id == selID })
-                {
-                    let selY = self.toScreen(selLeaf.worldPoint).y
-                    var highlight = Path()
-                    highlight.move(to: parentOutScreen)
-                    highlight.addLine(to: CGPoint(x: spineScreenX, y: parentOutScreen.y))
-                    highlight.addLine(to: CGPoint(x: spineScreenX, y: selY))
-                    highlight.addLine(to: CGPoint(x: leafInScreenX, y: selY))
-                    context.stroke(
-                        highlight,
-                        with: .color(accent.opacity(0.90)),
-                        style: StrokeStyle(lineWidth: metrics.strokeWidth(1.85), lineCap: .round, lineJoin: .round)
-                    )
-                }
             }
-            
-            // 3. Focused Cross-Node Semantic Arcs (ONLY for selected leaf, routed cleanly outside cards — zero card slicing!)
-            if let selID = self.selectedLeafID {
-                let incident = self.relations
-                    .filter { $0.sourceID == selID || $0.targetID == selID }
-                    .prefix(2)
-                for edge in incident {
-                    guard let a = leafPosByID[edge.sourceID],
-                          let b = leafPosByID[edge.targetID]
-                    else { continue }
-                    let sideA: CGFloat = a.worldPoint.x >= 0 ? 1.0 : -1.0
-                    let sideB: CGFloat = b.worldPoint.x >= 0 ? 1.0 : -1.0
-                    var arc = Path()
-                    if sideA == sideB {
-                        // Same-side cards: exit outer card edges and arch gently through outer whitespace.
-                        let p0 = self.toScreen(CGPoint(x: a.worldPoint.x + sideA * leafHalfW, y: a.worldPoint.y))
-                        let p1 = self.toScreen(CGPoint(x: b.worldPoint.x + sideB * leafHalfW, y: b.worldPoint.y))
-                        let outerWorldX = sideA > 0
-                            ? max(a.worldPoint.x, b.worldPoint.x) + leafHalfW
-                            : min(a.worldPoint.x, b.worldPoint.x) - leafHalfW
-                        let bowOut = min(76, max(30, abs(b.worldPoint.y - a.worldPoint.y) * 0.22))
-                        let cX = self.toScreen(CGPoint(x: outerWorldX + sideA * bowOut, y: 0)).x
-                        arc.move(to: p0)
-                        arc.addCurve(
-                            to: p1,
-                            control1: CGPoint(x: cX, y: p0.y),
-                            control2: CGPoint(x: cX, y: p1.y)
-                        )
-                    } else {
-                        // Cross-side cards: anchor on inner edges facing the spine corridor.
-                        let p0 = self.toScreen(CGPoint(x: a.worldPoint.x - sideA * leafHalfW, y: a.worldPoint.y))
-                        let p1 = self.toScreen(CGPoint(x: b.worldPoint.x - sideB * leafHalfW, y: b.worldPoint.y))
-                        let midX = (p0.x + p1.x) * 0.5
-                        arc.move(to: p0)
-                        arc.addCurve(
-                            to: p1,
-                            control1: CGPoint(x: midX, y: p0.y),
-                            control2: CGPoint(x: midX, y: p1.y)
-                        )
-                    }
-                    context.stroke(
-                        arc,
-                        with: .color(self.tokens.accent.opacity(0.42)),
-                        style: StrokeStyle(lineWidth: metrics.strokeWidth(1.15), lineCap: .round, dash: [4 * z, 4 * z])
-                    )
-                }
+        } else {
+            for cPos in self.layout.clusters {
+                let side: CGFloat = cPos.worldPoint.x >= 0 ? 1.0 : -1.0
+                let p0 = self.toScreen(CGPoint(x: self.layout.hubPoint.x + side * hubHalfW, y: self.layout.hubPoint.y))
+                let p1 = self.toScreen(CGPoint(x: cPos.worldPoint.x - side * clusterHalfW, y: cPos.worldPoint.y))
+                guard viewportBounds.contains(p0) || viewportBounds.contains(p1) else { continue }
+                let accent = self.clusterMap[cPos.id]?.accent ?? self.tokens.accent
+                let isActive = (selectedClusterID == nil || selectedClusterID == cPos.id)
+                let midX = (p0.x + p1.x) * 0.5
+                var trunk = Path()
+                trunk.move(to: p0)
+                trunk.addCurve(to: p1, control1: CGPoint(x: midX, y: p0.y), control2: CGPoint(x: midX, y: p1.y))
+                context.stroke(
+                    trunk,
+                    with: .color(accent.opacity(isActive ? 0.52 : 0.20)),
+                    style: StrokeStyle(lineWidth: metrics.strokeWidth((selectedClusterID == cPos.id) ? 1.7 : 1.2), lineCap: .round)
+                )
             }
+        }
+        
+        for (key, colLeaves) in self.layout.leafColumns {
+            let first = colLeaves[0]
+            let colWorldX = first.worldPoint.x
+            let side: CGFloat = colWorldX >= 0 ? 1.0 : -1.0
+            let parentWorld = first.parentPoint
+            let isSubcolumnContinuation = abs(parentWorld.x) > 350
+            let parentOuterWorldX = parentWorld.x + side * (isSubcolumnContinuation ? leafHalfW : clusterHalfW)
+            let leafInnerWorldX = colWorldX - side * leafHalfW
+            let spineWorldX = (parentOuterWorldX + leafInnerWorldX) * 0.5
+            let accent = self.clusterMap[key.clusterID]?.accent ?? self.tokens.accent
+            let isClusterActive = (selectedClusterID == nil || selectedClusterID == key.clusterID)
+            let parentOutScreen = self.toScreen(CGPoint(x: parentOuterWorldX, y: parentWorld.y))
+            let spineScreenX = self.toScreen(CGPoint(x: spineWorldX, y: parentWorld.y)).x
+            let leafInScreenX = self.toScreen(CGPoint(x: leafInnerWorldX, y: parentWorld.y)).x
+            var minY = parentOutScreen.y
+            var maxY = parentOutScreen.y
+            for l in colLeaves {
+                let sy = self.toScreen(l.worldPoint).y
+                minY = min(minY, sy)
+                maxY = max(maxY, sy)
+            }
+            let colBounds = CGRect(
+                x: min(parentOutScreen.x, leafInScreenX) - 20 * z,
+                y: minY - 20 * z,
+                width: abs(leafInScreenX - parentOutScreen.x) + 40 * z,
+                height: (maxY - minY) + 40 * z
+            )
+            guard viewportBounds.intersects(colBounds) else { continue }
+            var bus = Path()
+            bus.move(to: parentOutScreen)
+            bus.addLine(to: CGPoint(x: spineScreenX, y: parentOutScreen.y))
+            if maxY - minY > 0.5 {
+                bus.move(to: CGPoint(x: spineScreenX, y: minY))
+                bus.addLine(to: CGPoint(x: spineScreenX, y: maxY))
+            }
+            for l in colLeaves {
+                let sy = self.toScreen(l.worldPoint).y
+                bus.move(to: CGPoint(x: spineScreenX, y: sy))
+                bus.addLine(to: CGPoint(x: leafInScreenX, y: sy))
+            }
+            context.stroke(
+                bus,
+                with: .color(accent.opacity(isClusterActive ? 0.36 : 0.14)),
+                style: StrokeStyle(lineWidth: metrics.strokeWidth(1.15), lineCap: .round, lineJoin: .round)
+            )
+            if let selID = self.selectedLeafID, let selLeaf = colLeaves.first(where: { $0.id == selID }) {
+                let selY = self.toScreen(selLeaf.worldPoint).y
+                var highlight = Path()
+                highlight.move(to: parentOutScreen)
+                highlight.addLine(to: CGPoint(x: spineScreenX, y: parentOutScreen.y))
+                highlight.addLine(to: CGPoint(x: spineScreenX, y: selY))
+                highlight.addLine(to: CGPoint(x: leafInScreenX, y: selY))
+                context.stroke(
+                    highlight,
+                    with: .color(accent.opacity(0.90)),
+                    style: StrokeStyle(lineWidth: metrics.strokeWidth(1.85), lineCap: .round, lineJoin: .round)
+                )
+            }
+        }
+    }
+    
+    
+    private func drawFarZoomLeafDots(context: inout GraphicsContext, viewportBounds: CGRect) {
+        for lPos in self.layout.leaves {
+            let pt = self.toScreen(lPos.worldPoint)
+            guard viewportBounds.contains(pt) else { continue }
+            let dotColor = self.leafMap[lPos.id]?.dotColor ?? self.tokens.accent
+            let haloRect = CGRect(x: pt.x - 3.5, y: pt.y - 3.5, width: 7, height: 7)
+            context.fill(Circle().path(in: haloRect), with: .color(dotColor.opacity(0.25)))
+            let dotRect = CGRect(x: pt.x - 1.5, y: pt.y - 1.5, width: 3, height: 3)
+            context.fill(Circle().path(in: dotRect), with: .color(dotColor.opacity(0.92)))
+        }
+    }
+    
+    
+    private func drawSelectedRelationArcs(
+        context: inout GraphicsContext,
+        leafPosByID: [String: StarMapLayoutEngine.PositionedLeaf],
+        metrics: StarMapZoomMetrics
+    ) {
+        guard let selID = self.selectedLeafID else { return }
+        let z = self.zoomScale
+        let leafHalfW: CGFloat = (StarMapLayoutEngine.leafFootprint.width - 8) * 0.5
+        let incident = self.relations.filter { $0.sourceID == selID || $0.targetID == selID }.prefix(2)
+        for edge in incident {
+            guard let a = leafPosByID[edge.sourceID], let b = leafPosByID[edge.targetID] else { continue }
+            let sideA: CGFloat = a.worldPoint.x >= 0 ? 1.0 : -1.0
+            let sideB: CGFloat = b.worldPoint.x >= 0 ? 1.0 : -1.0
+            var arc = Path()
+            if sideA == sideB {
+                let p0 = self.toScreen(CGPoint(x: a.worldPoint.x + sideA * leafHalfW, y: a.worldPoint.y))
+                let p1 = self.toScreen(CGPoint(x: b.worldPoint.x + sideB * leafHalfW, y: b.worldPoint.y))
+                let outerWorldX = sideA > 0
+                    ? max(a.worldPoint.x, b.worldPoint.x) + leafHalfW
+                    : min(a.worldPoint.x, b.worldPoint.x) - leafHalfW
+                let bowOut = min(76, max(30, abs(b.worldPoint.y - a.worldPoint.y) * 0.22))
+                let cX = self.toScreen(CGPoint(x: outerWorldX + sideA * bowOut, y: 0)).x
+                arc.move(to: p0)
+                arc.addCurve(to: p1, control1: CGPoint(x: cX, y: p0.y), control2: CGPoint(x: cX, y: p1.y))
+            } else {
+                let p0 = self.toScreen(CGPoint(x: a.worldPoint.x - sideA * leafHalfW, y: a.worldPoint.y))
+                let p1 = self.toScreen(CGPoint(x: b.worldPoint.x - sideB * leafHalfW, y: b.worldPoint.y))
+                let midX = (p0.x + p1.x) * 0.5
+                arc.move(to: p0)
+                arc.addCurve(to: p1, control1: CGPoint(x: midX, y: p0.y), control2: CGPoint(x: midX, y: p1.y))
+            }
+            context.stroke(
+                arc,
+                with: .color(self.tokens.accent.opacity(0.42)),
+                style: StrokeStyle(lineWidth: metrics.strokeWidth(1.15), lineCap: .round, dash: [4 * z, 4 * z])
+            )
         }
     }
 }
@@ -3121,6 +3470,8 @@ private struct StarMapWorldStageView<ClusterMenu: View, LeafMenu: View>: View, E
     let clusters: [StarMapClusterNode]
     let relations: [StarMapRelationEdge]
     let layout: StarMapLayoutEngine.LayoutResult
+    let clusterMap: [String: StarMapClusterNode]
+    let leafMap: [String: StarMapLeafNode]
     let selectedLeafID: String?
     let multiSelectedLeafIDs: Set<String>
     let focusedClusterID: String?
@@ -3170,16 +3521,6 @@ private struct StarMapWorldStageView<ClusterMenu: View, LeafMenu: View>: View, E
         let metrics = StarMapZoomMetrics(zoom: self.zoomScale)
         let cullRect = CGRect(origin: .zero, size: self.viewportSize)
             .insetBy(dx: -metrics.scaled(260), dy: -metrics.scaled(160))
-        let clusterMap = Dictionary(uniqueKeysWithValues: self.clusters.map { ($0.id, $0) })
-        let leafMap: [String: StarMapLeafNode] = {
-            var map: [String: StarMapLeafNode] = [:]
-            for c in self.clusters {
-                for l in c.leaves.prefix(40) {
-                    map[l.id] = l
-                }
-            }
-            return map
-        }()
         let relatedIDs: Set<String> = {
             guard let selID = self.selectedLeafID else { return [] }
             var ids = Set<String>()
@@ -3189,46 +3530,39 @@ private struct StarMapWorldStageView<ClusterMenu: View, LeafMenu: View>: View, E
             return ids
         }()
         let hubScreen = self.screenPosition(self.layout.hubPoint)
+        let isFarZoom = self.zoomScale < 0.60
+        let isCompactMidZoom = self.zoomScale >= 0.60 && self.zoomScale < 1.00
         
         ZStack {
-            // 1. Center / Timeline Crown Hub Node (true lossless vector geometry & typography)
             if cullRect.contains(hubScreen) {
                 let hubCorner = metrics.scaled(12)
-                VStack(spacing: metrics.scaled(3)) {
-                    HStack(spacing: metrics.scaled(4)) {
-                        if self.layout.usesTimelineSpine {
-                            Image(systemName: "clock.arrow.circlepath")
-                                .font(.system(size: metrics.fontSize(11), weight: .semibold))
-                                .foregroundStyle(tokens.accent)
-                        }
-                        Text(self.hubTitle)
-                            .font(.system(size: metrics.fontSize(13.5), weight: .semibold))
-                            .foregroundStyle(tokens.primaryInk)
-                            .lineLimit(1)
-                    }
-                    Text(self.layout.usesTimelineSpine ? "时间轴 · \(self.hubSubtitle)" : self.hubSubtitle)
-                        .font(.system(size: metrics.fontSize(10.5), weight: .medium, design: .rounded).monospacedDigit())
+                VStack(spacing: 3) {
+                    Text(self.hubTitle)
+                        .font(.system(size: isFarZoom ? 12.5 : 13.5, weight: .semibold))
+                        .foregroundStyle(tokens.primaryInk)
+                        .lineLimit(1)
+                    Text(self.hubSubtitle)
+                        .font(.system(size: 10.5, weight: .medium, design: .rounded).monospacedDigit())
                         .foregroundStyle(tokens.primaryInk.opacity(0.55))
                         .lineLimit(1)
                 }
                 .frame(
-                    width: metrics.scaled(StarMapLayoutEngine.hubFootprint.width - 12),
-                    height: metrics.scaled(StarMapLayoutEngine.hubFootprint.height - 14)
+                    width: max(124, metrics.scaled(StarMapLayoutEngine.hubFootprint.width - 12)),
+                    height: max(46, metrics.scaled(StarMapLayoutEngine.hubFootprint.height - 14))
                 )
-                .background(tokens.card, in: RoundedRectangle(cornerRadius: hubCorner, style: .continuous))
+                .background(tokens.card, in: RoundedRectangle(cornerRadius: max(10, hubCorner), style: .continuous))
                 .overlay(
-                    RoundedRectangle(cornerRadius: hubCorner, style: .continuous)
+                    RoundedRectangle(cornerRadius: max(10, hubCorner), style: .continuous)
                         .strokeBorder(tokens.accent.opacity(0.55), lineWidth: metrics.strokeWidth(1.2))
                 )
                 .position(x: hubScreen.x, y: hubScreen.y)
             }
             
-            // 1b. Chronological Timeline Milestones along X = 0 Spine
             if self.layout.usesTimelineSpine {
                 ForEach(self.layout.clusters) { cPos in
                     let pt = self.screenPosition(CGPoint(x: 0, y: cPos.worldPoint.y))
                     if cullRect.contains(pt),
-                       let cluster = clusterMap[cPos.id],
+                       let cluster = self.clusterMap[cPos.id],
                        let timeLabel = cluster.timelineLabel
                     {
                         StarMapTimelineMilestoneView(
@@ -3246,10 +3580,9 @@ private struct StarMapWorldStageView<ClusterMenu: View, LeafMenu: View>: View, E
                 }
             }
             
-            // 2. Tier-1 Cluster Nodes (Groups / Months)
             ForEach(self.layout.clusters) { cPos in
                 let pt = self.screenPosition(cPos.worldPoint)
-                if cullRect.contains(pt), let cluster = clusterMap[cPos.id] {
+                if cullRect.contains(pt), let cluster = self.clusterMap[cPos.id] {
                     StarMapClusterPillView(
                         cluster: cluster,
                         isFocused: self.focusedClusterID == cluster.id,
@@ -3266,43 +3599,45 @@ private struct StarMapWorldStageView<ClusterMenu: View, LeafMenu: View>: View, E
                 }
             }
             
-            // 3. Tier-2 Structured Leaf Cards
-            ForEach(self.layout.leaves) { lPos in
-                let pt = self.screenPosition(lPos.worldPoint)
-                if cullRect.contains(pt), let leaf = leafMap[lPos.id] {
-                    let isMultiSelected = self.multiSelectedLeafIDs.contains(leaf.id)
-                    let isSelected = (self.selectedLeafID == leaf.id) || isMultiSelected
-                    let isRelated = relatedIDs.contains(leaf.id)
-                    let dimmed = (self.focusedClusterID != nil && self.focusedClusterID != leaf.clusterID && !isSelected && !isRelated)
-                    
-                    StarMapLeafCardView(
-                        leaf: leaf,
-                        tokens: tokens,
-                        isSelected: isSelected,
-                        isMultiSelected: isMultiSelected,
-                        isRelated: isRelated,
-                        dimmed: dimmed,
-                        isDark: self.isDark,
-                        zoomScale: self.zoomScale
-                    )
-                    .equatable()
-                    .position(x: pt.x, y: pt.y)
-                    .pointerStyle(.link)
-                    .onTapGesture(count: 2) {
-                        self.onSelectLeaf(leaf.id)
-                        self.onDoubleClickLeaf(leaf.id)
-                    }
-                    .onTapGesture(count: 1) {
-                        if let onCommandSelect = self.onCommandSelectLeaf,
-                           NSEvent.modifierFlags.contains(.command)
-                        {
-                            onCommandSelect(leaf.id)
-                        } else {
+            if !isFarZoom {
+                ForEach(self.layout.leaves) { lPos in
+                    let pt = self.screenPosition(lPos.worldPoint)
+                    if cullRect.contains(pt), let leaf = self.leafMap[lPos.id] {
+                        let isMultiSelected = self.multiSelectedLeafIDs.contains(leaf.id)
+                        let isSelected = (self.selectedLeafID == leaf.id) || isMultiSelected
+                        let isRelated = relatedIDs.contains(leaf.id)
+                        let dimmed = (self.focusedClusterID != nil && self.focusedClusterID != leaf.clusterID && !isSelected && !isRelated)
+                        
+                        StarMapLeafCardView(
+                            leaf: leaf,
+                            tokens: tokens,
+                            isSelected: isSelected,
+                            isMultiSelected: isMultiSelected,
+                            isRelated: isRelated,
+                            dimmed: dimmed,
+                            isDark: self.isDark,
+                            isCompactLOD: isCompactMidZoom,
+                            zoomScale: self.zoomScale
+                        )
+                        .equatable()
+                        .position(x: pt.x, y: pt.y)
+                        .pointerStyle(.link)
+                        .onTapGesture(count: 2) {
                             self.onSelectLeaf(leaf.id)
+                            self.onDoubleClickLeaf(leaf.id)
                         }
-                    }
-                    .contextMenu {
-                        self.leafContextMenu(leaf)
+                        .onTapGesture(count: 1) {
+                            if let onCommandSelect = self.onCommandSelectLeaf,
+                               NSEvent.modifierFlags.contains(.command)
+                            {
+                                onCommandSelect(leaf.id)
+                            } else {
+                                self.onSelectLeaf(leaf.id)
+                            }
+                        }
+                        .contextMenu {
+                            self.leafContextMenu(leaf)
+                        }
                     }
                 }
             }
@@ -3334,27 +3669,30 @@ private struct StarMapTimelineMilestoneView: View, Equatable {
     
     var body: some View {
         let m = StarMapZoomMetrics(zoom: self.zoomScale)
+        let strokeColor: Color = self.isFocused
+            ? self.accent.opacity(0.75)
+            : self.tokens.hairlineStrong
         Button(action: self.onTap) {
             HStack(spacing: m.scaled(4.5)) {
                 Circle()
                     .fill(self.accent)
-                    .frame(width: m.scaled(5.5), height: m.scaled(5.5))
+                    .frame(width: 5.5, height: 5.5)
                 
                 Text(self.label)
-                    .font(.system(size: m.fontSize(9.5), weight: .semibold, design: .rounded).monospacedDigit())
+                    .font(.system(size: 10.5, weight: .semibold, design: .rounded).monospacedDigit())
                     .foregroundStyle(self.isFocused ? self.accent : self.tokens.primaryInk.opacity(0.76))
                     .lineLimit(1)
             }
-            .padding(.horizontal, m.scaled(7))
+            .padding(.horizontal, 8)
             .frame(
-                width: m.scaled(StarMapLayoutEngine.milestoneFootprint.width - 6),
-                height: m.scaled(StarMapLayoutEngine.milestoneFootprint.height - 2)
+                width: max(92, m.scaled(StarMapLayoutEngine.milestoneFootprint.width - 6)),
+                height: max(22, m.scaled(StarMapLayoutEngine.milestoneFootprint.height - 2))
             )
-            .background(self.tokens.card, in: Capsule())
+            .background(self.isHovered ? self.tokens.insetHover : self.tokens.card, in: Capsule())
             .overlay(
                 Capsule()
                     .strokeBorder(
-                        (self.isFocused || self.isHovered) ? self.accent.opacity(0.75) : self.tokens.hairlineStrong,
+                        strokeColor,
                         lineWidth: m.strokeWidth((self.isFocused || self.isHovered) ? 1.2 : 0.75)
                     )
             )
@@ -3393,41 +3731,47 @@ private struct StarMapClusterPillView: View, Equatable {
     
     var body: some View {
         let m = StarMapZoomMetrics(zoom: self.zoomScale)
-        let corner = m.scaled(10)
+        let isFarZoom = self.zoomScale < 0.60
+        let corner: CGFloat = isFarZoom ? 10 : max(10, m.scaled(10))
+        let strokeColor: Color = self.isFocused
+            ? self.cluster.accent.opacity(0.78)
+            : self.tokens.hairlineStrong
         Button(action: self.onToggle) {
-            HStack(spacing: m.scaled(6)) {
-                RoundedRectangle(cornerRadius: m.scaled(2), style: .continuous)
+            HStack(spacing: 6) {
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
                     .fill(self.cluster.accent)
-                    .frame(width: m.scaled(3.5), height: m.scaled(15))
+                    .frame(width: 3.5, height: 15)
                 
                 Text(self.cluster.title)
-                    .font(.system(size: m.fontSize(12), weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(self.tokens.primaryInk)
                     .lineLimit(1)
                 
-                Spacer(minLength: m.scaled(2))
+                Spacer(minLength: 2)
                 
                 Text(self.cluster.countText)
-                    .font(.system(size: m.fontSize(10), weight: .semibold, design: .rounded).monospacedDigit())
+                    .font(.system(size: 10.5, weight: .semibold, design: .rounded).monospacedDigit())
                     .foregroundStyle(self.cluster.accent)
-                    .padding(.horizontal, m.scaled(6))
-                    .frame(height: m.scaled(18))
+                    .padding(.horizontal, 6)
+                    .frame(height: 18)
                     .background(self.cluster.accent.opacity(self.isDark ? 0.18 : 0.11), in: Capsule())
                 
-                Image(systemName: self.cluster.isCollapsed ? "chevron.right" : "chevron.down")
-                    .font(.system(size: m.fontSize(9.5), weight: .bold))
-                    .foregroundStyle(self.tokens.primaryInk.opacity(0.45))
+                if !isFarZoom {
+                    Image(systemName: self.cluster.isCollapsed ? "chevron.right" : "chevron.down")
+                        .font(.system(size: 9.5, weight: .bold))
+                        .foregroundStyle(self.tokens.primaryInk.opacity(0.45))
+                }
             }
-            .padding(.horizontal, m.scaled(10))
+            .padding(.horizontal, 10)
             .frame(
-                width: m.scaled(StarMapLayoutEngine.clusterFootprint.width - 8),
-                height: m.scaled(StarMapLayoutEngine.clusterFootprint.height - 8)
+                width: max(136, m.scaled(StarMapLayoutEngine.clusterFootprint.width - 8)),
+                height: max(32, m.scaled(StarMapLayoutEngine.clusterFootprint.height - 8))
             )
-            .background(self.tokens.card, in: RoundedRectangle(cornerRadius: corner, style: .continuous))
+            .background(self.isHovered ? self.tokens.insetHover : self.tokens.card, in: RoundedRectangle(cornerRadius: corner, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: corner, style: .continuous)
                     .strokeBorder(
-                        (self.isFocused || self.isHovered) ? self.cluster.accent.opacity(0.78) : self.tokens.hairlineStrong,
+                        strokeColor,
                         lineWidth: m.strokeWidth((self.isFocused || self.isHovered) ? 1.3 : 0.85)
                     )
             )
@@ -3453,6 +3797,7 @@ private struct StarMapLeafCardView: View, Equatable {
     let isRelated: Bool
     let dimmed: Bool
     let isDark: Bool
+    let isCompactLOD: Bool
     let zoomScale: CGFloat
     
     @State private var isHovered = false
@@ -3465,72 +3810,82 @@ private struct StarMapLeafCardView: View, Equatable {
             && lhs.isRelated == rhs.isRelated
             && lhs.dimmed == rhs.dimmed
             && lhs.isDark == rhs.isDark
+            && lhs.isCompactLOD == rhs.isCompactLOD
             && abs(lhs.zoomScale - rhs.zoomScale) < 0.0005
     }
     
     
     var body: some View {
         let m = StarMapZoomMetrics(zoom: self.zoomScale)
-        let corner = m.scaled(10)
-        let dotSide = m.scaled(self.isSelected ? 7 : 6)
-        VStack(alignment: .leading, spacing: m.scaled(3.5)) {
-            HStack(spacing: m.scaled(6)) {
+        let corner: CGFloat = self.isCompactLOD ? 8 : 10
+        let strokeColor: Color = {
+            if self.isSelected {
+                return self.leaf.dotColor.opacity(0.95)
+            }
+            if self.isRelated {
+                return self.tokens.accent.opacity(0.68)
+            }
+            return self.isHovered ? self.tokens.hairlineStrong : self.tokens.hairline
+        }()
+        let cardWidth = self.isCompactLOD
+            ? min(176, max(126, m.scaled(StarMapLayoutEngine.leafFootprint.width - 8)))
+            : max(188, m.scaled(StarMapLayoutEngine.leafFootprint.width - 8))
+        let cardHeight = self.isCompactLOD
+            ? 32
+            : max(50, m.scaled(StarMapLayoutEngine.leafFootprint.height - 6))
+        
+        VStack(alignment: .leading, spacing: 3.5) {
+            HStack(spacing: 6) {
                 if self.isMultiSelected {
                     Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: m.fontSize(11), weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(self.tokens.accent)
                 } else {
                     Circle()
                         .fill(self.isRelated ? self.tokens.accent : self.leaf.dotColor)
-                        .frame(width: dotSide, height: dotSide)
+                        .frame(width: self.isSelected ? 7 : 6, height: self.isSelected ? 7 : 6)
                 }
                 
                 Text(self.leaf.title)
-                    .font(.system(size: m.fontSize(12), weight: self.isSelected ? .semibold : .medium))
+                    .font(.system(size: self.isCompactLOD ? 11.5 : 12, weight: self.isSelected ? .semibold : .medium))
                     .foregroundStyle(self.tokens.primaryInk.opacity(self.isSelected ? 1.0 : 0.90))
                     .lineLimit(1)
                 
                 Spacer(minLength: 0)
             }
             
-            HStack(spacing: m.scaled(5)) {
-                if let badge = self.leaf.statusBadge, !badge.isEmpty {
-                    Text(badge)
-                        .font(.system(size: m.fontSize(9.5), weight: .semibold))
-                        .foregroundStyle(self.tokens.accentText)
-                        .padding(.horizontal, m.scaled(4.5))
-                        .frame(height: m.scaled(15))
-                        .background(self.tokens.positivePillBg, in: RoundedRectangle(cornerRadius: m.scaled(4), style: .continuous))
+            if !self.isCompactLOD {
+                HStack(spacing: 5) {
+                    if let badge = self.leaf.statusBadge, !badge.isEmpty {
+                        Text(badge)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(self.tokens.accentText)
+                            .padding(.horizontal, 4.5)
+                            .frame(height: 15)
+                            .background(self.tokens.positivePillBg, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    }
+                    if !self.leaf.metaLine.isEmpty {
+                        Text(self.leaf.metaLine)
+                            .font(.system(size: 10, weight: .regular, design: .rounded).monospacedDigit())
+                            .foregroundStyle(self.tokens.primaryInk.opacity(0.50))
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
                 }
-                if !self.leaf.metaLine.isEmpty {
-                    Text(self.leaf.metaLine)
-                        .font(.system(size: m.fontSize(10), weight: .regular, design: .rounded).monospacedDigit())
-                        .foregroundStyle(self.tokens.primaryInk.opacity(0.50))
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
+                .padding(.leading, 12)
             }
-            .padding(.leading, m.scaled(12))
         }
-        .padding(.horizontal, m.scaled(10))
-        .padding(.vertical, m.scaled(6))
-        .frame(
-            width: m.scaled(StarMapLayoutEngine.leafFootprint.width - 8),
-            height: m.scaled(StarMapLayoutEngine.leafFootprint.height - 6),
-            alignment: .leading
-        )
+        .padding(.horizontal, 10)
+        .padding(.vertical, self.isCompactLOD ? 5 : 6)
+        .frame(width: cardWidth, height: cardHeight, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: corner, style: .continuous)
-                .fill(self.tokens.card)
+                .fill(self.isHovered ? self.tokens.insetHover : self.tokens.card)
         )
         .overlay(
             RoundedRectangle(cornerRadius: corner, style: .continuous)
                 .strokeBorder(
-                    self.isSelected
-                        ? self.leaf.dotColor.opacity(0.95)
-                        : (self.isRelated
-                           ? self.tokens.accent.opacity(0.68)
-                           : (self.isHovered ? self.leaf.dotColor.opacity(0.55) : self.tokens.hairline)),
+                    strokeColor,
                     lineWidth: m.strokeWidth(self.isSelected ? 1.6 : (self.isRelated ? 1.2 : 0.85))
                 )
         )
@@ -3545,16 +3900,46 @@ private struct StarMapLeafCardView: View, Equatable {
 }
 
 
-/// Static GPU-cached dot-grid & soft hub mist backdrop so panning never triggers dot-grid redraws.
-private struct StarMapStaticBackdropView: View, Equatable {
+/// Animatable parallax starfield & nebula backdrop for the explorable star-map universe.
+private struct StarMapStarfieldBackdrop: View, Animatable {
+    
+    struct SeedStar: Sendable {
+        let x: CGFloat
+        let y: CGFloat
+        let radius: CGFloat
+        let layer: Int
+        let alpha: CGFloat
+    }
+    
+    private static let seededStars: [SeedStar] = {
+        var state: UInt64 = 0x5A17_9E37_79B9_7F4A
+        func nextUnit() -> CGFloat {
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            let v = Double((state >> 32) & 0xFFFF_FFFF) / Double(UInt32.max)
+            return CGFloat(v)
+        }
+        return (0..<220).map { i in
+            let layer = i % 3
+            let radius: CGFloat = layer == 0 ? 0.85 : (layer == 1 ? 1.15 : 1.55)
+            let alpha: CGFloat = 0.28 + nextUnit() * 0.72
+            return SeedStar(x: nextUnit(), y: nextUnit(), radius: radius, layer: layer, alpha: alpha)
+        }
+    }()
     
     let canvasColor: Color
-    let dotColor: Color
     let accentColor: Color
     let isDark: Bool
+    let viewportCenter: CGPoint
+    var panOffset: CGSize
+    var zoomScale: CGFloat
+    let clusterGlows: [StarMapClusterGlow]
     
-    static func == (lhs: StarMapStaticBackdropView, rhs: StarMapStaticBackdropView) -> Bool {
-        lhs.isDark == rhs.isDark
+    var animatableData: AnimatablePair<CGFloat, AnimatablePair<CGFloat, CGFloat>> {
+        get { AnimatablePair(self.zoomScale, AnimatablePair(self.panOffset.width, self.panOffset.height)) }
+        set {
+            self.zoomScale = newValue.first
+            self.panOffset = CGSize(width: newValue.second.first, height: newValue.second.second)
+        }
     }
     
     var body: some View {
@@ -3563,33 +3948,52 @@ private struct StarMapStaticBackdropView: View, Equatable {
             
             Canvas(opaque: false, rendersAsynchronously: true) { context, size in
                 guard size.width > 10, size.height > 10 else { return }
-                let step: CGFloat = 32
-                var dots = Path()
-                var y: CGFloat = 16
-                while y < size.height {
-                    var x: CGFloat = 16
-                    while x < size.width {
-                        dots.addRect(CGRect(x: x - 0.7, y: y - 0.7, width: 1.4, height: 1.4))
-                        x += step
-                    }
-                    y += step
-                }
-                context.fill(dots, with: .color(self.dotColor))
+                let tile: CGFloat = 1024
+                let parallaxFactors: [CGFloat] = [0.12, 0.30, 0.55]
+                let maxStarOpacity: CGFloat = self.isDark ? 0.55 : 0.22
+                let starBaseColor = self.isDark ? Color.white : self.accentColor
                 
-                let center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
-                let mistR = max(size.width, size.height) * 0.45
-                context.fill(
-                    Circle().path(in: CGRect(x: center.x - mistR, y: center.y - mistR, width: mistR * 2, height: mistR * 2)),
-                    with: .radialGradient(
-                        Gradient(colors: [
-                            self.accentColor.opacity(self.isDark ? 0.08 : 0.045),
-                            .clear,
-                        ]),
-                        center: center,
-                        startRadius: 12,
-                        endRadius: mistR
+                for star in Self.seededStars {
+                    let factor = parallaxFactors[star.layer]
+                    let rawX = (star.x * tile + self.panOffset.width * factor).truncatingRemainder(dividingBy: tile)
+                    let rawY = (star.y * tile + self.panOffset.height * factor).truncatingRemainder(dividingBy: tile)
+                    let baseX = rawX < 0 ? rawX + tile : rawX
+                    let baseY = rawY < 0 ? rawY + tile : rawY
+                    let color = starBaseColor.opacity(star.alpha * maxStarOpacity)
+                    
+                    var y = baseY
+                    while y < size.height {
+                        var x = baseX
+                        while x < size.width {
+                            let rect = CGRect(x: x - star.radius, y: y - star.radius, width: star.radius * 2, height: star.radius * 2)
+                            context.fill(Circle().path(in: rect), with: .color(color))
+                            x += tile
+                        }
+                        y += tile
+                    }
+                }
+                
+                let nebulaOpacity: CGFloat = self.isDark ? 0.16 : 0.10
+                let nebulaR = max(120, 190 * min(1.35, max(0.7, self.zoomScale)))
+                for glow in self.clusterGlows {
+                    let center = CGPoint(
+                        x: self.viewportCenter.x + self.panOffset.width + glow.worldPoint.x * self.zoomScale,
+                        y: self.viewportCenter.y + self.panOffset.height + glow.worldPoint.y * self.zoomScale
                     )
-                )
+                    guard center.x > -nebulaR, center.x < size.width + nebulaR,
+                          center.y > -nebulaR, center.y < size.height + nebulaR
+                    else { continue }
+                    let circleRect = CGRect(x: center.x - nebulaR, y: center.y - nebulaR, width: nebulaR * 2, height: nebulaR * 2)
+                    context.fill(
+                        Circle().path(in: circleRect),
+                        with: .radialGradient(
+                            Gradient(colors: [glow.color.opacity(nebulaOpacity), .clear]),
+                            center: center,
+                            startRadius: 8,
+                            endRadius: nebulaR
+                        )
+                    )
+                }
             }
             .drawingGroup()
         }
@@ -3602,6 +4006,56 @@ private struct StarMapStaticBackdropView: View, Equatable {
 
 
 // MARK: - Floating Search Results & Snippets HUD (Shared by Document Center & Weekly Report Center)
+
+struct StarMapSearchField: View {
+    
+    let placeholder: String
+    @Binding var text: String
+    let hitCount: Int
+    let showCount: Bool
+    var isFocused: FocusState<Bool>.Binding
+    let tokens: StudioColorTokens
+    let onSubmit: () -> Void
+    let onClear: () -> Void
+    
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(self.isFocused.wrappedValue ? self.tokens.primaryInk : self.tokens.primaryInk.opacity(0.45))
+            TextField(self.placeholder, text: self.$text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12.5))
+                .focused(self.isFocused)
+                .frame(minWidth: 180, maxWidth: 240)
+                .onSubmit(self.onSubmit)
+            if self.showCount {
+                Text("\(self.hitCount) 篇")
+                    .font(.system(size: 10.5, weight: .semibold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(self.tokens.accentText)
+                    .padding(.horizontal, 6)
+                    .frame(height: 18)
+                    .background(self.tokens.positivePillBg, in: Capsule())
+            }
+            if !self.text.isEmpty {
+                Button(action: self.onClear) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(self.tokens.primaryInk.opacity(0.42))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 28)
+        .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(self.isFocused.wrappedValue ? self.tokens.hairlineStrong : self.tokens.hairline, lineWidth: 0.85)
+        )
+    }
+}
+
 
 struct StarMapSearchResultsHUD: View {
     
@@ -3623,7 +4077,7 @@ struct StarMapSearchResultsHUD: View {
                     .foregroundStyle(self.tokens.accent)
                 
                 Text("全文匹配 · \(self.hits.count) 篇")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 12, weight: .semibold).monospacedDigit())
                     .foregroundStyle(self.tokens.primaryInk)
                 
                 Spacer(minLength: 4)
@@ -3648,7 +4102,7 @@ struct StarMapSearchResultsHUD: View {
                     .frame(height: 1)
                 
                 if self.hits.isEmpty {
-                    Text("无匹配关键词，可尝试减少关键词或切换分组")
+                    Text("无匹配")
                         .font(.system(size: 11.5))
                         .foregroundStyle(self.tokens.primaryInk.opacity(0.55))
                         .padding(14)

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { copyTextWithFallback, postToNative } from "./bridge";
 import LoadingState from "./primitives/LoadingState";
 import MarkdownProse from "./primitives/MarkdownProse";
@@ -56,7 +56,7 @@ function homeRevealStyle(visible: boolean): CSSProperties {
   };
 }
 
-function UserBubble({
+const UserBubble = memo(function UserBubble({
   text,
   quoteContext,
   attachedDocuments,
@@ -104,16 +104,15 @@ function UserBubble({
       </div>
     </div>
   );
-}
+});
 
-function AssistantMessageBlock({
+const AssistantMessageBlock = memo(function AssistantMessageBlock({
   message,
   locale,
   statusLabel,
   onRetry,
   onInsert,
   onOpenNote,
-  onFollowUp,
 }: {
   message: AgentMessage;
   locale: "zh" | "en";
@@ -121,7 +120,6 @@ function AssistantMessageBlock({
   onRetry?: () => void;
   onInsert?: (text: string) => void;
   onOpenNote?: (text: string) => void;
-  onFollowUp: (prompt: string) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const hasText = message.text.trim().length > 0;
@@ -265,47 +263,79 @@ function AssistantMessageBlock({
               )}
             </div>
           )}
-
-          {/* Contextual clickable follow-up prompts */}
-          {!message.isStreaming && message.followUps && message.followUps.length > 0 && (
-            <div className="mt-3.5" style={{ animation: "fade-in 300ms ease-out both" }}>
-              <p className="mb-1 text-[13px] font-medium text-ink-3">
-                {locale === "zh" ? "继续追问" : "Follow-ups"}
-              </p>
-              <div className="flex flex-col">
-                {message.followUps.map((prompt, i) => (
-                  <button
-                    key={prompt}
-                    type="button"
-                    onClick={() => onFollowUp(prompt)}
-                    className="-mx-1.5 flex items-center gap-2 rounded-[7px] border-b border-line px-1.5 py-2 text-left text-[13.5px] text-ink transition-colors duration-100 last:border-b-0 hover:bg-hover-2"
-                    style={{ animation: `fade-up 300ms cubic-bezier(0.23,1,0.32,1) ${i * 70}ms both` }}
-                  >
-                    <svg
-                      width="13"
-                      height="13"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="var(--ink-3)"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      className="shrink-0"
-                    >
-                      <path d="M9 10l-5 5 5 5" />
-                      <path d="M20 4v7a4 4 0 0 1-4 4H4" />
-                    </svg>
-                    <span className="min-w-0 truncate">{prompt}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
         </>
       )}
     </article>
   );
-}
+});
+
+const ChatMessageList = memo(function ChatMessageList({
+  messages,
+  locale,
+  isNews,
+  isStreaming,
+  streamingStatusLabel,
+  errorMessage,
+  onRetry,
+  onInsert,
+  onOpenNote,
+  onOpenGatewaySettings,
+}: {
+  messages: AgentMessage[];
+  locale: "zh" | "en";
+  isNews: boolean;
+  isStreaming: boolean;
+  streamingStatusLabel?: string;
+  errorMessage?: string | null;
+  onRetry: () => void;
+  onInsert: (text: string) => void;
+  onOpenNote: (text: string) => void;
+  onOpenGatewaySettings: () => void;
+}) {
+  return (
+    <>
+      {messages.map((msg, idx) => {
+        const isLastAssistant = msg.role === "assistant" && idx === messages.length - 1;
+        return msg.role === "user" ? (
+          <UserBubble
+            key={msg.id}
+            text={msg.text}
+            quoteContext={msg.quoteContext}
+            attachedDocuments={msg.attachedDocuments}
+            delegatedBotName={msg.delegatedBotName}
+          />
+        ) : (
+          <AssistantMessageBlock
+            key={msg.id}
+            message={msg}
+            locale={locale}
+            statusLabel={isLastAssistant ? streamingStatusLabel : undefined}
+            onRetry={isNews && isLastAssistant && !isStreaming ? onRetry : undefined}
+            onInsert={isNews ? onInsert : undefined}
+            onOpenNote={isNews ? onOpenNote : undefined}
+          />
+        );
+      })}
+
+      {errorMessage && (
+        <div
+          className="flex items-center gap-2.5 rounded-[10px] bg-surface px-3.5 py-2.5 text-[13px] text-ink-2 shadow-card"
+          style={{ animation: "fade-up 200ms ease-out both" }}
+        >
+          <span className="size-1.5 shrink-0 rounded-full bg-orange" />
+          <span className="min-w-0 flex-1 break-words">{errorMessage}</span>
+          <button
+            type="button"
+            onClick={onOpenGatewaySettings}
+            className="shrink-0 font-medium text-accent-ink hover:underline"
+          >
+            {locale === "zh" ? "去设置" : "Settings"}
+          </button>
+        </div>
+      )}
+    </>
+  );
+});
 
 function WorkspacePickerMenu({
   activeWorkspaceID,
@@ -729,11 +759,21 @@ export default function App() {
   useEffect(() => {
     const el = composerRef.current;
     if (!el) return;
-    const measure = () => setComposerH(el.offsetHeight);
+    let rafId = 0;
+    const measure = () => {
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        const nextH = el.offsetHeight;
+        setComposerH((prev) => (prev === nextH ? prev : nextH));
+      });
+    };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
-    return () => ro.disconnect();
+    return () => {
+      cancelAnimationFrame(rafId);
+      ro.disconnect();
+    };
   }, [hasMessages, effectiveQuote, state.mode]);
 
   useEffect(() => {
@@ -751,7 +791,10 @@ export default function App() {
       if (!stick) return;
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
-        el.scrollTop = el.scrollHeight;
+        const target = el.scrollHeight - el.clientHeight;
+        if (Math.abs(el.scrollTop - target) > 1) {
+          el.scrollTop = el.scrollHeight;
+        }
       });
     };
 
@@ -770,7 +813,7 @@ export default function App() {
     };
   }, [hasMessages, state.activeSessionID]);
 
-  const handleSend = (text: string, documents: AttachedDocumentRef[] = [], botId: string | null = null) => {
+  const handleSend = useCallback((text: string, documents: AttachedDocumentRef[] = [], botId: string | null = null) => {
     const quote = effectiveQuote;
     setLocalQuote(null);
     postToNative("send", {
@@ -779,7 +822,106 @@ export default function App() {
       documents,
       botId: botId ?? "",
     });
-  };
+  }, [effectiveQuote]);
+
+  const handleToggleCollapse = useCallback(() => {
+    setSidebarCollapsed((v) => !v);
+  }, []);
+
+  const handleNewChat = useCallback((workspaceID?: string | null, workspacePath?: string | null) => {
+    postToNative("newSession", {
+      workspaceId: workspaceID ?? "",
+      workspacePath: workspacePath ?? "",
+    });
+  }, []);
+
+  const handleCreateWorkspace = useCallback((name: string) => {
+    postToNative("createWorkspace", { name, startSession: true });
+  }, []);
+
+  const handleRenameWorkspace = useCallback((id: string, name: string) => {
+    postToNative("renameWorkspace", { id, name });
+  }, []);
+
+  const handleDeleteWorkspace = useCallback((id: string) => {
+    postToNative("deleteWorkspace", { id });
+  }, []);
+
+  const handleChooseWorkspaceFolder = useCallback((workspaceId: string) => {
+    postToNative("chooseWorkspaceFolderForWorkspace", { workspaceId });
+  }, []);
+
+  const handleUnlinkWorkspaceFolder = useCallback((id: string) => {
+    postToNative("updateWorkspaceFolder", { id, folderPath: "" });
+  }, []);
+
+  const handleReorderWorkspaces = useCallback((orderedIds: string[]) => {
+    postToNative("reorderWorkspaces", { orderedIds });
+  }, []);
+
+  const handleMoveSession = useCallback(
+    (sessionId: string, targetWorkspaceId: string | null, orderedSessionIds: string[], isPinned?: boolean) => {
+      postToNative("moveSession", {
+        sessionId,
+        targetWorkspaceId: targetWorkspaceId ?? "",
+        orderedSessionIds,
+        ...(isPinned !== undefined ? { isPinned } : {}),
+      });
+    },
+    [],
+  );
+
+  const handleSelectSession = useCallback((id: string) => {
+    postToNative("selectSession", { id });
+  }, []);
+
+  const handleDeleteSession = useCallback((id: string) => {
+    postToNative("deleteSession", { id });
+  }, []);
+
+  const handleRenameSession = useCallback((id: string, title: string) => {
+    postToNative("renameSession", { id, title });
+  }, []);
+
+  const handleTogglePinSession = useCallback((id: string) => {
+    postToNative("togglePinSession", { id });
+  }, []);
+
+  const handleOpenBotSettings = useCallback(() => {
+    postToNative("openSettings", { target: "bot" });
+  }, []);
+
+  const handleOpenGatewaySettings = useCallback(() => {
+    postToNative("openSettings", { target: "gateway" });
+  }, []);
+
+  const handleOpenMeetingRoom = useCallback(() => {
+    postToNative("toggleMeetingRoom", { active: true });
+  }, []);
+
+  const handleMeetingSend = useCallback((text: string, botId?: string | null) => {
+    postToNative("sendMeetingPrompt", { text, botId: botId ?? "" });
+  }, []);
+
+  const handleMeetingAbort = useCallback(() => {
+    postToNative("abortMeetingRoom");
+  }, []);
+
+  const handleSelectModel = useCallback((model: HostState["availableModels"][number]) => {
+    postToNative("selectModel", { model });
+  }, []);
+
+  const handleRetry = useCallback(() => {
+    postToNative("retry");
+  }, []);
+
+  const handleInsertToEditor = useCallback((text: string) => {
+    postToNative("insertToEditor", { text });
+  }, []);
+
+  const handleOpenNewDocument = useCallback((text: string) => {
+    postToNative("openNewDocument", { text });
+  }, []);
 
   const isNews = state.mode === "news";
   const isMeetingRoom = !isNews && Boolean(state.meetingRoomActive);
@@ -810,48 +952,31 @@ export default function App() {
           availableWorkspaces={availableWorkspaces}
           collapsed={sidebarCollapsed}
           locale={state.locale}
-          onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
-          onNewChat={(workspaceID, workspacePath) =>
-            postToNative("newSession", {
-              workspaceId: workspaceID ?? "",
-              workspacePath: workspacePath ?? "",
-            })
-          }
-          onCreateWorkspace={(name) =>
-            postToNative("createWorkspace", { name, startSession: true })
-          }
-          onRenameWorkspace={(id, name) => postToNative("renameWorkspace", { id, name })}
-          onDeleteWorkspace={(id) => postToNative("deleteWorkspace", { id })}
-          onChooseWorkspaceFolder={(workspaceId) =>
-            postToNative("chooseWorkspaceFolderForWorkspace", { workspaceId })
-          }
-          onUnlinkWorkspaceFolder={(id) =>
-            postToNative("updateWorkspaceFolder", { id, folderPath: "" })
-          }
-          onReorderWorkspaces={(orderedIds) =>
-            postToNative("reorderWorkspaces", { orderedIds })
-          }
-          onMoveSession={(sessionId, targetWorkspaceId, orderedSessionIds, isPinned) =>
-            postToNative("moveSession", {
-              sessionId,
-              targetWorkspaceId: targetWorkspaceId ?? "",
-              orderedSessionIds,
-              ...(isPinned !== undefined ? { isPinned } : {}),
-            })
-          }
-          onSelectSession={(id) => postToNative("selectSession", { id })}
-          onDeleteSession={(id) => postToNative("deleteSession", { id })}
-          onRenameSession={(id, title) => postToNative("renameSession", { id, title })}
-          onTogglePinSession={(id) => postToNative("togglePinSession", { id })}
-          onOpenSettings={() => postToNative("openSettings", { target: "bot" })}
+          onToggleCollapse={handleToggleCollapse}
+          onNewChat={handleNewChat}
+          onCreateWorkspace={handleCreateWorkspace}
+          onRenameWorkspace={handleRenameWorkspace}
+          onDeleteWorkspace={handleDeleteWorkspace}
+          onChooseWorkspaceFolder={handleChooseWorkspaceFolder}
+          onUnlinkWorkspaceFolder={handleUnlinkWorkspaceFolder}
+          onReorderWorkspaces={handleReorderWorkspaces}
+          onMoveSession={handleMoveSession}
+          onSelectSession={handleSelectSession}
+          onDeleteSession={handleDeleteSession}
+          onRenameSession={handleRenameSession}
+          onTogglePinSession={handleTogglePinSession}
+          onOpenSettings={handleOpenBotSettings}
           meetingRoomActive={isMeetingRoom}
           meetingRoomIsConvening={Boolean(state.meetingRoomIsConvening)}
-          onOpenMeetingRoom={() => postToNative("toggleMeetingRoom", { active: true })}
+          onOpenMeetingRoom={handleOpenMeetingRoom}
         />
       )}
 
       {/* Main chat surface */}
-      <section className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-page">
+      <section
+        className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-page"
+        style={{ contain: "layout paint" }}
+      >
         {/* Clean top header bar */}
         <header
           className={`flex shrink-0 items-center justify-between gap-2 border-b border-line px-4 ${
@@ -1079,12 +1204,10 @@ export default function App() {
             availableModels={state.availableModels}
             selectedModelID={state.selectedModelID}
             selectedModelTitle={state.selectedModelTitle}
-            onSend={(text, botId) =>
-              postToNative("sendMeetingPrompt", { text, botId: botId ?? "" })
-            }
-            onAbort={() => postToNative("abortMeetingRoom")}
-            onSelectModel={(m) => postToNative("selectModel", { model: m })}
-            onOpenSettings={() => postToNative("openSettings", { target: "bot" })}
+            onSend={handleMeetingSend}
+            onAbort={handleMeetingAbort}
+            onSelectModel={handleSelectModel}
+            onOpenSettings={handleOpenBotSettings}
           />
         ) : !hasMessages ? (
           <div className="bui-scroll flex min-h-0 flex-1 flex-col justify-center overflow-y-auto px-5 py-6">
@@ -1134,51 +1257,18 @@ export default function App() {
                 className="mx-auto flex w-full max-w-[680px] flex-col gap-6 px-4 pt-5"
                 style={{ paddingBottom: composerH + 24 }}
               >
-                {state.messages.map((msg, idx) => {
-                  const isLastAssistant =
-                    msg.role === "assistant" && idx === state.messages.length - 1;
-                  return msg.role === "user" ? (
-                    <UserBubble
-                      key={msg.id}
-                      text={msg.text}
-                      quoteContext={msg.quoteContext}
-                      attachedDocuments={msg.attachedDocuments}
-                      delegatedBotName={msg.delegatedBotName}
-                    />
-                  ) : (
-                    <AssistantMessageBlock
-                      key={msg.id}
-                      message={isNews ? { ...msg, followUps: undefined } : msg}
-                      locale={state.locale}
-                      statusLabel={isLastAssistant ? state.streamingStatusLabel : undefined}
-                      onRetry={
-                        isNews && isLastAssistant && !state.isStreaming
-                          ? () => postToNative("retry")
-                          : undefined
-                      }
-                      onInsert={isNews ? (text) => postToNative("insertToEditor", { text }) : undefined}
-                      onOpenNote={isNews ? (text) => postToNative("openNewDocument", { text }) : undefined}
-                      onFollowUp={(prompt) => handleSend(prompt)}
-                    />
-                  );
-                })}
-
-                {state.errorMessage && (
-                  <div
-                    className="flex items-center gap-2.5 rounded-[10px] bg-surface px-3.5 py-2.5 text-[13px] text-ink-2 shadow-card"
-                    style={{ animation: "fade-up 200ms ease-out both" }}
-                  >
-                    <span className="size-1.5 shrink-0 rounded-full bg-orange" />
-                    <span className="min-w-0 flex-1 break-words">{state.errorMessage}</span>
-                    <button
-                      type="button"
-                      onClick={() => postToNative("openSettings", { target: "gateway" })}
-                      className="shrink-0 font-medium text-accent-ink hover:underline"
-                    >
-                      {state.locale === "zh" ? "去设置" : "Settings"}
-                    </button>
-                  </div>
-                )}
+                <ChatMessageList
+                  messages={state.messages}
+                  locale={state.locale}
+                  isNews={isNews}
+                  isStreaming={state.isStreaming}
+                  streamingStatusLabel={state.streamingStatusLabel}
+                  errorMessage={state.errorMessage}
+                  onRetry={handleRetry}
+                  onInsert={handleInsertToEditor}
+                  onOpenNote={handleOpenNewDocument}
+                  onOpenGatewaySettings={handleOpenGatewaySettings}
+                />
               </div>
             </div>
 

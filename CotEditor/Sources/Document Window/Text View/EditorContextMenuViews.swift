@@ -732,7 +732,7 @@ final class ContextMenuInlineImageZoomView: NSView {
     private let resetButton: QuickMenuIconButton
     private var presetButtons: [(scale: CGFloat, button: ZoomPresetPillButton)] = []
     private let scaleBounds: ClosedRange<CGFloat>
-    private let onScaleChange: (CGFloat) -> InlineImageTransform
+    private let onScaleChange: (CGFloat, Bool) -> InlineImageTransform
     private let onReset: () -> Void
     private var currentScale: CGFloat
     
@@ -741,7 +741,7 @@ final class ContextMenuInlineImageZoomView: NSView {
         scaleBounds: ClosedRange<CGFloat>,
         isIdentity: Bool,
         width: CGFloat = EditorContextMenuMetrics.menuWidth,
-        onScaleChange: @escaping (CGFloat) -> InlineImageTransform,
+        onScaleChange: @escaping (CGFloat, Bool) -> InlineImageTransform,
         onReset: @escaping () -> Void
     ) {
         self.scaleBounds = scaleBounds
@@ -865,14 +865,15 @@ final class ContextMenuInlineImageZoomView: NSView {
     
     @objc private func handleSliderChanged(_ sender: NSSlider) {
         let target = CGFloat(sender.doubleValue)
-        let applied = self.onScaleChange(target)
+        let isLive = (NSApp.currentEvent?.type != .leftMouseUp)
+        let applied = self.onScaleChange(target, isLive)
         self.currentScale = applied.scale
         self.syncSelectionIndicators(scale: applied.scale, isIdentity: applied.isIdentity)
     }
     
     private func applyPresetScale(_ scale: CGFloat) {
         let clamped = max(self.scaleBounds.lowerBound, min(self.scaleBounds.upperBound, scale))
-        let applied = self.onScaleChange(clamped)
+        let applied = self.onScaleChange(clamped, false)
         self.currentScale = applied.scale
         self.slider.doubleValue = Double(max(self.scaleBounds.lowerBound, min(self.scaleBounds.upperBound, applied.scale)))
         self.syncSelectionIndicators(scale: applied.scale, isIdentity: applied.isIdentity)

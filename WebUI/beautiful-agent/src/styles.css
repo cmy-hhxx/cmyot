@@ -201,29 +201,20 @@ select:focus-visible {
   background: var(--line-strong);
 }
 
-/* Sidebar collapse mechanics (from beautifului.dev SidebarNav) */
+/* Sidebar collapse mechanics (GPU-friendly opacity fade + clipped width) */
 .sidebar-row {
   width: 216px;
-  transition-duration: var(--sidebar-copy-duration, 180ms);
-  transition-timing-function: var(--sidebar-easing, cubic-bezier(0.16, 1, 0.3, 1));
 }
 .sidebar-copy {
   opacity: 1;
-  transform: translateX(0);
-  transition:
-    opacity var(--sidebar-copy-duration, 180ms) ease-out,
-    transform var(--sidebar-copy-duration, 180ms) var(--sidebar-easing, cubic-bezier(0.16, 1, 0.3, 1));
+  transition: opacity 120ms ease-out;
 }
 .sidebar-glide-highlight {
   will-change: left, top, width, height, opacity;
 }
-[data-sidebar-collapsed="true"] .sidebar-row {
-  width: 34px;
-}
 [data-sidebar-collapsed="true"] .sidebar-copy {
   pointer-events: none;
   opacity: 0;
-  transform: translateX(-8px);
 }
 
 /* Beautiful UI shared animations */

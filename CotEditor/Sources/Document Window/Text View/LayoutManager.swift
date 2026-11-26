@@ -416,6 +416,19 @@ class LayoutManager: NSLayoutManager, InvisibleDrawing, ValidationIgnorable {
     }
     
     
+    /// Lightweight live-manipulation invalidation: updates only line layout for the resized token without regenerating glyphs or invalidating the tail of the document.
+    func invalidateInlineImageLineHeight(in characterRange: NSRange) {
+        
+        let length = self.textStorage?.length ?? self.attributedString().length
+        guard length > 0 else { return }
+        let nsString = self.backingNSString
+        let safeLoc = min(max(0, characterRange.location), max(0, length - 1))
+        let safeLen = min(max(0, characterRange.length), max(0, length - safeLoc))
+        let lineRange = nsString.lineRange(for: NSRange(location: safeLoc, length: safeLen))
+        self.invalidateLayout(forCharacterRange: lineRange, actualCharacterRange: nil)
+    }
+    
+    
     // MARK: Private Methods
     
     

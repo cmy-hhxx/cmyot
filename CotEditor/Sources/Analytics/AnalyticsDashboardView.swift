@@ -843,17 +843,20 @@ private enum DashboardQuadMetric: String, CaseIterable, Identifiable {
 }
 
 
-/// Cohesive neutral-graphite & cobalt-ink design system shared across the Dashboard and NEWS reader.
+/// Cohesive neutral-graphite & adaptive-ink design system shared across the Dashboard and NEWS reader.
 struct DashPalette: Sendable, Equatable {
     
     let tokens: StudioColorTokens
+    let editorialSurface: Color
     let secondaryInk: Color
     let mutedInk: Color
     let statusPositive: Color
     
-    init(_ scheme: ColorScheme) {
+    init(_ scheme: ColorScheme, imageTone: DashboardImageTone? = nil) {
         let isDark = (scheme == .dark)
-        self.tokens = Self.editorialTokens(isDark: isDark)
+        let built = Self.resolvedTokens(isDark: isDark, imageTone: imageTone)
+        self.tokens = built.tokens
+        self.editorialSurface = built.editorialSurface
         if isDark {
             self.secondaryInk = Color(red: 0.604, green: 0.635, blue: 0.706) // #9AA2B4
             self.mutedInk = Color(red: 0.455, green: 0.490, blue: 0.565)     // #747D90
@@ -866,85 +869,146 @@ struct DashPalette: Sendable, Equatable {
     }
     
     static func editorialTokens(isDark: Bool) -> StudioColorTokens {
-        if isDark {
-            let canvas = Color(hexString: "#15161A")
-            let card = Color(hexString: "#1C1E24")
-            let inset = Color(hexString: "#22252D")
-            let insetHover = Color(hexString: "#2A2E38")
-            let primary = Color(red: 0.925, green: 0.937, blue: 0.961)      // #ECEFF5
-            let accent = Color(hexString: "#519AFD")
-            let accentText = Color(hexString: "#8FC0FF")
-            let secondaryAcc = Color(red: 0.220, green: 0.365, blue: 0.765) // #385DC3
-            let paleAcc = Color(red: 0.145, green: 0.216, blue: 0.396)      // #253765
-            let empty = Color(red: 0.137, green: 0.153, blue: 0.188)        // #232730
-            
-            return StudioColorTokens(
-                isDark: true,
-                canvasTop: canvas,
-                canvasBottom: canvas,
-                mistAccent: accent.opacity(0.10),
-                card: card,
-                cardShadow: .clear,
-                inset: inset,
-                insetHover: insetHover,
-                hairline: Color.white.opacity(0.075),
-                hairlineStrong: Color.white.opacity(0.16),
-                topSpecular: Color.white.opacity(0.06),
-                architecturalDot: Color.white.opacity(0.05),
-                primaryInk: primary,
-                accent: accent,
-                accentText: accentText,
-                onAccentInk: .white,
-                secondaryAccent: secondaryAcc,
-                paleAccent: paleAcc,
-                emptyDot: empty,
-                positivePillBg: accent.opacity(0.16),
-                neutralPillBg: Color.white.opacity(0.07),
-                heat1: Color(red: 0.094, green: 0.255, blue: 0.196), // #184132
-                heat2: Color(red: 0.125, green: 0.447, blue: 0.325), // #207253
-                heat3: Color(red: 0.196, green: 0.682, blue: 0.490), // #32AE7D
-                heat4: Color(red: 0.431, green: 0.906, blue: 0.714)  // #6EE7B6
-            )
-        } else {
-            let canvas = Color(hexString: "#F4F5F7")
-            let card = Color.white                                          // #FFFFFF
-            let inset = Color(hexString: "#F1F3F6")
-            let insetHover = Color(hexString: "#E8EBF0")
-            let primary = Color(red: 0.082, green: 0.098, blue: 0.133)      // #151922
-            let accent = Color(hexString: "#2F7CF6")
-            let accentText = Color(hexString: "#1D67DB")
-            let secondaryAcc = Color(red: 0.431, green: 0.576, blue: 0.961) // #6E93F5
-            let paleAcc = Color(red: 0.871, green: 0.906, blue: 0.992)      // #DEE7FD
-            let empty = Color(red: 0.914, green: 0.929, blue: 0.949)        // #E9EDF2
-            
-            return StudioColorTokens(
-                isDark: false,
-                canvasTop: canvas,
-                canvasBottom: canvas,
-                mistAccent: accent.opacity(0.08),
-                card: card,
-                cardShadow: Color(red: 0.06, green: 0.08, blue: 0.12).opacity(0.035),
-                inset: inset,
-                insetHover: insetHover,
-                hairline: Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.08),
-                hairlineStrong: Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.16),
-                topSpecular: Color.white.opacity(0.80),
-                architecturalDot: Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.05),
-                primaryInk: primary,
-                accent: accent,
-                accentText: accentText,
-                onAccentInk: .white,
-                secondaryAccent: secondaryAcc,
-                paleAccent: paleAcc,
-                emptyDot: empty,
-                positivePillBg: accent.opacity(0.09),
-                neutralPillBg: Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.05),
-                heat1: Color(red: 0.690, green: 0.890, blue: 0.788), // #B0E3C9
-                heat2: Color(red: 0.365, green: 0.753, blue: 0.573), // #5DC092
-                heat3: Color(red: 0.137, green: 0.569, blue: 0.396), // #239165
-                heat4: Color(red: 0.059, green: 0.337, blue: 0.243)  // #0F563E
-            )
-        }
+        Self.resolvedTokens(isDark: isDark, imageTone: nil).tokens
+    }
+    
+    static func resolvedTokens(isDark: Bool, imageTone: DashboardImageTone?) -> (tokens: StudioColorTokens, editorialSurface: Color) {
+        let avgRGB = imageTone.map { ($0.average.red, $0.average.green, $0.average.blue) }
+        return isDark
+            ? Self.darkEditorialTokens(avgRGB: avgRGB, dominantTone: imageTone?.dominant)
+            : Self.lightEditorialTokens(avgRGB: avgRGB, dominantTone: imageTone?.dominant)
+    }
+    
+    private static func darkEditorialTokens(
+        avgRGB: (Double, Double, Double)?,
+        dominantTone: HeroRegionTone?
+    ) -> (tokens: StudioColorTokens, editorialSurface: Color) {
+        let baseCanvas = (0.0824, 0.0863, 0.1020) // #15161A
+        let baseCard = (0.1098, 0.1176, 0.1412)   // #1C1E24
+        let baseInset = (0.1333, 0.1451, 0.1765)  // #22252D
+        let baseInsetHover = (0.1647, 0.1804, 0.2196) // #2A2E38
+        
+        let canvasRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseCanvas, $0, t: 0.14) } ?? baseCanvas
+        let cardRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseCard, $0, t: 0.08) } ?? baseCard
+        let insetRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseInset, $0, t: 0.10) } ?? baseInset
+        let insetHoverRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseInsetHover, $0, t: 0.10) } ?? baseInsetHover
+        let editorialRGB = DashboardImageColorExtractor.mixRGB(cardRGB, canvasRGB, t: 0.50)
+        
+        let canvas = Color(red: canvasRGB.0, green: canvasRGB.1, blue: canvasRGB.2)
+        let card = Color(red: cardRGB.0, green: cardRGB.1, blue: cardRGB.2)
+        let inset = Color(red: insetRGB.0, green: insetRGB.1, blue: insetRGB.2)
+        let insetHover = Color(red: insetHoverRGB.0, green: insetHoverRGB.1, blue: insetHoverRGB.2)
+        let editorialSurface = Color(red: editorialRGB.0, green: editorialRGB.1, blue: editorialRGB.2)
+        
+        let cardTone = HeroRegionTone(red: cardRGB.0, green: cardRGB.1, blue: cardRGB.2)
+        let defaultAccentRGB = (0.3176, 0.6039, 0.9922) // #519AFD
+        let useImageAccent = dominantTone.map { $0.saturation > 0.25 && DashboardImageColorExtractor.contrastRatio($0, cardTone) >= 3.0 } ?? false
+        let accentRGB = (useImageAccent ? dominantTone : nil).map { ($0.red, $0.green, $0.blue) } ?? defaultAccentRGB
+        let accentTextRGB = useImageAccent
+            ? DashboardImageColorExtractor.mixRGB(accentRGB, (1.0, 1.0, 1.0), t: 0.28)
+            : (0.5608, 0.7529, 1.0)
+        let secondaryAccRGB = useImageAccent
+            ? DashboardImageColorExtractor.mixRGB(accentRGB, cardRGB, t: 0.25)
+            : (0.220, 0.365, 0.765)
+        let paleAccRGB = useImageAccent
+            ? DashboardImageColorExtractor.mixRGB(accentRGB, cardRGB, t: 0.68)
+            : (0.145, 0.216, 0.396)
+        
+        let accent = Color(red: accentRGB.0, green: accentRGB.1, blue: accentRGB.2)
+        let tokens = StudioColorTokens(
+            isDark: true,
+            canvasTop: canvas,
+            canvasBottom: canvas,
+            mistAccent: accent.opacity(0.10),
+            card: card,
+            cardShadow: .clear,
+            inset: inset,
+            insetHover: insetHover,
+            hairline: Color.white.opacity(0.075),
+            hairlineStrong: Color.white.opacity(0.16),
+            topSpecular: Color.white.opacity(0.06),
+            architecturalDot: Color.white.opacity(0.05),
+            primaryInk: Color(red: 0.925, green: 0.937, blue: 0.961),
+            accent: accent,
+            accentText: Color(red: accentTextRGB.0, green: accentTextRGB.1, blue: accentTextRGB.2),
+            onAccentInk: .white,
+            secondaryAccent: Color(red: secondaryAccRGB.0, green: secondaryAccRGB.1, blue: secondaryAccRGB.2),
+            paleAccent: Color(red: paleAccRGB.0, green: paleAccRGB.1, blue: paleAccRGB.2),
+            emptyDot: Color(red: 0.137, green: 0.153, blue: 0.188),
+            positivePillBg: accent.opacity(0.16),
+            neutralPillBg: Color.white.opacity(0.07),
+            heat1: Color(red: 0.094, green: 0.255, blue: 0.196),
+            heat2: Color(red: 0.125, green: 0.447, blue: 0.325),
+            heat3: Color(red: 0.196, green: 0.682, blue: 0.490),
+            heat4: Color(red: 0.431, green: 0.906, blue: 0.714)
+        )
+        return (tokens, editorialSurface)
+    }
+    
+    private static func lightEditorialTokens(
+        avgRGB: (Double, Double, Double)?,
+        dominantTone: HeroRegionTone?
+    ) -> (tokens: StudioColorTokens, editorialSurface: Color) {
+        let baseCanvas = (0.9569, 0.9608, 0.9686)     // #F4F5F7
+        let baseCard = (0.9843, 0.9843, 0.9882)       // #FBFBFC
+        let baseInset = (0.9451, 0.9529, 0.9647)      // #F1F3F6
+        let baseInsetHover = (0.9098, 0.9216, 0.9412) // #E8EBF0
+        
+        let canvasRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseCanvas, $0, t: 0.10) } ?? baseCanvas
+        let cardRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseCard, $0, t: 0.05) } ?? baseCard
+        let insetRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseInset, $0, t: 0.10) } ?? baseInset
+        let insetHoverRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseInsetHover, $0, t: 0.10) } ?? baseInsetHover
+        let editorialRGB = DashboardImageColorExtractor.mixRGB(cardRGB, canvasRGB, t: 0.50)
+        
+        let canvas = Color(red: canvasRGB.0, green: canvasRGB.1, blue: canvasRGB.2)
+        let card = Color(red: cardRGB.0, green: cardRGB.1, blue: cardRGB.2)
+        let inset = Color(red: insetRGB.0, green: insetRGB.1, blue: insetRGB.2)
+        let insetHover = Color(red: insetHoverRGB.0, green: insetHoverRGB.1, blue: insetHoverRGB.2)
+        let editorialSurface = Color(red: editorialRGB.0, green: editorialRGB.1, blue: editorialRGB.2)
+        
+        let cardTone = HeroRegionTone(red: cardRGB.0, green: cardRGB.1, blue: cardRGB.2)
+        let defaultAccentRGB = (0.1843, 0.4863, 0.9647) // #2F7CF6
+        let useImageAccent = dominantTone.map { $0.saturation > 0.25 && DashboardImageColorExtractor.contrastRatio($0, cardTone) >= 3.0 } ?? false
+        let accentRGB = (useImageAccent ? dominantTone : nil).map { ($0.red, $0.green, $0.blue) } ?? defaultAccentRGB
+        let accentTextRGB = useImageAccent
+            ? DashboardImageColorExtractor.mixRGB(accentRGB, (0.05, 0.08, 0.14), t: 0.22)
+            : (0.1137, 0.4039, 0.8588)
+        let secondaryAccRGB = useImageAccent
+            ? DashboardImageColorExtractor.mixRGB(accentRGB, cardRGB, t: 0.25)
+            : (0.431, 0.576, 0.961)
+        let paleAccRGB = useImageAccent
+            ? DashboardImageColorExtractor.mixRGB(accentRGB, cardRGB, t: 0.78)
+            : (0.871, 0.906, 0.992)
+        
+        let accent = Color(red: accentRGB.0, green: accentRGB.1, blue: accentRGB.2)
+        let tokens = StudioColorTokens(
+            isDark: false,
+            canvasTop: canvas,
+            canvasBottom: canvas,
+            mistAccent: accent.opacity(0.08),
+            card: card,
+            cardShadow: Color(red: 0.06, green: 0.08, blue: 0.12).opacity(0.035),
+            inset: inset,
+            insetHover: insetHover,
+            hairline: Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.08),
+            hairlineStrong: Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.16),
+            topSpecular: Color.white.opacity(0.80),
+            architecturalDot: Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.05),
+            primaryInk: Color(red: 0.082, green: 0.098, blue: 0.133),
+            accent: accent,
+            accentText: Color(red: accentTextRGB.0, green: accentTextRGB.1, blue: accentTextRGB.2),
+            onAccentInk: .white,
+            secondaryAccent: Color(red: secondaryAccRGB.0, green: secondaryAccRGB.1, blue: secondaryAccRGB.2),
+            paleAccent: Color(red: paleAccRGB.0, green: paleAccRGB.1, blue: paleAccRGB.2),
+            emptyDot: Color(red: 0.914, green: 0.929, blue: 0.949),
+            positivePillBg: accent.opacity(0.09),
+            neutralPillBg: Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.05),
+            heat1: Color(red: 0.690, green: 0.890, blue: 0.788),
+            heat2: Color(red: 0.365, green: 0.753, blue: 0.573),
+            heat3: Color(red: 0.137, green: 0.569, blue: 0.396),
+            heat4: Color(red: 0.059, green: 0.337, blue: 0.243)
+        )
+        return (tokens, editorialSurface)
     }
     
     var canvasTop: Color { self.tokens.canvasTop }
@@ -1215,7 +1279,7 @@ struct AnalyticsDashboardView: View {
     
     private var palette: DashPalette {
         _ = self.studioPalette.revision
-        return DashPalette(self.colorScheme)
+        return DashPalette(self.colorScheme, imageTone: self.heroCoverStore.imageTone)
     }
     
     var body: some View {
@@ -1472,6 +1536,7 @@ struct AnalyticsDashboardView: View {
         let height = layout.row2Height
         let spacing = layout.hSpacing
         let row2Radius = DashboardCornerMetrics.row2CardRadius(compact: self.isEmbeddedInSettings)
+        let hasHeroPhoto = (self.heroCoverStore.coverImage != nil)
         return GeometryReader { proxy in
             let usableW = max(360, proxy.size.width - spacing * 2)
             let useAsymmetric = (!self.isEmbeddedInSettings && usableW >= 720)
@@ -1480,16 +1545,17 @@ struct AnalyticsDashboardView: View {
             let resolvedNewsW = max(180, usableW - editorialW * 2)
             
             HStack(alignment: .top, spacing: spacing) {
-                self.doneTodayColumn(points: snapshot.doneTodayPoints, compact: layout.isTight, cornerRadius: row2Radius)
+                self.doneTodayColumn(points: snapshot.doneTodayPoints, compact: layout.isTight, cornerRadius: row2Radius, overPhoto: hasHeroPhoto)
                     .frame(width: editorialW, height: height, alignment: .topLeading)
                 
-                self.predictedActionsColumn(predictions: snapshot.actionPredictions, compact: layout.isTight, cornerRadius: row2Radius)
+                self.predictedActionsColumn(predictions: snapshot.actionPredictions, compact: layout.isTight, cornerRadius: row2Radius, overPhoto: hasHeroPhoto)
                     .frame(width: editorialW, height: height, alignment: .topLeading)
                 
                 DashboardNewsColumnCard(
                     compact: self.isEmbeddedInSettings,
                     tightPadding: layout.isTight,
                     cornerRadius: row2Radius,
+                    overPhoto: hasHeroPhoto,
                     cardHeight: height,
                     palette: self.palette,
                     onOpenWorkspace: { selectedID in
@@ -1503,21 +1569,23 @@ struct AnalyticsDashboardView: View {
     }
     
     
-    private func doneTodayColumn(points: [String], compact: Bool, cornerRadius: CGFloat) -> some View {
+    private func doneTodayColumn(points: [String], compact: Bool, cornerRadius: CGFloat, overPhoto: Bool) -> some View {
         DoneTodayEditorialCard(
             points: points,
             compact: compact,
             cornerRadius: cornerRadius,
+            overPhoto: overPhoto,
             palette: self.palette
         )
     }
     
     
-    private func predictedActionsColumn(predictions: [DocumentActionPrediction], compact: Bool, cornerRadius: CGFloat) -> some View {
+    private func predictedActionsColumn(predictions: [DocumentActionPrediction], compact: Bool, cornerRadius: CGFloat, overPhoto: Bool) -> some View {
         NextActionsEditorialCard(
             predictions: predictions,
             compact: compact,
             cornerRadius: cornerRadius,
+            overPhoto: overPhoto,
             palette: self.palette
         )
     }
@@ -1614,6 +1682,7 @@ private struct DoneTodayEditorialCard: View {
     let points: [String]
     let compact: Bool
     var cornerRadius: CGFloat = 18
+    var overPhoto: Bool = false
     let palette: DashPalette
     
     @State private var hoveredRow: Int?
@@ -1693,7 +1762,13 @@ private struct DoneTodayEditorialCard: View {
         }
         .padding(.vertical, outerV)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .dashboardCardSurface(palette: self.palette, cornerRadius: self.cornerRadius, showsShadow: false)
+        .dashboardCardSurface(
+            palette: self.palette,
+            cornerRadius: self.cornerRadius,
+            showsShadow: false,
+            overPhoto: self.overPhoto,
+            surfaceColor: self.palette.editorialSurface
+        )
     }
 }
 
@@ -1704,6 +1779,7 @@ private struct NextActionsEditorialCard: View {
     let predictions: [DocumentActionPrediction]
     let compact: Bool
     var cornerRadius: CGFloat = 18
+    var overPhoto: Bool = false
     let palette: DashPalette
     
     @State private var hoveredID: String?
@@ -1784,17 +1860,24 @@ private struct NextActionsEditorialCard: View {
         }
         .padding(.vertical, outerV)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .dashboardCardSurface(palette: self.palette, cornerRadius: self.cornerRadius, showsShadow: false)
+        .dashboardCardSurface(
+            palette: self.palette,
+            cornerRadius: self.cornerRadius,
+            showsShadow: false,
+            overPhoto: self.overPhoto,
+            surfaceColor: self.palette.editorialSurface
+        )
     }
 }
 
 
-/// Isolated NEWS column card with Douyin/Xiaohongshu-style fresh-batch refresh (zero pagination) and crisp mini cards.
+/// Isolated NEWS column card with uniform equal-height rows and neutral placeholder tiles.
 private struct DashboardNewsColumnCard: View {
     
     let compact: Bool
     var tightPadding: Bool = false
     var cornerRadius: CGFloat = 18
+    var overPhoto: Bool = false
     let cardHeight: CGFloat
     let palette: DashPalette
     let onOpenWorkspace: (String?) -> Void
@@ -1876,32 +1959,18 @@ private struct DashboardNewsColumnCard: View {
             .frame(height: 22)
             
             GeometryReader { geo in
-                let useMagazineSplit = (!self.compact && geo.size.width >= 370 && geo.size.height >= 156)
-                let slotCount = useMagazineSplit ? 4 : 3
-                let activeItems = Array(items.prefix(slotCount))
+                let rowGap: CGFloat = 8
+                let count = min(4, max(2, Int((geo.size.height + rowGap) / (58 + rowGap))))
+                let rowH = max(44, floor((geo.size.height - rowGap * CGFloat(max(0, count - 1))) / CGFloat(count)))
+                let activeItems = Array(items.prefix(count))
                 
                 if activeItems.isEmpty {
                     if self.newsService.isLoading {
-                        if useMagazineSplit {
-                            HStack(spacing: 10) {
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        VStack(spacing: rowGap) {
+                            ForEach(0..<count, id: \.self) { _ in
+                                RoundedRectangle(cornerRadius: DashboardCornerMetrics.newsMiniCardRadius, style: .continuous)
                                     .fill(self.palette.inset)
-                                    .frame(width: floor(geo.size.width * 0.43), height: geo.size.height)
-                                VStack(spacing: 8) {
-                                    ForEach(0..<3, id: \.self) { _ in
-                                        RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                            .fill(self.palette.inset)
-                                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                    }
-                                }
-                            }
-                        } else {
-                            VStack(spacing: 8) {
-                                ForEach(0..<3, id: \.self) { _ in
-                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                        .fill(self.palette.inset)
-                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                }
+                                    .frame(height: rowH)
                             }
                         }
                     } else {
@@ -1909,7 +1978,7 @@ private struct DashboardNewsColumnCard: View {
                             Task {
                                 await self.newsService.refreshFeed(
                                     for: self.newsService.selectedCategory,
-                                    visibleCount: slotCount,
+                                    visibleCount: count,
                                     forceNetwork: true
                                 )
                             }
@@ -1928,69 +1997,9 @@ private struct DashboardNewsColumnCard: View {
                         .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.99))
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                } else if useMagazineSplit, let leadItem = activeItems.first {
-                    let splitGap: CGFloat = 10
-                    let leadW = max(168, floor((geo.size.width - splitGap) * 0.435))
-                    let listW = max(160, geo.size.width - splitGap - leadW)
-                    let leadCoverH = max(84, min(geo.size.height * 0.56, round(leadW * 0.58)))
-                    let secondaryItems = Array(activeItems.dropFirst().prefix(3))
-                    let rowCount = max(1, secondaryItems.count)
-                    let rowH = max(50, floor((geo.size.height - CGFloat(max(0, rowCount - 1)) * 6) / CGFloat(rowCount)))
-                    
-                    HStack(alignment: .top, spacing: splitGap) {
-                        NewsMiniVisualCard(
-                            item: leadItem,
-                            cover: self.newsService.cachedCoverImage(for: leadItem),
-                            isRead: self.newsService.isRead(leadItem),
-                            coverHeight: leadCoverH,
-                            slotHeight: geo.size.height,
-                            showPublisherLine: true,
-                            palette: self.palette,
-                            onAppearLoadCover: {
-                                self.newsService.requestCoverLoad(for: leadItem)
-                            }
-                        ) {
-                            self.onOpenWorkspace(leadItem.id)
-                        }
-                        .frame(width: leadW, height: geo.size.height)
-                        
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(secondaryItems) { item in
-                                NewsHorizontalRowCard(
-                                    item: item,
-                                    cover: self.newsService.cachedCoverImage(for: item),
-                                    isRead: self.newsService.isRead(item),
-                                    rowHeight: rowH,
-                                    palette: self.palette,
-                                    onAppearLoadCover: {
-                                        self.newsService.requestCoverLoad(for: item)
-                                    }
-                                ) {
-                                    self.onOpenWorkspace(item.id)
-                                }
-                            }
-                            if secondaryItems.count < 3 {
-                                Spacer(minLength: 0)
-                            }
-                        }
-                        .frame(width: listW, height: geo.size.height, alignment: .topLeading)
-                    }
-                    .id("dash-news-\(self.newsService.selectedCategory.rawValue)-\(self.newsService.feedRefreshToken)")
-                    .transition(.opacity)
-                    .animation(DashMotion.resolve(DashMotion.quick), value: self.newsService.feedRefreshToken)
-                    .onAppear {
-                        self.newsService.prefetchCovers(for: self.newsService.selectedCategory, limit: slotCount * 2)
-                    }
-                    .onChange(of: self.newsService.selectedCategory) { _, nextCat in
-                        self.newsService.prefetchCovers(for: nextCat, limit: slotCount * 2)
-                    }
                 } else {
-                    let rowItems = Array(activeItems.prefix(3))
-                    let rowCount = max(1, rowItems.count)
-                    let rowH = max(48, floor((geo.size.height - CGFloat(max(0, rowCount - 1)) * 6) / CGFloat(rowCount)))
-                    
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(rowItems) { item in
+                    VStack(alignment: .leading, spacing: rowGap) {
+                        ForEach(activeItems) { item in
                             NewsHorizontalRowCard(
                                 item: item,
                                 cover: self.newsService.cachedCoverImage(for: item),
@@ -2004,16 +2013,24 @@ private struct DashboardNewsColumnCard: View {
                                 self.onOpenWorkspace(item.id)
                             }
                         }
+                        if activeItems.count < count {
+                            ForEach(0..<(count - activeItems.count), id: \.self) { _ in
+                                RoundedRectangle(cornerRadius: DashboardCornerMetrics.newsMiniCardRadius, style: .continuous)
+                                    .fill(self.palette.inset.opacity(0.60))
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: rowH)
+                            }
+                        }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                     .id("dash-news-\(self.newsService.selectedCategory.rawValue)-\(self.newsService.feedRefreshToken)")
                     .transition(.opacity)
                     .animation(DashMotion.resolve(DashMotion.quick), value: self.newsService.feedRefreshToken)
                     .onAppear {
-                        self.newsService.prefetchCovers(for: self.newsService.selectedCategory, limit: slotCount * 2)
+                        self.newsService.prefetchCovers(for: self.newsService.selectedCategory, limit: count * 2)
                     }
                     .onChange(of: self.newsService.selectedCategory) { _, nextCat in
-                        self.newsService.prefetchCovers(for: nextCat, limit: slotCount * 2)
+                        self.newsService.prefetchCovers(for: nextCat, limit: count * 2)
                     }
                 }
             }
@@ -2022,151 +2039,13 @@ private struct DashboardNewsColumnCard: View {
         .padding(.horizontal, outerH)
         .padding(.vertical, outerV)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .dashboardCardSurface(palette: self.palette, cornerRadius: self.cornerRadius, showsShadow: false)
-    }
-}
-
-
-private struct NewsMiniVisualCard: View {
-    
-    let item: AIHotNewsItem
-    let cover: NSImage?
-    let isRead: Bool
-    let coverHeight: CGFloat
-    let slotHeight: CGFloat
-    var showPublisherLine: Bool = true
-    let palette: DashPalette
-    let onAppearLoadCover: () -> Void
-    let onTap: () -> Void
-    
-    @State private var isHovered = false
-    
-    
-    var body: some View {
-        let publisher = self.item.displayPublisherLabel
-        let category = self.item.resolvedCategory
-        
-        Button(action: self.onTap) {
-            VStack(alignment: .leading, spacing: 5) {
-                ZStack(alignment: .topLeading) {
-                    if let cover = self.cover {
-                        Color.clear
-                            .frame(height: self.coverHeight)
-                            .overlay {
-                                Image(nsImage: cover)
-                                    .resizable()
-                                    .interpolation(.medium)
-                                    .scaledToFill()
-                            }
-                            .clipped()
-                    } else {
-                        self.fallbackCover
-                    }
-                    
-                    HStack(spacing: 4) {
-                        Text(category == .xSocial ? "X" : category.badgeLabel)
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(self.palette.pine)
-                            .padding(.horizontal, 5.5)
-                            .frame(height: 16)
-                            .background(self.palette.card.opacity(0.86), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-                        
-                        Spacer(minLength: 0)
-                        
-                        if !self.isRead {
-                            Circle()
-                                .fill(self.palette.accentFill)
-                                .frame(width: 5, height: 5)
-                        }
-                    }
-                    .padding(5)
-                }
-                .frame(maxWidth: .infinity)
-                .frame(height: self.coverHeight)
-                .clipShape(RoundedRectangle(cornerRadius: DashboardCornerMetrics.newsCoverRadius, style: .continuous))
-                
-                Text(self.item.title)
-                    .font(.system(size: self.showPublisherLine ? 11.8 : 11.0, weight: self.isRead ? .regular : .semibold))
-                    .foregroundStyle(self.isRead ? self.palette.secondaryInk : self.palette.pine)
-                    .lineLimit(2)
-                    .lineSpacing(1.5)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .layoutPriority(1)
-                
-                if self.showPublisherLine {
-                    Spacer(minLength: 0)
-                    
-                    HStack(spacing: 4) {
-                        Text(publisher.isEmpty ? category.label : publisher)
-                            .font(.system(size: 10, weight: .regular))
-                            .foregroundStyle(self.palette.mutedInk)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        
-                        Spacer(minLength: 2)
-                        
-                        if let published = self.item.publishedAt {
-                            Text(Self.shortAge(from: published))
-                                .font(.system(size: 9.5, design: .monospaced).monospacedDigit())
-                                .foregroundStyle(self.palette.mutedInk.opacity(0.8))
-                        }
-                    }
-                }
-            }
-            .padding(self.showPublisherLine ? 7 : 5)
-            .frame(maxWidth: .infinity)
-            .frame(height: self.slotHeight, alignment: .topLeading)
-            .background(
-                RoundedRectangle(cornerRadius: DashboardCornerMetrics.newsMiniCardRadius, style: .continuous)
-                    .fill(self.isHovered ? self.palette.insetHover : self.palette.inset)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: DashboardCornerMetrics.newsMiniCardRadius, style: .continuous))
-        }
-        .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.992))
-        .pointerStyle(.link)
-        .onAppear {
-            self.onAppearLoadCover()
-        }
-        .onHover { hovering in
-            if hovering != self.isHovered {
-                self.isHovered = hovering
-            }
-        }
-    }
-    
-    
-    private var fallbackCover: some View {
-        let tint: Color = switch self.item.resolvedCategory {
-            case .finance: self.palette.statusPositive
-            case .xSocial: Color(red: 0.212, green: 0.478, blue: 0.612)
-            case .ai, .all: self.palette.accentFill
-        }
-        let teaser = self.item.summary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return ZStack(alignment: .bottomLeading) {
-            LinearGradient(
-                colors: [tint.opacity(self.palette.tokens.isDark ? 0.26 : 0.16), tint.opacity(0.05)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            if !teaser.isEmpty && self.coverHeight >= 54 {
-                Text(teaser)
-                    .font(.system(size: 9.5, weight: .regular))
-                    .foregroundStyle(self.palette.secondaryInk.opacity(0.86))
-                    .lineLimit(2)
-                    .lineSpacing(1.5)
-                    .padding(.horizontal, 7)
-                    .padding(.bottom, 6)
-            }
-        }
-    }
-    
-    
-    private static func shortAge(from date: Date) -> String {
-        let sec = max(60, Int(Date().timeIntervalSince(date)))
-        if sec < 3600 { return "\(sec / 60)m" }
-        if sec < 86_400 { return "\(sec / 3600)h" }
-        return "\(sec / 86_400)d"
+        .dashboardCardSurface(
+            palette: self.palette,
+            cornerRadius: self.cornerRadius,
+            showsShadow: false,
+            overPhoto: self.overPhoto,
+            surfaceColor: self.palette.editorialSurface
+        )
     }
 }
 
@@ -2187,19 +2066,21 @@ private struct NewsHorizontalRowCard: View {
     var body: some View {
         let publisher = self.item.displayPublisherLabel
         let category = self.item.resolvedCategory
-        let thumbH = max(38, min(58, self.rowHeight - 12))
+        let thumbH = max(34, min(54, self.rowHeight - 12))
         let thumbW = round(thumbH * 1.48)
         
         Button(action: self.onTap) {
             HStack(alignment: .center, spacing: 9) {
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(self.item.title)
                         .font(.system(size: 11.8, weight: self.isRead ? .regular : .semibold))
                         .foregroundStyle(self.isRead ? self.palette.secondaryInk : self.palette.pine)
-                        .lineLimit(2)
+                        .lineLimit(2, reservesSpace: true)
                         .lineSpacing(1.5)
                         .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                    
+                    Spacer(minLength: 2)
                     
                     HStack(spacing: 5) {
                         if !self.isRead {
@@ -2228,7 +2109,7 @@ private struct NewsHorizontalRowCard: View {
                         }
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, maxHeight: thumbH, alignment: .topLeading)
                 
                 ZStack {
                     if let cover = self.cover {
@@ -2488,8 +2369,14 @@ final class DashboardHeroCoverStore {
     
     private let database: CotLocalDatabase
     private(set) var coverImage: NSImage? {
-        didSet { self.initialToneSample = nil }
+        didSet {
+            self.initialToneSample = nil
+            self.scheduleImageToneExtraction()
+        }
     }
+    private(set) var imageTone: DashboardImageTone?
+    @ObservationIgnored private var toneExtractionTask: Task<Void, Never>?
+    @ObservationIgnored private var toneExtractionGeneration: UInt64 = 0
     @ObservationIgnored private var initialToneSample: (
         focalX: Double, focalY: Double, fitMode: HeroCoverFitMode, aspect: CGFloat, fallback: HeroRegionTone, result: HeroBackdropToneSnapshot
     )?
@@ -2556,6 +2443,26 @@ final class DashboardHeroCoverStore {
             return
         }
         self.coverImage = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+    }
+    
+    
+    private func scheduleImageToneExtraction() {
+        self.toneExtractionGeneration &+= 1
+        let generation = self.toneExtractionGeneration
+        self.toneExtractionTask?.cancel()
+        guard let image = self.coverImage,
+              let cg = Self.underlyingCGImage(from: image)
+        else {
+            self.imageTone = nil
+            return
+        }
+        self.toneExtractionTask = Task { [weak self] in
+            let tone = await Task.detached(priority: .userInitiated) {
+                DashboardImageColorExtractor.extract(from: cg)
+            }.value
+            guard !Task.isCancelled, let self, self.toneExtractionGeneration == generation else { return }
+            self.imageTone = tone
+        }
     }
     
     
@@ -5591,7 +5498,6 @@ private struct DashboardAIUsageWideCard: View {
     let onTap: () -> Void
     
     @State private var isHovered = false
-    @State private var hasAppeared = DashMotion.isReducedMotion
     
     
     var body: some View {
@@ -5605,15 +5511,15 @@ private struct DashboardAIUsageWideCard: View {
         
         let inTok = max(0, totals.inputTokens)
         let outTok = max(0, totals.outputTokens)
-        let inFrac: Double = (inTok + outTok) > 0 ? Double(inTok) / Double(inTok + outTok) : 0.62
-        let inPct = Int((inFrac * 100).rounded())
-        let outPct = max(0, 100 - inPct)
+        let totalInOut = inTok + outTok
+        let inPct = totalInOut > 0 ? Int((Double(inTok) / Double(totalInOut) * 100).rounded()) : 0
+        let outPct = totalInOut > 0 ? max(0, 100 - inPct) : 0
         let topModels = self.topBreakdownRows
         
         Button(action: self.onTap) {
             GeometryReader { cardGeo in
                 let ringSide = min(104, max(72, floor(cardGeo.size.height - 26)))
-                let showModelBreakdown = cardGeo.size.height >= 122 && !topModels.isEmpty
+                let showModelBreakdown = cardGeo.size.height >= 116 && !topModels.isEmpty
                 
                 HStack(spacing: 16) {
                     ZStack {
@@ -5633,7 +5539,7 @@ private struct DashboardAIUsageWideCard: View {
                     }
                     .frame(width: ringSide + 2, height: ringSide + 2)
                     
-                    VStack(alignment: .leading, spacing: showModelBreakdown ? 8 : 10) {
+                    VStack(alignment: .leading, spacing: showModelBreakdown ? 7 : 9) {
                         HStack(alignment: .top, spacing: 8) {
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack(spacing: 6) {
@@ -5672,7 +5578,7 @@ private struct DashboardAIUsageWideCard: View {
                         }
                         
                         if showModelBreakdown {
-                            VStack(spacing: 4.5) {
+                            VStack(spacing: 4) {
                                 ForEach(Array(topModels.prefix(cardGeo.size.height >= 165 ? 3 : 2).enumerated()), id: \.offset) { idx, row in
                                     HStack(spacing: 6) {
                                         Circle()
@@ -5683,58 +5589,28 @@ private struct DashboardAIUsageWideCard: View {
                                             .foregroundStyle(self.palette.pine.opacity(0.88))
                                             .lineLimit(1)
                                             .truncationMode(.middle)
-                                            .frame(maxWidth: 116, alignment: .leading)
-                                        GeometryReader { miniGeo in
-                                            ZStack(alignment: .leading) {
-                                                Capsule(style: .continuous)
-                                                    .fill(self.palette.hairline.opacity(0.85))
-                                                Capsule(style: .continuous)
-                                                    .fill(self.modelSwatchColor(index: idx).opacity(0.82))
-                                                    .frame(width: max(4, miniGeo.size.width * CGFloat(min(1, max(0, row.share)))))
-                                            }
-                                        }
-                                        .frame(height: 4)
+                                        Spacer(minLength: 6)
                                         Text("\(Int((row.share * 100).rounded()))%")
                                             .font(.system(size: 10, weight: .medium, design: .monospaced).monospacedDigit())
                                             .foregroundStyle(self.palette.secondaryInk)
-                                            .frame(width: 28, alignment: .trailing)
                                     }
                                 }
                             }
                         }
                         
-                        VStack(spacing: 4.5) {
-                            GeometryReader { barGeo in
-                                let w = max(40, barGeo.size.width)
-                                let splitX = max(14, min(w - 14, w * CGFloat(inFrac)))
-                                HStack(spacing: 2) {
-                                    RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                                        .fill(self.palette.accentFill.opacity(self.palette.tokens.isDark ? 0.85 : 0.82))
-                                        .frame(width: max(8, splitX - 1))
-                                    
-                                    RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                                        .fill(self.palette.tokens.heat3.opacity(self.palette.tokens.isDark ? 0.78 : 0.72))
-                                        .frame(maxWidth: .infinity)
-                                }
-                                .scaleEffect(x: self.hasAppeared ? 1.0 : 0.08, anchor: .leading)
-                                .animation(DashMotion.resolve(DashMotion.chartReveal.delay(0.12)), value: self.hasAppeared)
+                        HStack {
+                            HStack(spacing: 4) {
+                                Circle().fill(self.palette.accentFill).frame(width: 5, height: 5)
+                                Text(totalInOut > 0 ? "输入 \(Self.compactTokens(inTok)) · \(inPct)%" : "输入 \(Self.compactTokens(inTok))")
+                                    .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+                                    .foregroundStyle(self.palette.secondaryInk)
                             }
-                            .frame(height: 5)
-                            
-                            HStack {
-                                HStack(spacing: 4) {
-                                    Circle().fill(self.palette.accentFill).frame(width: 5, height: 5)
-                                    Text("输入 \(Self.compactTokens(inTok)) · \(inPct)%")
-                                        .font(.system(size: 10.5, weight: .medium).monospacedDigit())
-                                        .foregroundStyle(self.palette.secondaryInk)
-                                }
-                                Spacer()
-                                HStack(spacing: 4) {
-                                    Circle().fill(self.palette.tokens.heat3).frame(width: 5, height: 5)
-                                    Text("生成 \(Self.compactTokens(outTok)) · \(outPct)%")
-                                        .font(.system(size: 10.5, weight: .regular).monospacedDigit())
-                                        .foregroundStyle(self.palette.mutedInk)
-                                }
+                            Spacer()
+                            HStack(spacing: 4) {
+                                Circle().fill(self.palette.tokens.heat3).frame(width: 5, height: 5)
+                                Text(totalInOut > 0 ? "生成 \(Self.compactTokens(outTok)) · \(outPct)%" : "生成 \(Self.compactTokens(outTok))")
+                                    .font(.system(size: 10.5, weight: .regular).monospacedDigit())
+                                    .foregroundStyle(self.palette.mutedInk)
                             }
                         }
                     }
@@ -5753,12 +5629,6 @@ private struct DashboardAIUsageWideCard: View {
         .onHover { hovering in
             if hovering != self.isHovered {
                 self.isHovered = hovering
-            }
-        }
-        .onAppear {
-            guard !self.hasAppeared else { return }
-            withAnimation(DashMotion.resolve(DashMotion.chartReveal)) {
-                self.hasAppeared = true
             }
         }
     }
@@ -5821,7 +5691,6 @@ private struct DashboardCompactQuadCard: View {
     let onTap: () -> Void
     
     @State private var isHovered = false
-    @State private var compactHoverDetail: String?
     
     
     var body: some View {
@@ -5855,21 +5724,6 @@ private struct DashboardCompactQuadCard: View {
                 
                 self.miniVisualization
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                
-                if let footer = self.compactFooterText {
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(self.compactHoverDetail != nil ? self.palette.tokens.heat3 : self.palette.accentFill.opacity(0.65))
-                            .frame(width: 4.5, height: 4.5)
-                        Text(footer)
-                            .font(.system(size: 10, weight: self.compactHoverDetail != nil ? .medium : .regular).monospacedDigit())
-                            .foregroundStyle(self.compactHoverDetail != nil ? self.palette.pine : self.palette.secondaryInk)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 1)
-                }
             }
             .padding(.horizontal, 11)
             .padding(.vertical, 10)
@@ -5883,27 +5737,6 @@ private struct DashboardCompactQuadCard: View {
             if hovering != self.isHovered {
                 self.isHovered = hovering
             }
-            if !hovering {
-                self.compactHoverDetail = nil
-            }
-        }
-    }
-    
-    
-    private var compactFooterText: String? {
-        if let hover = self.compactHoverDetail, !hover.isEmpty {
-            return hover
-        }
-        switch self.metric {
-            case .busyness:
-                let activeSlots = self.snapshot.busyness.slices.filter { $0.intensity >= 0.12 }.count
-                return "峰值 \(self.snapshot.busyness.peakHourLabel) · 活跃 \(activeSlots) 时段"
-            case .mood:
-                let dominant = self.snapshot.mood.dominantLabel.isEmpty ? "沉稳" : self.snapshot.mood.dominantLabel
-                let topChild = self.snapshot.mood.segments.first?.children.first?.label ?? "专注"
-                return "\(dominant) · \(topChild)"
-            default:
-                return nil
         }
     }
     
@@ -5936,11 +5769,6 @@ private struct DashboardCompactQuadCard: View {
     }
     
     
-    private var secondaryBadgeText: String? {
-        nil
-    }
-    
-    
     private func formatTokens(_ value: Int) -> String {
         if value >= 10_000 {
             return String(format: "%.1fK", Double(value) / 1000.0)
@@ -5960,15 +5788,13 @@ private struct DashboardCompactQuadCard: View {
                 NightingaleRoseChartView(
                     metrics: self.snapshot.busyness,
                     palette: self.palette,
-                    detailed: false,
-                    onHoverDetail: { self.compactHoverDetail = $0 }
+                    detailed: false
                 )
             case .mood:
                 EmotionSankeyChartView(
                     snapshot: self.snapshot,
                     palette: self.palette,
-                    detailed: false,
-                    onHoverDetail: { self.compactHoverDetail = $0 }
+                    detailed: false
                 )
         }
     }
@@ -7548,10 +7374,12 @@ private extension View {
         cornerRadius: CGFloat = 16,
         isHighlighted: Bool = false,
         showsShadow: Bool = true,
-        overPhoto: Bool = false
+        overPhoto: Bool = false,
+        surfaceColor: Color? = nil
     ) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         let isDark = palette.tokens.isDark
+        let resolvedFill = surfaceColor ?? palette.card
         let shadowColor = showsShadow && !overPhoto
             ? Color.black.opacity(isDark ? 0.18 : 0.032)
             : .clear
@@ -7567,10 +7395,10 @@ private extension View {
                                 x: 0,
                                 y: 3
                             )
-                        shape.fill(palette.card.opacity(isDark ? (isHighlighted ? 0.40 : 0.30) : (isHighlighted ? 0.52 : 0.42)))
+                        shape.fill(resolvedFill.opacity(isDark ? (isHighlighted ? 0.42 : 0.32) : (isHighlighted ? 0.56 : 0.46)))
                     } else {
                         shape
-                            .fill(palette.card)
+                            .fill(resolvedFill)
                             .shadow(
                                 color: shadowColor,
                                 radius: showsShadow ? 8 : 0,

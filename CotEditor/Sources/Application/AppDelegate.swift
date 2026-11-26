@@ -209,6 +209,7 @@ extension Logger {
         ScheduledAIDocumentOrganizer.shared.startScheduler()
         ButlerToolbarTipBubbleController.shared.startListening()
         ProactiveDailyJournalService.shared.startBackgroundScheduler()
+        ButlerDailyReportService.shared.startBackgroundScheduler()
         AppIconManager.shared.applySavedAppIconOnLaunch()
         
         #if DEBUG

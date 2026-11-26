@@ -2981,7 +2981,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             self.activePinchWidth = nil
             self.didCrossPinch100Percent = false
             self.liveInlineImageHUDText = nil
-            self.applyInlineImageLayoutUpdate(in: entry.tokenRange, isLiveManipulation: false)
+            self.applyInlineImageLayoutUpdate(in: entry.tokenRange, isLiveManipulation: false, previousCardRect: entry.rect)
         } else {
             let pct = Int((updatedTx.scale * 100).rounded())
             if let cw = updatedTx.customWidth, let ch = updatedTx.customHeight {
@@ -2989,7 +2989,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             } else {
                 self.liveInlineImageHUDText = "\(pct)%"
             }
-            self.applyInlineImageLayoutUpdate(in: entry.tokenRange, isLiveManipulation: true)
+            self.applyInlineImageLayoutUpdate(in: entry.tokenRange, isLiveManipulation: true, previousCardRect: entry.rect)
         }
         return true
     }
@@ -3041,10 +3041,12 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     func applyInlineImageSteplessScale(
         _ requestedScale: CGFloat,
         for identifier: String,
-        tokenRange: NSRange? = nil
+        tokenRange: NSRange? = nil,
+        isLiveManipulation: Bool = false
     ) -> InlineImageTransform {
         
         let docURL = self.currentInlineImageDocURL
+        let prevRect = self.inlineImageCardEntries.first(where: { $0.identifier == identifier })?.rect
         let currentTx = PlainTextInlineImageStore.shared.transform(for: identifier, documentURL: docURL)
         let containerW = self.effectiveInlineImageContainerWidth
         let maxImgW = PlainTextInlineImageStore.effectiveMaxImageWidth(containerWidth: containerW, glyphX: 0)
@@ -3068,9 +3070,19 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             resolved = copy.clamped()
         }
         
-        PlainTextInlineImageStore.shared.setTransform(resolved, for: identifier, documentURL: docURL)
+        self.isLiveManipulatingInlineImage = isLiveManipulation
+        PlainTextInlineImageStore.shared.setTransform(
+            resolved,
+            for: identifier,
+            documentURL: docURL,
+            persist: !isLiveManipulation
+        )
         self.selectedInlineImageIdentifier = identifier
-        self.applyInlineImageLayoutUpdate(in: tokenRange)
+        self.applyInlineImageLayoutUpdate(
+            in: tokenRange,
+            isLiveManipulation: isLiveManipulation,
+            previousCardRect: prevRect
+        )
         return resolved
     }
     
@@ -3091,21 +3103,27 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             return
         }
         
+        let isEnded = (event.phase == .ended || event.phase == .cancelled)
         self.selectedInlineImageIdentifier = entry.identifier
+        self.isLiveManipulatingInlineImage = !isEnded
         let docURL = self.currentInlineImageDocURL
         var tx = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
         var rawDeg = tx.rotationDegrees - CGFloat(event.rotation)
         if rawDeg > 180 { rawDeg -= 360 }
         if rawDeg < -180 { rawDeg += 360 }
-        if event.phase == .ended {
+        if isEnded {
             rawDeg = Self.snappedImageAngleIfNearCardinal(rawDeg)
             self.liveInlineImageHUDText = nil
         } else {
             self.liveInlineImageHUDText = String(format: "%.1f°", rawDeg)
         }
         tx.rotationDegrees = rawDeg
-        PlainTextInlineImageStore.shared.setTransform(tx, for: entry.identifier, documentURL: docURL)
-        self.applyInlineImageLayoutUpdate()
+        PlainTextInlineImageStore.shared.setTransform(tx, for: entry.identifier, documentURL: docURL, persist: isEnded)
+        self.applyInlineImageLayoutUpdate(
+            in: entry.tokenRange,
+            isLiveManipulation: !isEnded,
+            previousCardRect: entry.rect
+        )
     }
     
     
@@ -3146,6 +3164,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         let borderColor = (self.theme?.text.color ?? .labelColor).withAlphaComponent(0.12)
         let fillColor = self.theme?.background.color ?? .controlBackgroundColor
         let accentColor = StudioPaletteManager.shared.activeNSAccentColor
+        let backingScale = self.window?.backingScaleFactor ?? 2.0
         let containerWidth = self.effectiveInlineImageContainerWidth
         let canvasMidX = self.textContainerOrigin.x + containerWidth * 0.5
         
@@ -3162,8 +3181,6 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         }
         
         for token in tokens {
-            guard let image = PlainTextInlineImageStore.shared.image(for: token.identifier, documentURL: docURL) else { continue }
-            
             let glyphIndex = layoutManager.glyphIndexForCharacter(at: token.range.location)
             guard layoutManager.isValidGlyphIndex(glyphIndex) else { continue }
             
@@ -3217,7 +3234,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             guard repaintBounds.intersects(dirtyRect) else { continue }
             
             NSGraphicsContext.saveGraphicsState()
-            NSGraphicsContext.current?.imageInterpolation = self.isLiveManipulatingInlineImage ? .medium : .high
+            let interpolation: NSImageInterpolation = self.isLiveManipulatingInlineImage ? .medium : .high
+            NSGraphicsContext.current?.imageInterpolation = interpolation
             
             let xform = NSAffineTransform()
             xform.translateX(by: center.x, yBy: center.y)
@@ -3239,14 +3257,28 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             let drawRect = unrotatedCardRect.insetBy(dx: 4, dy: 4)
             let clipPath = NSBezierPath(roundedRect: drawRect, xRadius: isSelected ? 1 : 4, yRadius: isSelected ? 1 : 4)
             clipPath.addClip()
-            image.draw(
-                in: drawRect,
-                from: .zero,
-                operation: .sourceOver,
-                fraction: 1.0,
-                respectFlipped: true,
-                hints: nil
+            let exactThumb = PlainTextInlineImageStore.shared.displayImage(
+                for: token.identifier,
+                documentURL: docURL,
+                maxPixel: max(drawRect.width, drawRect.height) * backingScale
             )
+            if let cgThumb = exactThumb, let cgCtx = NSGraphicsContext.current?.cgContext {
+                cgCtx.saveGState()
+                cgCtx.interpolationQuality = self.isLiveManipulatingInlineImage ? .medium : .high
+                cgCtx.translateBy(x: 0, y: drawRect.minY + drawRect.maxY)
+                cgCtx.scaleBy(x: 1, y: -1)
+                cgCtx.draw(cgThumb, in: drawRect)
+                cgCtx.restoreGState()
+            } else if let image = PlainTextInlineImageStore.shared.image(for: token.identifier, documentURL: docURL) {
+                image.draw(
+                    in: drawRect,
+                    from: .zero,
+                    operation: .sourceOver,
+                    fraction: 1.0,
+                    respectFlipped: true,
+                    hints: nil
+                )
+            }
             NSGraphicsContext.restoreGraphicsState()
             
             if isSelected {
@@ -3345,13 +3377,29 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
+    private static let inlineImageSpecBlue = NSColor(srgbRed: 30.0 / 255.0, green: 137.0 / 255.0, blue: 245.0 / 255.0, alpha: 1.0)
+    private static let inlineImageRotateKnobIcon: NSImage? = NSImage(
+        systemSymbolName: "arrow.trianglehead.2.clockwise.rotate.90",
+        accessibilityDescription: nil
+    )?.withSymbolConfiguration(.init(pointSize: 8.5, weight: .bold))?
+        .tinted(with: NSColor(srgbRed: 30.0 / 255.0, green: 137.0 / 255.0, blue: 245.0 / 255.0, alpha: 1.0))
+    private static let inlineImagePillAttributes: [NSAttributedString.Key: Any] = [
+        .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold),
+        .foregroundColor: NSColor.white,
+    ]
+    private static let inlineImageHUDAttributes: [NSAttributedString.Key: Any] = [
+        .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .semibold),
+        .foregroundColor: NSColor.white,
+    ]
+    
+    
     private func drawSelectionHandles(
         for entry: InlineImageCardEntry,
         accentColor: NSColor,
         haloColor: NSColor
     ) {
         
-        let specBlue = NSColor(srgbRed: 30.0 / 255.0, green: 137.0 / 255.0, blue: 245.0 / 255.0, alpha: 1.0)
+        let specBlue = Self.inlineImageSpecBlue
         let unrotatedRect = NSRect(
             x: -entry.unrotatedCardSize.width * 0.5,
             y: -entry.unrotatedCardSize.height * 0.5,
@@ -3408,10 +3456,8 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         specBlue.setStroke()
         knobPath.lineWidth = 1.4
         knobPath.stroke()
-        if let rotateIcon = NSImage(systemSymbolName: "arrow.trianglehead.2.clockwise.rotate.90", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 8.5, weight: .bold))
-        {
-            rotateIcon.tinted(with: specBlue).draw(
+        if let rotateIcon = Self.inlineImageRotateKnobIcon {
+            rotateIcon.draw(
                 in: knobRect.insetBy(dx: 3, dy: 3),
                 from: .zero,
                 operation: .sourceOver,
@@ -3462,11 +3508,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         let anchorPt = entry.handlePoint(for: anchorHandle)
         
         func drawDimensionPill(text: String, center: NSPoint, fill: NSColor) -> NSRect {
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold),
-                .foregroundColor: NSColor.white,
-            ]
-            let attrStr = NSAttributedString(string: text, attributes: attrs)
+            let attrStr = NSAttributedString(string: text, attributes: Self.inlineImagePillAttributes)
             let sz = attrStr.size()
             let pillW = max(28, ceil(sz.width) + 12)
             let pillH: CGFloat = 18
@@ -3500,11 +3542,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         // Live HUD readout pill during rotation or free move
         if let hud = self.liveInlineImageHUDText {
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .semibold),
-                .foregroundColor: NSColor.white,
-            ]
-            let attrStr = NSAttributedString(string: hud, attributes: attrs)
+            let attrStr = NSAttributedString(string: hud, attributes: Self.inlineImageHUDAttributes)
             let sz = attrStr.size()
             let pillW = sz.width + 14
             let pillH: CGFloat = 20
@@ -3537,7 +3575,38 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
-    private func applyInlineImageLayoutUpdate(in tokenRange: NSRange? = nil, isLiveManipulation: Bool = false) {
+    private func applyInlineImageLayoutUpdate(
+        in tokenRange: NSRange? = nil,
+        isLiveManipulation: Bool = false,
+        previousCardRect: NSRect? = nil
+    ) {
+        if isLiveManipulation, let tokenRange, let lm = self.layoutManager as? LayoutManager {
+            lm.invalidateInlineImageLineHeight(in: tokenRange)
+            if let tc = self.textContainer {
+                if !self.visibleRect.isEmpty {
+                    lm.ensureLayout(forBoundingRect: self.visibleRect, in: tc)
+                } else {
+                    lm.ensureLayout(for: tc)
+                }
+            }
+            var dirty = previousCardRect?.insetBy(dx: -56, dy: -56) ?? self.visibleRect
+            let glyphIndex = lm.glyphIndexForCharacter(at: tokenRange.location)
+            if lm.isValidGlyphIndex(glyphIndex) {
+                let fragmentRect = lm.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil, withoutAdditionalLayout: true)
+                let lineTopY = fragmentRect.minY + self.textContainerOrigin.y - 56
+                let lineHeight = fragmentRect.height + 112
+                let heightChanged = previousCardRect.map { abs($0.height - fragmentRect.height) > 1.0 } ?? true
+                let repaintHeight = heightChanged ? max(lineHeight, self.visibleRect.maxY - lineTopY) : lineHeight
+                let lineBand = NSRect(x: 0, y: lineTopY, width: self.bounds.width, height: max(lineHeight, repaintHeight))
+                dirty = previousCardRect != nil ? dirty.union(lineBand) : lineBand
+            }
+            self.setNeedsDisplay(dirty)
+            if self.funEffects.ownsVimCursorDrawing {
+                self.funEffects.syncVimCursor(animated: false)
+            }
+            return
+        }
+        
         if let lm = self.layoutManager as? LayoutManager {
             lm.invalidateInlineImageLayout(in: tokenRange)
             if let tc = self.textContainer {
@@ -3548,15 +3617,10 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 }
             }
         }
-        if !isLiveManipulation {
-            self.sizeToFit()
-            self.needsLayout = true
-            self.invalidateInsertionIndicatorDisplayMode()
-        }
+        self.sizeToFit()
+        self.needsLayout = true
+        self.invalidateInsertionIndicatorDisplayMode()
         self.needsDisplay = true
-        if isLiveManipulation {
-            self.displayIfNeeded()
-        }
         if self.funEffects.ownsVimCursorDrawing {
             self.funEffects.syncVimCursor(animated: false)
         }
@@ -3650,7 +3714,11 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             }
         }
         
-        self.needsDisplay = true
+        if let selected = self.selectedInlineImageEntry() {
+            self.setNeedsDisplay(selected.rect.insetBy(dx: -56, dy: -56))
+        } else {
+            self.needsDisplay = true
+        }
         if !anyMoving {
             self.resizeSpringTimer?.invalidate()
             self.resizeSpringTimer = nil
@@ -3948,11 +4016,12 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             latestTransform = updated
             
             // Pure in-memory update during live drag (zero disk I/O per pixel)
+            let prevRect = self.inlineImageCardEntries.first(where: { $0.identifier == entry.identifier })?.rect ?? entry.rect
             PlainTextInlineImageStore.shared.setTransform(updated, for: entry.identifier, documentURL: docURL, persist: false)
             self.liveInlineImageHUDText = "\(Int((updated.scale * 100).rounded()))% · \(Int(round(nextFrame.width))) × \(Int(round(nextFrame.height)))"
             
             self.stepResizeSprings()
-            self.applyInlineImageLayoutUpdate(in: entry.tokenRange, isLiveManipulation: true)
+            self.applyInlineImageLayoutUpdate(in: entry.tokenRange, isLiveManipulation: true, previousCardRect: prevRect)
             
             if event.type == .leftMouseUp { break }
         }
@@ -4002,8 +4071,20 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         let startAngleRad = atan2(initialPoint.y - entry.center.y, initialPoint.x - entry.center.x)
         let baseTransform = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
         let initialDegrees = baseTransform.rotationDegrees
+        var latestTransform = baseTransform
+        self.isLiveManipulatingInlineImage = true
         
-        while let event = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+        while var event = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            if event.type == .leftMouseDragged {
+                while let newer = window.nextEvent(
+                    matching: .leftMouseDragged,
+                    until: .distantPast,
+                    inMode: .eventTracking,
+                    dequeue: true
+                ) {
+                    event = newer
+                }
+            }
             let curPt = self.convert(event.locationInWindow, from: nil)
             let curRad = atan2(curPt.y - entry.center.y, curPt.x - entry.center.x)
             var deg = initialDegrees + (curRad - startAngleRad) * 180.0 / .pi
@@ -4014,14 +4095,18 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             }
             var updated = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
             updated.rotationDegrees = deg
-            PlainTextInlineImageStore.shared.setTransform(updated, for: entry.identifier, documentURL: docURL)
+            latestTransform = updated
+            let prevRect = self.inlineImageCardEntries.first(where: { $0.identifier == entry.identifier })?.rect ?? entry.rect
+            PlainTextInlineImageStore.shared.setTransform(updated, for: entry.identifier, documentURL: docURL, persist: false)
             self.liveInlineImageHUDText = String(format: "%.1f°", deg)
-            self.applyInlineImageLayoutUpdate(in: entry.tokenRange)
+            self.applyInlineImageLayoutUpdate(in: entry.tokenRange, isLiveManipulation: true, previousCardRect: prevRect)
             
             if event.type == .leftMouseUp { break }
         }
+        self.isLiveManipulatingInlineImage = false
         self.liveInlineImageHUDText = nil
-        self.needsDisplay = true
+        PlainTextInlineImageStore.shared.setTransform(latestTransform, for: entry.identifier, documentURL: docURL, persist: true)
+        self.applyInlineImageLayoutUpdate(in: entry.tokenRange, isLiveManipulation: false)
     }
     
     
@@ -4032,8 +4117,20 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         let containerWidth = self.effectiveInlineImageContainerWidth
         let canvasMidX = self.textContainerOrigin.x + containerWidth * 0.5
         var didMove = false
+        var latestTransform = startTx
+        self.isLiveManipulatingInlineImage = true
         
-        while let event = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+        while var event = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            if event.type == .leftMouseDragged {
+                while let newer = window.nextEvent(
+                    matching: .leftMouseDragged,
+                    until: .distantPast,
+                    inMode: .eventTracking,
+                    dequeue: true
+                ) {
+                    event = newer
+                }
+            }
             let curPt = self.convert(event.locationInWindow, from: nil)
             let dx = curPt.x - startPoint.x
             let dy = curPt.y - startPoint.y
@@ -4051,17 +4148,25 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 }
                 updated.offsetX = proposedOffsetX
                 updated.offsetY = max(0, min(200, startTx.offsetY + dy))
-                PlainTextInlineImageStore.shared.setTransform(updated, for: entry.identifier, documentURL: docURL)
+                latestTransform = updated
+                let prevRect = self.inlineImageCardEntries.first(where: { $0.identifier == entry.identifier })?.rect ?? entry.rect
+                PlainTextInlineImageStore.shared.setTransform(updated, for: entry.identifier, documentURL: docURL, persist: false)
                 self.liveInlineImageHUDText = "X:\(Int(updated.offsetX.rounded())) Y:\(Int(updated.offsetY.rounded()))"
-                self.applyInlineImageLayoutUpdate(in: entry.tokenRange)
+                self.applyInlineImageLayoutUpdate(in: entry.tokenRange, isLiveManipulation: true, previousCardRect: prevRect)
             }
             
             if event.type == .leftMouseUp { break }
         }
         
+        self.isLiveManipulatingInlineImage = false
         self.showInlineImageCenterGuide = false
         self.liveInlineImageHUDText = nil
-        self.needsDisplay = true
+        if didMove {
+            PlainTextInlineImageStore.shared.setTransform(latestTransform, for: entry.identifier, documentURL: docURL, persist: true)
+            self.applyInlineImageLayoutUpdate(in: entry.tokenRange, isLiveManipulation: false)
+        } else {
+            self.needsDisplay = true
+        }
     }
     
     
@@ -4176,9 +4281,14 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 initialScale: effectiveScale,
                 scaleBounds: scaleBounds,
                 isIdentity: currentTx.isIdentity,
-                onScaleChange: { [weak self] targetScale in
+                onScaleChange: { [weak self] targetScale, isLive in
                     guard let self else { return currentTx }
-                    return self.applyInlineImageSteplessScale(targetScale, for: identifier, tokenRange: tokenRange)
+                    return self.applyInlineImageSteplessScale(
+                        targetScale,
+                        for: identifier,
+                        tokenRange: tokenRange,
+                        isLiveManipulation: isLive
+                    )
                 },
                 onReset: { [weak self] in
                     guard let self else { return }

@@ -784,12 +784,6 @@ struct DashboardNewsCenterView: View {
         return hash
     }
     
-    static func waterfallCoverHeight(for item: AIHotNewsItem, cardWidth: CGFloat) -> CGFloat {
-        let bucket = Int(Self.stableSeed(for: item.id) % 5)
-        let ratios: [CGFloat] = [0.96, 1.02, 1.08, 1.14, 1.04]
-        return (cardWidth * ratios[bucket]).rounded()
-    }
-    
     static func columnsForWidth(_ innerW: CGFloat) -> Int {
         if innerW >= 1220 { return 5 }
         if innerW >= 880 { return 4 }
@@ -3087,20 +3081,19 @@ private struct XiaohongshuNewsCard: View, Equatable {
                 Text(self.item.title)
                     .font(.system(size: 13.5, weight: self.isRead ? .medium : .semibold))
                     .foregroundStyle(self.isRead ? self.secondaryInk : self.tokens.primaryInk)
-                    .lineLimit(2)
+                    .lineLimit(2, reservesSpace: true)
                     .lineSpacing(2.5)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                 
-                if !summarySnippet.isEmpty {
-                    Text(summarySnippet)
-                        .font(.system(size: 11.5, weight: .regular))
-                        .foregroundStyle(self.mutedInk)
-                        .lineLimit(2)
-                        .lineSpacing(2)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                }
+                Text(summarySnippet.isEmpty ? " " : summarySnippet)
+                    .font(.system(size: 11.5, weight: .regular))
+                    .foregroundStyle(self.mutedInk)
+                    .lineLimit(2, reservesSpace: true)
+                    .lineSpacing(2)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .opacity(summarySnippet.isEmpty ? 0 : 1)
                 
                 Spacer(minLength: 2)
                 
