@@ -3283,7 +3283,11 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
                         || !doc.textStorage.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     else { continue }
                     
-                    if tab.boardState == nil, (path == nil || isDirty) {
+                    // Always persist dirty or unsaved backing documents even when the tab currently
+                    // displays a board (Butler / Market / Podcast / NEWS), so reverting or restarting
+                    // after an unexpected termination NEVER loses the underlying draft text.
+                    let hasBackingText = !doc.textStorage.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    if (path == nil && hasBackingText) || isDirty {
                         docsToSync.append(doc)
                     }
                     
@@ -3607,10 +3611,24 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             doc.databaseDocumentID = dbID
         }
         doc.displayName = item.title
+        if !item.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !DocumentCenterAgentOrganizer.isGenericUntitled(item.title, hasFilePath: item.filePath != nil)
+        {
+            doc.isExplicitlyNamed = true
+        }
         doc.setSyntax(name: item.syntax)
-        let dbFallback: StoredDocumentRecord? = (item.content.isEmpty && item.boardState == nil)
+        // Always hydrate the backing document from SQLite even when `item.boardState != nil`,
+        // so reverting a restored board tab back to its editor restores 100% of the draft.
+        let dbFallback: StoredDocumentRecord? = item.content.isEmpty
             ? CotLocalDatabase.shared.fetchDocumentRecord(id: item.databaseID, filePath: item.filePath)
             : nil
+        if let dbTitle = dbFallback?.title.trimmingCharacters(in: .whitespacesAndNewlines),
+           !dbTitle.isEmpty,
+           DocumentCenterAgentOrganizer.isGenericUntitled(doc.displayName, hasFilePath: item.filePath != nil)
+        {
+            doc.displayName = dbTitle
+            doc.isExplicitlyNamed = !DocumentCenterAgentOrganizer.isGenericUntitled(dbTitle, hasFilePath: item.filePath != nil)
+        }
         let resolvedContent = !item.content.isEmpty ? item.content : (dbFallback?.content ?? "")
         if !resolvedContent.isEmpty {
             doc.textStorage.replaceCharacters(in: doc.textStorage.range, with: resolvedContent)
@@ -4357,8 +4375,15 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
         in pane: EditorViewController,
         explicitQuery: String? = nil
     ) {
-        let sourceText = (explicitQuery ?? tab.document.textStorage.string)
+        let backingDoc = tab.document
+        let rawBackingText = backingDoc.textStorage.string
+        let sourceText = (explicitQuery ?? rawBackingText)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // Flush the backing document (and any other dirty/untitled open documents) to SQLite
+        // BEFORE switching the tab into a board view so zero unsaved work can ever be lost.
+        self.flushAllDirtyDocumentsToLocalDatabase(including: backingDoc)
+        
         let initial = PaneBoardIntentAnalyzer.initialState(for: kind, text: sourceText)
         
         tab.boardState = initial
@@ -4415,6 +4440,36 @@ final class DocumentViewController: NSSplitViewController, ThemeChanging, NSTool
             pane.refreshSelectedTabContent()
             self.savePaneTabsSessionToDatabase()
             _ = CotAgentCoordinator.shared.captureWorkspaceSnapshot()
+        }
+    }
+    
+    
+    /// Synchronously persists all unsaved/dirty open documents across every pane into `CotLocalDatabase`.
+    private func flushAllDirtyDocumentsToLocalDatabase(including priorityDoc: Document? = nil) {
+        var seen = Set<ObjectIdentifier>()
+        var docsToFlush: [Document] = []
+        
+        func consider(_ doc: Document) {
+            guard seen.insert(ObjectIdentifier(doc)).inserted else { return }
+            let hasText = !doc.textStorage.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            if hasText || doc.isDocumentEdited || doc.hasUncommittedChanges {
+                docsToFlush.append(doc)
+            }
+        }
+        
+        if let priorityDoc {
+            consider(priorityDoc)
+        }
+        for pane in self.editorViewControllers {
+            for tab in pane.tabs {
+                consider(tab.document)
+            }
+        }
+        guard !docsToFlush.isEmpty else { return }
+        CotLocalDatabase.shared.withTransaction {
+            for doc in docsToFlush {
+                doc.syncToLocalDatabase(force: true)
+            }
         }
     }
     

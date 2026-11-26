@@ -39,16 +39,22 @@ nonisolated struct OrganizeFunnelInput: Sendable, Equatable {
 
 nonisolated enum OrganizeJunkReason: String, Sendable, Equatable {
     case empty
+    case titleOnly
+    case emptyTemplate
     case meaninglessTest
     case keyboardSmash
     case garbled
+    case aiHollow
     
     var label: String {
         switch self {
             case .empty: "空白文档"
+            case .titleOnly: "仅标题无正文"
+            case .emptyTemplate: "空白模板"
             case .meaninglessTest: "无效测试"
             case .keyboardSmash: "乱敲文本"
             case .garbled: "乱码内容"
+            case .aiHollow: "无实质内容"
         }
     }
 }
@@ -57,6 +63,20 @@ nonisolated enum OrganizeJunkReason: String, Sendable, Equatable {
 nonisolated struct OrganizeJunkDecision: Sendable, Equatable {
     let item: OrganizeFunnelInput
     let reason: OrganizeJunkReason
+    let detail: String?
+    
+    init(item: OrganizeFunnelInput, reason: OrganizeJunkReason, detail: String? = nil) {
+        self.item = item
+        self.reason = reason
+        self.detail = detail
+    }
+    
+    var displayReason: String {
+        if let detail = self.detail?.trimmingCharacters(in: .whitespacesAndNewlines), !detail.isEmpty {
+            return detail
+        }
+        return self.reason.label
+    }
 }
 
 
@@ -85,18 +105,21 @@ nonisolated enum OrganizeFunnelProgress: Sendable, Equatable {
     case filteringJunk(total: Int)
     case mergingDuplicates(remaining: Int, junkDeleted: Int)
     case shardedOrganizing(completedBatches: Int, totalBatches: Int, survivorCount: Int)
+    case synthesizingMerges(completed: Int, total: Int)
     case consolidating
     
     var statusText: String {
         switch self {
             case .filteringJunk(let total):
-                "清洗去重 \(total) 篇"
+                "筛查无效文档 \(total) 篇"
             case .mergingDuplicates(let remaining, let junk):
-                junk > 0 ? "已删 \(junk) 篇 · 语义合并 \(remaining) 篇" : "语义合并 \(remaining) 篇"
-            case .shardedOrganizing(let done, let total, _):
-                "合并归类 \(done)/\(total) 批"
+                junk > 0 ? "已清 \(junk) 无效 · 深度分析 \(remaining) 篇" : "深度分析 \(remaining) 篇"
+            case .shardedOrganizing(let done, let total, let survivorCount):
+                total <= 1 ? "AI 深度整合 \(survivorCount) 篇" : "AI 整合 \(done)/\(total) 批"
+            case .synthesizingMerges(let done, let total):
+                "精炼合并 \(done)/\(total) 组"
             case .consolidating:
-                "收敛精简星图"
+                "收敛整理星图"
         }
     }
 }
@@ -114,7 +137,7 @@ nonisolated struct OrganizeFullPlan: Sendable, Equatable {
 
 nonisolated enum DocumentOrganizeFunnel {
     
-    static let defaultShardSize = 36
+    static let defaultShardSize = 42
     static let defaultMaxConcurrency = 4
     
     private static let copySuffixRegex = try! NSRegularExpression(
@@ -195,8 +218,14 @@ nonisolated enum DocumentOrganizeFunnel {
     
     // MARK: Stage 1 — Junk & Garbled Document Filter
     
-    /// Classifies meaningless test documents, empty drafts, keyboard smashes, and garbled mojibake text.
-    static func classifyJunk(title: String, content: String, filePath: String? = nil) -> OrganizeJunkReason? {
+    /// Classifies meaningless test documents, empty drafts, title-only stubs, empty outlines/templates,
+    /// keyboard smashes, and garbled mojibake text.
+    static func classifyJunk(
+        title: String,
+        content: String,
+        filePath: String? = nil,
+        isUntitled: Bool? = nil
+    ) -> OrganizeJunkReason? {
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             return .empty
@@ -216,8 +245,21 @@ nonisolated enum DocumentOrganizeFunnel {
             return .empty
         }
         
-        // Never discard substantial real files/documents that passed the garbled check.
-        if trimmed.count >= 120 {
+        // Deep substance analysis catches title-only stubs ("# 方案设计") and empty templates
+        // even when headings/tables make raw character count > 120.
+        let resolvedUntitled = isUntitled ?? DocumentCenterAgentOrganizer.isGenericUntitled(title, hasFilePath: filePath != nil)
+        let substance = OrganizeDocumentAnalyzer.analyzeSubstance(
+            title: title,
+            content: trimmed,
+            filePath: filePath,
+            isUntitled: resolvedUntitled
+        )
+        if let hollowReason = substance.hollowReason {
+            return hollowReason
+        }
+        
+        // Never discard substantial real files/documents that passed the garbled & substance checks.
+        if substance.substantiveBodyChars >= 120 || trimmed.count >= 120 {
             return nil
         }
         if filePath != nil, trimmed.count >= 48 {
@@ -421,7 +463,12 @@ nonisolated enum DocumentOrganizeFunnel {
         cleanItems.reserveCapacity(items.count)
         
         for item in items {
-            if let reason = Self.classifyJunk(title: item.title, content: item.content, filePath: item.filePath) {
+            if let reason = Self.classifyJunk(
+                title: item.title,
+                content: item.content,
+                filePath: item.filePath,
+                isUntitled: item.isUntitled
+            ) {
                 junkDecisions.append(OrganizeJunkDecision(item: item, reason: reason))
             } else {
                 cleanItems.append(item)
@@ -868,7 +915,8 @@ nonisolated enum DocumentOrganizeFunnel {
     
     
     /// Merges same-topic fragments cleanly in chronological order, deduplicating repeated paragraphs
-    /// and inserting readable section separators without leaking whimsical placeholder titles.
+    /// and near-duplicate list lines, stripping redundant leading titles, and inserting readable
+    /// section separators without leaking whimsical placeholder titles.
     static func mergeStructuredContents(
         primary: OrganizeFunnelInput,
         secondaries: [OrganizeFunnelInput]
@@ -877,7 +925,19 @@ nonisolated enum DocumentOrganizeFunnel {
         let baseNormalized = Self.normalizeBody(primary.content)
         var resultParagraphs = Self.splitParagraphs(primary.content)
         var seenParagraphKeys = Set(resultParagraphs.map(Self.normalizeBody).filter { !$0.isEmpty })
+        var seenLineKeys = Set(
+            primary.content
+                .replacingOccurrences(of: "\r\n", with: "\n")
+                .components(separatedBy: "\n")
+                .map(Self.normalizeBody)
+                .filter { $0.count >= 8 }
+        )
+        var seenLineShingles: [Set<String>] = seenLineKeys
+            .filter { $0.count >= 16 }
+            .prefix(200)
+            .map { Self.charShingles($0, size: 3) }
         var runningNormalized = baseNormalized
+        let primaryTitleKey = Self.normalizeBody(primary.title)
         
         for sec in orderedSecondaries {
             let secNorm = Self.normalizeBody(sec.content)
@@ -885,15 +945,31 @@ nonisolated enum DocumentOrganizeFunnel {
                 continue
             }
             var freshParagraphs: [String] = []
-            for paragraph in Self.splitParagraphs(sec.content) {
+            for (pIdx, paragraph) in Self.splitParagraphs(sec.content).enumerated() {
                 let pKey = Self.normalizeBody(paragraph)
                 guard pKey.count >= 4 else { continue }
                 if seenParagraphKeys.contains(pKey) || runningNormalized.contains(pKey) {
                     continue
                 }
-                seenParagraphKeys.insert(pKey)
-                runningNormalized += " " + pKey
-                freshParagraphs.append(paragraph)
+                // Skip redundant leading H1 title that duplicates primary's title.
+                if pIdx == 0,
+                   paragraph.trimmingCharacters(in: .whitespaces).hasPrefix("# "),
+                   !primaryTitleKey.isEmpty,
+                   Self.normalizeBody(String(paragraph.dropFirst(2))) == primaryTitleKey
+                {
+                    continue
+                }
+                let cleanedParagraph = Self.deduplicateLinesInParagraph(
+                    paragraph,
+                    seenLineKeys: &seenLineKeys,
+                    seenLineShingles: &seenLineShingles
+                )
+                guard !cleanedParagraph.isEmpty else { continue }
+                let cleanedKey = Self.normalizeBody(cleanedParagraph)
+                guard cleanedKey.count >= 4 else { continue }
+                seenParagraphKeys.insert(cleanedKey)
+                runningNormalized += " " + cleanedKey
+                freshParagraphs.append(cleanedParagraph)
             }
             guard !freshParagraphs.isEmpty else { continue }
             
@@ -902,7 +978,7 @@ nonisolated enum DocumentOrganizeFunnel {
             if !startsWithHeading,
                !sec.isUntitled,
                sec.title.caseInsensitiveCompare(primary.title) != .orderedSame,
-               !DocumentCenterAgentOrganizer.isGenericUntitled(sec.title, hasFilePath: false)
+               !DocumentCenterAgentOrganizer.isWeakScratchTitle(sec.title, hasFilePath: false)
             {
                 let headingKey = Self.normalizeBody(sec.title)
                 if !headingKey.isEmpty && !runningNormalized.contains(headingKey) {
@@ -917,6 +993,41 @@ nonisolated enum DocumentOrganizeFunnel {
         return Self.multiBlankLinesRegex
             .stringByReplacingMatches(in: joined, range: range, withTemplate: "\n\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
+    
+    private static func deduplicateLinesInParagraph(
+        _ paragraph: String,
+        seenLineKeys: inout Set<String>,
+        seenLineShingles: inout [Set<String>]
+    ) -> String {
+        let lines = paragraph.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+        guard lines.count > 1 else {
+            let key = Self.normalizeBody(paragraph)
+            if key.count >= 8 { seenLineKeys.insert(key) }
+            return paragraph
+        }
+        var kept: [String] = []
+        kept.reserveCapacity(lines.count)
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { continue }
+            let key = Self.normalizeBody(trimmed)
+            if key.count >= 8 {
+                if seenLineKeys.contains(key) { continue }
+                if key.count >= 16 {
+                    let shingles = Self.charShingles(key, size: 3)
+                    let isNearDup = seenLineShingles.contains { Self.jaccardSimilarity($0, shingles) >= 0.84 }
+                    if isNearDup { continue }
+                    if seenLineShingles.count < 240 {
+                        seenLineShingles.append(shingles)
+                    }
+                }
+                seenLineKeys.insert(key)
+            }
+            kept.append(line)
+        }
+        return kept.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
     
     
@@ -1083,6 +1194,79 @@ nonisolated enum DocumentOrganizeFunnel {
     }
     
     
+    /// Validates AI-proposed deletions of meaningless/hollow scratch documents with strict substance
+    /// guardrails: never deletes saved disk files or documents with substantial real body content,
+    /// and preserves full Undo traceability for every removed document.
+    static func applyValidatedAIDeletes(
+        _ proposals: [DocumentCenterAgentOrganizer.SemanticDeleteProposal],
+        baseFunnel: OrganizeFunnelStageResult,
+        rawAssignments: [DocumentCenterAgentOrganizer.Assignment],
+        protectedIDs: Set<String> = []
+    ) -> (funnel: OrganizeFunnelStageResult, assignments: [DocumentCenterAgentOrganizer.Assignment]) {
+        guard !proposals.isEmpty, !baseFunnel.survivors.isEmpty else {
+            return (baseFunnel, rawAssignments)
+        }
+        
+        let survivorByID = Dictionary(uniqueKeysWithValues: baseFunnel.survivors.map { ($0.id, $0) })
+        let clusterByPrimaryID = Dictionary(uniqueKeysWithValues: baseFunnel.mergeClusters.map { ($0.primary.id, $0) })
+        
+        var deletedIDs = Set<String>()
+        var addedJunk: [OrganizeJunkDecision] = []
+        var nonHollowDeleteCount = 0
+        let maxNonHollowDeletes = max(2, Int(Double(baseFunnel.survivors.count) * 0.45))
+        
+        for proposal in proposals {
+            guard !protectedIDs.contains(proposal.id),
+                  !deletedIDs.contains(proposal.id),
+                  let doc = survivorByID[proposal.id]
+            else { continue }
+            
+            // Guardrail 1: Never delete saved disk files via AI semantic judgment.
+            guard doc.filePath == nil else { continue }
+            
+            // Guardrail 2: Inspect actual substance inside the document.
+            let report = OrganizeDocumentAnalyzer.analyzeSubstance(
+                title: doc.title,
+                content: doc.content,
+                filePath: nil,
+                isUntitled: doc.isUntitled
+            )
+            guard !report.isProtectedSubstantiveContent else { continue }
+            
+            let isClearlyHollow = (report.substantiveBodyChars < 45 && !report.hasCodeBlock && !report.hasSubstantiveTable)
+            if !isClearlyHollow {
+                guard nonHollowDeleteCount < maxNonHollowDeletes else { continue }
+                nonHollowDeleteCount += 1
+            }
+            
+            deletedIDs.insert(doc.id)
+            let detail = proposal.reason?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let existingCluster = clusterByPrimaryID[doc.id] {
+                addedJunk.append(OrganizeJunkDecision(item: existingCluster.primary, reason: .aiHollow, detail: detail))
+                for dup in existingCluster.duplicates {
+                    addedJunk.append(OrganizeJunkDecision(item: dup, reason: .aiHollow, detail: detail))
+                }
+            } else {
+                addedJunk.append(OrganizeJunkDecision(item: doc, reason: .aiHollow, detail: detail))
+            }
+        }
+        
+        guard !deletedIDs.isEmpty else {
+            return (baseFunnel, rawAssignments)
+        }
+        
+        let remainingSurvivors = baseFunnel.survivors.filter { !deletedIDs.contains($0.id) }
+        let remainingClusters = baseFunnel.mergeClusters.filter { !deletedIDs.contains($0.primary.id) }
+        let remainingAssignments = rawAssignments.filter { !deletedIDs.contains($0.id) }
+        let updatedFunnel = OrganizeFunnelStageResult(
+            junkToDelete: baseFunnel.junkToDelete + addedJunk,
+            mergeClusters: remainingClusters,
+            survivors: remainingSurvivors
+        )
+        return (updatedFunnel, remainingAssignments)
+    }
+    
+    
     /// Target maximum group count so the Star Map stays crisp and avoids tiny 1–2 doc micro-groups.
     static func targetMaxGroups(for survivorCount: Int) -> Int {
         switch survivorCount {
@@ -1159,8 +1343,9 @@ nonisolated enum DocumentOrganizeFunnel {
             
             var bestTarget: String?
             var bestScore = -1
+            let maxAbsorbedGroupSize = max(8, result.count / 2)
             for (candidateGroup, candidateCount) in counts where candidateGroup != donorGroup {
-                guard candidateCount + donorCount <= 8 else { continue }
+                guard candidateCount + donorCount <= maxAbsorbedGroupSize else { continue }
                 let candidateTerms = Set(result.indices.filter { result[$0].group == candidateGroup }.flatMap { idx -> [String] in
                     guard let doc = survivorByID[result[idx].id] else { return [] }
                     return Array(StarMapRelationEngine.extractKeyTerms(title: doc.isUntitled ? "" : doc.title, content: doc.content))
@@ -1282,20 +1467,22 @@ nonisolated enum DocumentOrganizeFunnel {
         result = Self.compactFragmentedGroups(result, survivorByID: survivorByID)
         result = Self.reconcileTitleGroupCoherence(result, survivorByID: survivorByID)
         
-        // 3. Guaranteed meaningful title + deduplication for every untitled / whimsical-generated survivor.
+        // 3. Guaranteed meaningful title + deduplication for every untitled / weak-scratch survivor.
         var usedTitles = Set(
             survivors
-                .filter { !$0.isUntitled }
+                .filter { !DocumentCenterAgentOrganizer.isWeakScratchTitle($0.title, hasFilePath: $0.filePath != nil) }
                 .map { $0.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
         )
         
         for idx in 0..<result.count {
             let current = result[idx]
-            guard let doc = survivorByID[current.id], doc.isUntitled else { continue }
+            guard let doc = survivorByID[current.id] else { continue }
+            let isWeak = doc.isUntitled || DocumentCenterAgentOrganizer.isWeakScratchTitle(doc.title, hasFilePath: doc.filePath != nil)
+            guard isWeak else { continue }
             
             var candidate = current.suggestedTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
             if let existing = candidate,
-               (existing.isEmpty || DocumentCenterAgentOrganizer.isGenericUntitled(existing, hasFilePath: false))
+               (existing.isEmpty || DocumentCenterAgentOrganizer.isWeakScratchTitle(existing, hasFilePath: false))
             {
                 candidate = nil
             }
@@ -1325,8 +1512,10 @@ nonisolated enum DocumentOrganizeFunnel {
     }
     
     
-    /// Executes the complete 4-stage Data Funnel:
-    /// 1) Local junk/gibberish deletion -> 2) Exact & same-topic semantic merging -> 3) Parallel fast-lane AI merge & classification -> 4) Group compaction & title guarantee.
+    /// Executes the complete multi-stage Chief-of-Staff Data Funnel:
+    /// 1) Deep substance & hollow/title-only cleanup -> 2) Exact & same-series semantic merging ->
+    /// 3) Holistic AI architect (deletes + merges + content-first workstream grouping + renames) ->
+    /// 3.5) Parallel lossless AI synthesis for merged clusters -> 4) Group convergence & title guarantee.
     @MainActor
     static func runFullPipeline(
         items: [OrganizeFunnelInput],
@@ -1360,7 +1549,69 @@ nonisolated enum DocumentOrganizeFunnel {
             return OrganizeFullPlan(funnel: localFunnel, assignments: [], batchCount: 0, usedAI: false)
         }
         
-        let agentInputs: [DocumentCenterAgentOrganizer.InputItem] = localFunnel.survivors.map { item in
+        let agentInputs = Self.makeAgentInputs(from: localFunnel.survivors)
+        let shards = Self.makeCohesiveShards(agentInputs, survivors: localFunnel.survivors, shardSize: shardSize)
+        let useAI = allowRemoteAI && AIService.shared.isConfigured
+        
+        if !useAI {
+            return Self.buildOfflinePlan(
+                localFunnel: localFunnel,
+                agentInputs: agentInputs,
+                existingGroups: existingGroups,
+                batchCount: shards.count
+            )
+        }
+        
+        let architectOutcome = await Self.runAIShardedArchitect(
+            shards: shards,
+            localFunnel: localFunnel,
+            existingGroups: existingGroups,
+            maxConcurrency: maxConcurrency,
+            analyticsFeature: analyticsFeature,
+            onProgress: onProgress
+        )
+        
+        // Apply validated AI merges first, then validated AI deletes (protecting merge primaries).
+        let mergedOutcome = Self.applyValidatedAIMerges(
+            architectOutcome.merges,
+            baseFunnel: localFunnel,
+            rawAssignments: architectOutcome.assignments
+        )
+        let mergePrimaryIDs = Set(mergedOutcome.funnel.mergeClusters.map(\.primary.id))
+        let cleanedOutcome = Self.applyValidatedAIDeletes(
+            architectOutcome.deletes,
+            baseFunnel: mergedOutcome.funnel,
+            rawAssignments: mergedOutcome.assignments,
+            protectedIDs: mergePrimaryIDs
+        )
+        
+        // Stage 3.5: Losslessly synthesize multi-doc merged clusters with factual-retention guardrails.
+        let synthesizedFunnel = architectOutcome.usedAI
+            ? await Self.synthesizeMergedClustersWithAI(
+                cleanedOutcome.funnel,
+                analyticsFeature: analyticsFeature,
+                onProgress: onProgress
+            )
+            : cleanedOutcome.funnel
+        
+        onProgress?(.consolidating)
+        let finalized = Self.finalizeAssignments(
+            cleanedOutcome.assignments,
+            survivors: synthesizedFunnel.survivors,
+            existingGroups: existingGroups
+        )
+        
+        return OrganizeFullPlan(
+            funnel: synthesizedFunnel,
+            assignments: finalized,
+            batchCount: shards.count,
+            usedAI: architectOutcome.usedAI
+        )
+    }
+    
+    
+    private static func makeAgentInputs(from survivors: [OrganizeFunnelInput]) -> [DocumentCenterAgentOrganizer.InputItem] {
+        survivors.map { item in
             DocumentCenterAgentOrganizer.InputItem(
                 id: item.id,
                 title: item.title,
@@ -1370,65 +1621,120 @@ nonisolated enum DocumentOrganizeFunnel {
                 isUntitled: item.isUntitled
             )
         }
-        
-        // Cohesive ordering keeps same-project/same-series survivors in the same AI shard so cross-doc merges are never blind-spotted.
-        let orderedForSharding = agentInputs.sorted { lhs, rhs in
-            let metaL = localFunnel.survivors.first(where: { $0.id == lhs.id })
-            let metaR = localFunnel.survivors.first(where: { $0.id == rhs.id })
+    }
+    
+    
+    private static func makeCohesiveShards(
+        _ agentInputs: [DocumentCenterAgentOrganizer.InputItem],
+        survivors: [OrganizeFunnelInput],
+        shardSize: Int
+    ) -> [[DocumentCenterAgentOrganizer.InputItem]] {
+        let metaByID = Dictionary(uniqueKeysWithValues: survivors.map { ($0.id, $0) })
+        let ordered = agentInputs.sorted { lhs, rhs in
+            let metaL = metaByID[lhs.id]
+            let metaR = metaByID[rhs.id]
             let stemL = OrganizeTopicSignature.extract(title: lhs.title, content: metaL?.content ?? lhs.excerpt, isUntitled: lhs.isUntitled).primaryProjectStem
             let stemR = OrganizeTopicSignature.extract(title: rhs.title, content: metaR?.content ?? rhs.excerpt, isUntitled: rhs.isUntitled).primaryProjectStem
             if stemL != stemR { return stemL < stemR }
             if lhs.currentGroup != rhs.currentGroup { return lhs.currentGroup < rhs.currentGroup }
             return lhs.title < rhs.title
         }
-        let shards = Self.makeShards(orderedForSharding, shardSize: shardSize)
-        let totalBatches = shards.count
-        let useAI = allowRemoteAI && AIService.shared.isConfigured
-        
-        if !useAI {
-            let localPlan = DocumentCenterAgentOrganizer.buildLocalFallbackPlan(
-                items: agentInputs,
-                existingGroups: existingGroups
-            )
-            let finalized = Self.finalizeAssignments(
-                localPlan.assignments,
-                survivors: localFunnel.survivors,
-                existingGroups: existingGroups
-            )
-            return OrganizeFullPlan(
-                funnel: localFunnel,
-                assignments: finalized,
-                batchCount: totalBatches,
-                usedAI: false
-            )
+        return Self.makeShards(ordered, shardSize: shardSize)
+    }
+    
+    
+    private static func buildOfflinePlan(
+        localFunnel: OrganizeFunnelStageResult,
+        agentInputs: [DocumentCenterAgentOrganizer.InputItem],
+        existingGroups: [String],
+        batchCount: Int
+    ) -> OrganizeFullPlan {
+        let localPlan = DocumentCenterAgentOrganizer.buildLocalFallbackPlan(
+            items: agentInputs,
+            existingGroups: existingGroups
+        )
+        let healthyExisting = Self.computeGroupHealth(
+            survivors: localFunnel.survivors,
+            existingGroups: existingGroups
+        ).healthy
+        let workstreamMap = OrganizeTopicSignature.discoverWorkstreamGroupMap(
+            for: localFunnel.survivors,
+            healthyExistingGroups: healthyExisting
+        )
+        let enriched = localPlan.assignments.map { item -> DocumentCenterAgentOrganizer.Assignment in
+            if let workstream = workstreamMap[item.id], !workstream.isEmpty {
+                return DocumentCenterAgentOrganizer.Assignment(
+                    id: item.id,
+                    group: workstream,
+                    suggestedTitle: item.suggestedTitle
+                )
+            }
+            return item
         }
-        
-        // Detect bloated (>= 8 docs) or generic catch-all groups across the whole corpus before sharding.
+        let finalized = Self.finalizeAssignments(
+            enriched,
+            survivors: localFunnel.survivors,
+            existingGroups: existingGroups
+        )
+        return OrganizeFullPlan(
+            funnel: localFunnel,
+            assignments: finalized,
+            batchCount: batchCount,
+            usedAI: false
+        )
+    }
+    
+    
+    private static func computeGroupHealth(
+        survivors: [OrganizeFunnelInput],
+        existingGroups: [String]
+    ) -> (healthy: [String], bloated: [String]) {
         var survivorGroupCounts: [String: Int] = [:]
-        for item in localFunnel.survivors where !item.currentGroup.isEmpty {
+        for item in survivors where !item.currentGroup.isEmpty {
             survivorGroupCounts[item.currentGroup, default: 0] += 1
         }
-        let totalSurvivors = localFunnel.survivors.count
-        let bloatedGroups = survivorGroupCounts
+        let total = survivors.count
+        let bloated = survivorGroupCounts
             .filter {
-                DocumentCenterAgentOrganizer.isMonolithicGroup(count: $0.value, totalItems: totalSurvivors)
+                DocumentCenterAgentOrganizer.isMonolithicGroup(count: $0.value, totalItems: total)
                     || DocumentCenterAgentOrganizer.catchAllGroupNames.contains($0.key)
             }
             .map(\.key)
             .sorted()
-        let healthyExisting = existingGroups.filter {
+        let healthy = existingGroups.filter {
             !DocumentCenterAgentOrganizer.catchAllGroupNames.contains($0)
-                && !DocumentCenterAgentOrganizer.isMonolithicGroup(count: survivorGroupCounts[$0, default: 0], totalItems: totalSurvivors)
+                && !DocumentCenterAgentOrganizer.isMonolithicGroup(count: survivorGroupCounts[$0, default: 0], totalItems: total)
         }
+        return (healthy, bloated)
+    }
+    
+    
+    @MainActor
+    private static func runAIShardedArchitect(
+        shards: [[DocumentCenterAgentOrganizer.InputItem]],
+        localFunnel: OrganizeFunnelStageResult,
+        existingGroups: [String],
+        maxConcurrency: Int,
+        analyticsFeature: String,
+        onProgress: (@MainActor (OrganizeFunnelProgress) -> Void)?
+    ) async -> (
+        assignments: [DocumentCenterAgentOrganizer.Assignment],
+        merges: [DocumentCenterAgentOrganizer.SemanticMergeProposal],
+        deletes: [DocumentCenterAgentOrganizer.SemanticDeleteProposal],
+        usedAI: Bool
+    ) {
+        let health = Self.computeGroupHealth(survivors: localFunnel.survivors, existingGroups: existingGroups)
         let targetGroups = Self.targetMaxGroups(for: localFunnel.survivors.count)
         let survivorMetaByID = Dictionary(uniqueKeysWithValues: localFunnel.survivors.map { ($0.id, $0) })
+        let totalBatches = shards.count
         
-        onProgress?(.shardedOrganizing(completedBatches: 0, totalBatches: totalBatches, survivorCount: agentInputs.count))
+        onProgress?(.shardedOrganizing(completedBatches: 0, totalBatches: totalBatches, survivorCount: localFunnel.survivors.count))
         
         typealias ShardOutcome = (
             index: Int,
             assignments: [DocumentCenterAgentOrganizer.Assignment],
             merges: [DocumentCenterAgentOrganizer.SemanticMergeProposal],
+            deletes: [DocumentCenterAgentOrganizer.SemanticDeleteProposal],
             usedAI: Bool
         )
         var orderedResults: [ShardOutcome] = []
@@ -1438,7 +1744,6 @@ nonisolated enum DocumentOrganizeFunnel {
         
         await withTaskGroup(of: ShardOutcome.self) { group in
             var nextShardIndex = 0
-            
             func enqueueNext() {
                 guard nextShardIndex < totalBatches, !Task.isCancelled else { return }
                 let idx = nextShardIndex
@@ -1448,54 +1753,35 @@ nonisolated enum DocumentOrganizeFunnel {
                     let outcome = await Self.organizeSingleShard(
                         shard,
                         survivorMetaByID: survivorMetaByID,
-                        healthyExistingGroups: healthyExisting,
-                        bloatedGroups: bloatedGroups,
+                        healthyExistingGroups: health.healthy,
+                        bloatedGroups: health.bloated,
                         targetMaxGroups: targetGroups,
                         shardIndex: idx,
                         totalShards: totalBatches,
                         analyticsFeature: analyticsFeature
                     )
-                    return (idx, outcome.assignments, outcome.merges, outcome.usedAI)
+                    return (idx, outcome.assignments, outcome.merges, outcome.deletes, outcome.usedAI)
                 }
             }
-            
-            for _ in 0..<concurrencyLimit {
-                enqueueNext()
-            }
-            
+            for _ in 0..<concurrencyLimit { enqueueNext() }
             while let result = await group.next() {
                 orderedResults.append(result)
                 completedBatches += 1
                 onProgress?(.shardedOrganizing(
                     completedBatches: completedBatches,
                     totalBatches: totalBatches,
-                    survivorCount: agentInputs.count
+                    survivorCount: localFunnel.survivors.count
                 ))
                 enqueueNext()
             }
         }
         
-        onProgress?(.consolidating)
         orderedResults.sort { $0.index < $1.index }
-        let rawAssignments = orderedResults.flatMap(\.assignments)
-        let allAIMerges = orderedResults.flatMap(\.merges)
-        let mergedOutcome = Self.applyValidatedAIMerges(
-            allAIMerges,
-            baseFunnel: localFunnel,
-            rawAssignments: rawAssignments
-        )
-        let finalized = Self.finalizeAssignments(
-            mergedOutcome.assignments,
-            survivors: mergedOutcome.funnel.survivors,
-            existingGroups: existingGroups
-        )
-        let anyUsedAI = orderedResults.contains(where: \.usedAI)
-        
-        return OrganizeFullPlan(
-            funnel: mergedOutcome.funnel,
-            assignments: finalized,
-            batchCount: totalBatches,
-            usedAI: anyUsedAI
+        return (
+            assignments: orderedResults.flatMap(\.assignments),
+            merges: orderedResults.flatMap(\.merges),
+            deletes: orderedResults.flatMap(\.deletes),
+            usedAI: orderedResults.contains(where: \.usedAI)
         )
     }
     
@@ -1513,70 +1799,90 @@ nonisolated enum DocumentOrganizeFunnel {
     ) async -> (
         assignments: [DocumentCenterAgentOrganizer.Assignment],
         merges: [DocumentCenterAgentOrganizer.SemanticMergeProposal],
+        deletes: [DocumentCenterAgentOrganizer.SemanticDeleteProposal],
         usedAI: Bool
     ) {
         let validIDs = Set(shard.map(\.id))
+        let bloatedSet = Set(bloatedGroups)
         let manifestLines = shard.enumerated().map { idx, item -> String in
-            let meta = survivorMetaByID[item.id]
-            let fullContent = meta?.content ?? item.excerpt
-            let digest = OrganizeTopicSignature.outlineDigest(
+            let meta = survivorMetaByID[item.id] ?? OrganizeFunnelInput(
+                id: item.id,
+                dbRecordID: item.id,
                 title: item.title,
-                content: fullContent,
+                filePath: nil,
+                syntax: item.syntax,
+                currentGroup: item.currentGroup,
+                content: item.excerpt,
+                updatedAt: Date(),
+                isOpenNow: false,
                 isUntitled: item.isUntitled
             )
-            let charCount = fullContent.count
-            let isScratch = (meta?.filePath == nil)
-            let groupTag = bloatedGroups.contains(item.currentGroup) ? "\(item.currentGroup)(待重分)" : item.currentGroup
-            return "[\(idx + 1)] id=\"\(item.id)\" | title=\"\(item.title)\" | chars=\(charCount) | scratch=\(isScratch ? "true" : "false") | group=\"\(groupTag)\" | untitled=\(item.isUntitled ? "true" : "false") | \(digest)"
-        }.joined(separator: "\n")
+            return OrganizeDocumentAnalyzer.buildAIDossier(
+                for: meta,
+                index: idx + 1,
+                totalInBatch: shard.count,
+                bloatedGroups: bloatedSet
+            )
+        }.joined(separator: "\n\n")
         
-        var palette: [String] = []
-        for g in DocumentCenterAgentOrganizer.coreTopicPalette + healthyExistingGroups.prefix(4) {
-            if !palette.contains(g) { palette.append(g) }
-        }
-        let groupPalette = palette.joined(separator: "、")
+        let existingHint = healthyExistingGroups.isEmpty
+            ? "（当前无预设健康分组，请完全依据文档内部真实工作主线自拟高辨识度分组名）"
+            : "已有健康分组（若契合可沿用）：\(healthyExistingGroups.prefix(6).joined(separator: "、"))"
         let bloatedHint = bloatedGroups.isEmpty
             ? ""
-            : "\n- 原分组「\(bloatedGroups.joined(separator: "、"))」过于臃肿或泛化，禁止原封不动塞回同一组，请结合实际主题整合。"
+            : "\n   - 原分组「\(bloatedGroups.joined(separator: "、"))」过于臃肿或泛化，禁止原封不动塞回同一组。"
         
         let systemPrompt = """
-        你是文档星图高精度整理与语义合并 Agent（第 \(shardIndex + 1)/\(totalShards) 批）。
-        核心规则：
-        1. **高精度语义与同系列合并（merges）**：
-           - **同项目同系列迭代必合**：凡是属于同一项目/产品的同一类活文档（如 `cot优化roadmap 7` 与 `CoTEditor Roadmap 3`、`方案 v1` 与 `方案 2`，忽略大小写/简称与全称差异及尾部编号），即使正文字数上万，只要 scratch=true 必须合并为 1 篇，并去掉尾部版本号给出清晰标题（如 `CotEditor 优化 Roadmap`）。
-           - **同事项碎片必合**：同一问题排查、同一实验/需求的多份碎片笔记主动合并（单组 2-6 篇）。
-           - **严禁过度合并**：不同项目、不同日期的独立周报/会议纪要、或两篇 scratch=false 的独立磁盘文件禁止强行合并。
-        2. **标题与核心实体优先归组（assignments）**：
-           - 归组时严格以**标题、核心项目实体与全篇纲要**为第一依据，绝不可被正文中的局部举例词带偏（例如标题是 `cot优化roadmap` 必须归入 `cot优化` 或工程开发类，绝不可误入 `评测与数据`）。
-           - 同一项目的文档必须收拢到同一分组；全批收敛在 **2-\(targetMaxGroups) 个高辨识度大类**，避免 1 篇的孤立分组。
-           - 优先使用：\(groupPalette)（如需自拟仅限 2-6 字清晰名）。\(bloatedHint)
-        3. **清洗占位名**：所有 untitled=true（含随机趣名如「啃瓜的小浣熊」）必须根据正文提炼 4-16 字清爽中文标题，不含 Markdown 符号。
-        4. 仅输出严格合法 JSON，无任何解释：
-           {"merges":[{"primaryId":"主文档id","mergeIds":["被并入id"],"mergedTitle":"合并后标题","group":"分组名","reason":"简短合并原因"}],"assignments":[{"id":"原id","group":"分组名","suggestedTitle":"untitled=true时必填，否则null"}]}
-        5. assignments 需覆盖本批每个未被 mergeIds 吸收的 id（每个 id 仅出现一次）。
+        你是用户专属的高智商首席幕僚与知识架构师（第 \(shardIndex + 1)/\(totalShards) 批）。
+        你的使命：真正读懂每篇文档**内部实际在做的工作与事项**，把杂乱的工作区重塑成一眼惊艳、干净利落的知识星图。
+
+        严格执行以下四项原则：
+        1. **果断清理无意义文档（deletes）**：
+           - 凡是 scratch=true 且**实质没有干任何事情**的文档（如：只写了标题或空提纲没有正文、空白模板、仅有占位词/日期/半截未展开的随手念头、无意义测试/乱敲、或内容已完全被另一篇主文档涵盖的极短碎片），果断放入 `deletes`，并给出 4-12 字清晰理由（如 `"仅标题无正文"`、`"空白模板"`、`"未展开的临时占位"`）。
+           - **红线**：严禁删除 scratch=false（本地磁盘文件），严禁删除包含真实方案、代码、数据指标、排查结论、会议纪要或完整待办的有效文档。
+        2. **深度语义与同事项合并（merges）**：
+           - 看透表面标题差异（包括随机趣名如「啃瓜的小浣熊」）：只要多篇 scratch=true 文档**内部实际在推进同一件事、同一个项目迭代、同一个问题排查或同一份方案的多个草稿**，必须果断合并为 1 篇，并给出去掉版本号、直击主题的清晰标题（如 `"CotEditor 星图演进路线图"`、`"AIME r533 重评与聚类回写"`）。
+           - 单组合并 2-6 篇；严禁合并不同项目、不同日期的独立周报/例会纪要、或两篇 scratch=false 的独立磁盘文件。
+        3. **按“内部真正在做的事情”划分工作主线（assignments）**：
+           - **绝对禁止**偷懒把所有文档塞进“工程与开发 / 方案与会议 / 日常随记”这类空泛词；请直接从文档内容中提炼出 **2-\(targetMaxGroups) 个真实的工作主线/项目分组名**（2-7 字，如 `"CotEditor 研发"`、`"AIME 评测"`、`"权限与架构"`、`"周报与排期"`），让用户一眼看清自己最近在做哪几条主线。
+           - 归组以**正文真实做的事情与核心项目实体**为第一依据，绝不被局部举例词带偏；同一项目主线的文档必须收拢到同一组，避免 1 篇孤立小组。
+           - \(existingHint)\(bloatedHint)
+        4. **智能重命名**：
+           - 所有 untitled=true，以及标题过于敷衍/泛化（如 `"笔记1"`、`"方案"`、`"文档"`、`"想法"`）或与正文严重不符的 scratch=true 文档，必须在 `suggestedTitle` 中给出 4-18 字直白精准的中文标题（不含 Markdown 符号）。标题已经清晰准确的文档，`suggestedTitle` 填 `null`。
+
+        仅输出严格合法 JSON，不要输出任何额外文字或解释：
+        {"deletes":[{"id":"无效文档id","reason":"简短清理理由"}],"merges":[{"primaryId":"主文档id","mergeIds":["被并入id"],"mergedTitle":"合并后清晰标题","group":"工作主线分组名","reason":"简短合并理由"}],"assignments":[{"id":"保留文档id","group":"工作主线分组名","suggestedTitle":"需要改名时填新标题，否则null"}]}
+        约束：每个文档 id 仅归属 `deletes`、`merges[].mergeIds` 或 `assignments` 之一；`merges[].primaryId` 必须出现在 `assignments` 中且与合并结果一致。
         """
-        let userPrompt = "本批待整理文档（\(shard.count) 篇）：\n\(manifestLines)"
+        let userPrompt = "工作区待整理文档（共 \(shard.count) 篇，已附正文采样与结构统计）：\n\n\(manifestLines)"
+        
+        var architectConfig = AIBotStore.shared.resolvedConfiguration(for: .organizeAndMerge, baseConfig: .current)
+        if architectConfig.reasoningEffort == nil || architectConfig.reasoningEffort == "low" {
+            architectConfig.reasoningEffort = "medium"
+        }
         
         do {
             let raw = try await AIService.shared.chat(
                 [.system(systemPrompt), .user(userPrompt)],
-                disablesThinking: true,
-                maxOutputTokens: 2400,
-                timeoutInterval: 35,
+                configuration: architectConfig,
+                disablesThinking: false,
+                maxOutputTokens: 4096,
+                timeoutInterval: 90,
                 analyticsFeature: analyticsFeature
             )
             if let parsed = DocumentCenterAgentOrganizer.parsePlan(from: raw, validIDs: validIDs) {
                 let absorbed = Set(parsed.merges.flatMap(\.mergeIds))
-                let covered = Set(parsed.assignments.map(\.id)).union(absorbed)
+                let deleted = Set(parsed.deletes.map(\.id))
+                let covered = Set(parsed.assignments.map(\.id)).union(absorbed).union(deleted)
                 let missed = shard.filter { !covered.contains($0.id) }
                 if missed.isEmpty {
-                    return (parsed.assignments, parsed.merges, true)
+                    return (parsed.assignments, parsed.merges, parsed.deletes, true)
                 }
                 let patch = DocumentCenterAgentOrganizer.buildLocalFallbackPlan(
                     items: missed,
                     existingGroups: healthyExistingGroups
                 ).assignments
-                return (parsed.assignments + patch, parsed.merges, true)
+                return (parsed.assignments + patch, parsed.merges, parsed.deletes, true)
             }
         } catch {
             CotLogger.shared.error(category: .ai, "Shard organize fallback (\(shardIndex + 1)/\(totalShards))", error: error)
@@ -1586,7 +1892,133 @@ nonisolated enum DocumentOrganizeFunnel {
             items: shard,
             existingGroups: healthyExistingGroups
         )
-        return (fallback.assignments, [], false)
+        return (fallback.assignments, [], [], false)
+    }
+    
+    
+    /// Stage 3.5: Runs parallel AI lossless synthesis for multi-doc semantic/series merge clusters,
+    /// protected by a strict deterministic factual-retention verifier (`validateSynthesizedContent`).
+    @MainActor
+    private static func synthesizeMergedClustersWithAI(
+        _ funnel: OrganizeFunnelStageResult,
+        analyticsFeature: String,
+        onProgress: (@MainActor (OrganizeFunnelProgress) -> Void)?
+    ) async -> OrganizeFunnelStageResult {
+        let eligibleIndices: [Int] = funnel.mergeClusters.indices.filter { idx in
+            let c = funnel.mergeClusters[idx]
+            return c.primary.filePath == nil
+                && !c.duplicates.isEmpty
+                && c.reason != "内容完全重复"
+                && c.mergedContent.count >= 120
+                && c.mergedContent.count <= 24_000
+        }
+        guard !eligibleIndices.isEmpty else { return funnel }
+        
+        let total = eligibleIndices.count
+        onProgress?(.synthesizingMerges(completed: 0, total: total))
+        
+        var synthConfig = AIBotStore.shared.resolvedConfiguration(for: .organizeAndMerge, baseConfig: .current)
+        synthConfig.reasoningEffort = "low"
+        
+        var updatedClusters = funnel.mergeClusters
+        var synthesizedByPrimaryID: [String: String] = [:]
+        var completed = 0
+        let concurrency = min(3, total)
+        
+        await withTaskGroup(of: (Int, String?).self) { group in
+            var nextPos = 0
+            func enqueue() {
+                guard nextPos < total, !Task.isCancelled else { return }
+                let clusterIdx = eligibleIndices[nextPos]
+                let cluster = funnel.mergeClusters[clusterIdx]
+                nextPos += 1
+                group.addTask {
+                    let result = await Self.synthesizeSingleCluster(
+                        cluster,
+                        configuration: synthConfig,
+                        analyticsFeature: analyticsFeature
+                    )
+                    return (clusterIdx, result)
+                }
+            }
+            for _ in 0..<concurrency { enqueue() }
+            while let (clusterIdx, synthesized) = await group.next() {
+                if let synthesized {
+                    let old = updatedClusters[clusterIdx]
+                    updatedClusters[clusterIdx] = OrganizeMergeCluster(
+                        primary: old.primary,
+                        duplicates: old.duplicates,
+                        mergedContent: synthesized,
+                        bestGroup: old.bestGroup,
+                        bestTitle: old.bestTitle,
+                        reason: old.reason
+                    )
+                    synthesizedByPrimaryID[old.primary.id] = synthesized
+                }
+                completed += 1
+                onProgress?(.synthesizingMerges(completed: completed, total: total))
+                enqueue()
+            }
+        }
+        
+        guard !synthesizedByPrimaryID.isEmpty else { return funnel }
+        let updatedSurvivors = funnel.survivors.map { item -> OrganizeFunnelInput in
+            guard let newContent = synthesizedByPrimaryID[item.id] else { return item }
+            return OrganizeFunnelInput(
+                id: item.id,
+                dbRecordID: item.dbRecordID,
+                title: item.title,
+                filePath: item.filePath,
+                syntax: item.syntax,
+                currentGroup: item.currentGroup,
+                content: newContent,
+                updatedAt: item.updatedAt,
+                isOpenNow: item.isOpenNow,
+                isUntitled: item.isUntitled
+            )
+        }
+        return OrganizeFunnelStageResult(
+            junkToDelete: funnel.junkToDelete,
+            mergeClusters: updatedClusters,
+            survivors: updatedSurvivors
+        )
+    }
+    
+    
+    @MainActor
+    private static func synthesizeSingleCluster(
+        _ cluster: OrganizeMergeCluster,
+        configuration: AIConfiguration,
+        analyticsFeature: String
+    ) async -> String? {
+        let allSources = ([cluster.primary] + cluster.duplicates).sorted { $0.updatedAt < $1.updatedAt }
+        let sourceBlocks = allSources.enumerated().map { idx, doc in
+            let header = doc.isUntitled ? "草稿 \(idx + 1)" : doc.title
+            return "=== 文档 \(idx + 1)：\(header) ===\n\(doc.content)"
+        }.joined(separator: "\n\n")
+        
+        let systemPrompt = """
+        你是专业文档无损整合编辑。请将多份关于同一主题的草稿/迭代文档，融合成一份**结构清晰、零重复、可直接阅读**的精炼主文档。
+        铁律：
+        1. **严格无损保留事实**：原样保留所有具体数字、指标、版本号、文件路径、命令、代码块、URL、人名、日期与结论，严禁编造或悄悄删掉有效细节。
+        2. **智能去重与演进收敛**：删除重复段落和冗余措辞；若同一事项在较新文档中有更新进展，以较新状态为主线并保留必要历史上下文。
+        3. **清爽排版**：使用简洁自然的标题与条目结构，直接输出整合后的正文，不要输出任何“以下是合并结果”之类的开场白或结束语。
+        """
+        let userPrompt = "合并目标标题：\(cluster.bestTitle)\n合并原因：\(cluster.reason)\n\n\(sourceBlocks)"
+        
+        do {
+            let raw = try await AIService.shared.chat(
+                [.system(systemPrompt), .user(userPrompt)],
+                configuration: configuration,
+                disablesThinking: true,
+                maxOutputTokens: 4096,
+                timeoutInterval: 45,
+                analyticsFeature: "\(analyticsFeature).synthesize"
+            )
+            return OrganizeDocumentAnalyzer.validateSynthesizedContent(raw, localBaseline: cluster.mergedContent)
+        } catch {
+            return nil
+        }
     }
     
     

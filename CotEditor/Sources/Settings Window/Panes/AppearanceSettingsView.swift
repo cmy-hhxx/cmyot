@@ -195,29 +195,31 @@ struct AppearanceSettingsView: View {
             Section {
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
                     ForEach(StudioPaletteID.allCases) { preset in
-                        let triad = self.studioPalette.triad(for: preset)
+                        let preview = self.studioPalette.softPreviewColors(for: preset, isDark: false)
                         let isSelected = (self.studioPalette.selectedID == preset)
-                        let accent = StudioPaletteManager.swiftUIColor(hex: triad.accentHex)
                         Button {
                             self.studioPalette.selectPalette(preset, syncEditorTheme: true)
                         } label: {
                             HStack(spacing: 8) {
-                                Circle().fill(accent).frame(width: 10, height: 10)
+                                Circle()
+                                    .fill(preview.swatch)
+                                    .frame(width: 9, height: 9)
+                                    .overlay(Circle().strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.5))
                                 Text(preset.displayName)
                                     .font(.system(size: 12.5, weight: isSelected ? .semibold : .regular))
                                     .foregroundStyle(.primary)
                                 Spacer()
                                 if isSelected {
                                     Image(systemName: "checkmark")
-                                        .font(.system(size: 11, weight: .bold))
-                                        .foregroundStyle(accent)
+                                        .font(.system(size: 10.5, weight: .semibold))
+                                        .foregroundStyle(preview.swatch)
                                 }
                             }
                             .padding(.horizontal, 10)
                             .frame(height: 32)
                             .background(
                                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(Color.primary.opacity(isSelected ? 0.08 : 0.03))
+                                    .fill(Color.primary.opacity(isSelected ? 0.065 : 0.025))
                             )
                         }
                         .buttonStyle(.plain)
@@ -225,7 +227,7 @@ struct AppearanceSettingsView: View {
                 }
                 .padding(.vertical, 4)
             } header: {
-                Text(AppLanguage.text("全局配色（10 套）", en: "Color Palettes (10)"))
+                Text(AppLanguage.text("主题配色", en: "Color Palettes"))
             }
         }
     }
@@ -296,7 +298,7 @@ private extension NSFont {
 struct CustomCursorColorControl: View {
     
     private static let presetHexes = [
-        "#0A84FF", "#34C759", "#FF9F0A", "#FF375F", "#AF52DE", "#FFFFFF", "#1D1D1F",
+        "#007AFF", "#30B0C7", "#34C759", "#FF9F0A", "#FF453A", "#AF52DE", "#636366",
     ]
     
     @AppStorage(.usesCustomCursorColor) private var usesCustomCursorColor
@@ -322,7 +324,7 @@ struct CustomCursorColorControl: View {
     var body: some View {
         
         HStack(spacing: 8) {
-            Toggle("自定义", isOn: self.$usesCustomCursorColor)
+            Toggle(AppLanguage.text("自定义", en: "Custom"), isOn: self.$usesCustomCursorColor)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
                 .controlSize(.small)
@@ -334,32 +336,39 @@ struct CustomCursorColorControl: View {
                 .labelsHidden()
                 .disabled(!self.usesCustomCursorColor)
             
-            HStack(spacing: 4) {
+            HStack(spacing: 5) {
                 ForEach(Self.presetHexes, id: \.self) { hex in
                     let nsColor = NSColor(colorCode: hex) ?? .systemBlue
+                    let isSelected = self.usesCustomCursorColor
+                        && self.customCursorColorHex.caseInsensitiveCompare(hex) == .orderedSame
                     Button {
                         self.customCursorColorHex = hex
                         self.usesCustomCursorColor = true
                         CotLocalDatabase.shared.syncUserPreferencesToDatabase()
                     } label: {
-                        Circle()
-                            .fill(Color(nsColor: nsColor))
-                            .frame(width: 13, height: 13)
-                            .overlay(
+                        ZStack {
+                            Circle()
+                                .fill(Color(nsColor: nsColor))
+                                .frame(width: 14, height: 14)
+                                .overlay(
+                                    Circle()
+                                        .strokeBorder(Color.black.opacity(0.12), lineWidth: 0.5)
+                                )
+                            
+                            if isSelected {
                                 Circle()
-                                    .stroke(
-                                        self.usesCustomCursorColor && self.customCursorColorHex.caseInsensitiveCompare(hex) == .orderedSame
-                                            ? Color.primary
-                                            : Color.secondary.opacity(0.35),
-                                        lineWidth: self.usesCustomCursorColor && self.customCursorColorHex.caseInsensitiveCompare(hex) == .orderedSame ? 2 : 1
-                                    )
-                            )
+                                    .fill(Color.white)
+                                    .frame(width: 5, height: 5)
+                                    .shadow(color: Color.black.opacity(0.18), radius: 1, y: 0.5)
+                            }
+                        }
                     }
                     .buttonStyle(.plain)
+                    .pointerStyle(.link)
                     .help(hex)
                 }
             }
-            .opacity(self.usesCustomCursorColor ? 1.0 : 0.45)
+            .opacity(self.usesCustomCursorColor ? 1.0 : 0.42)
         }
     }
 }

@@ -176,6 +176,18 @@ nonisolated struct BeautifulAgentSlashCommandPayload: Codable, Equatable, Sendab
 }
 
 
+nonisolated struct MeetingRoomParticipantPayload: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var name: String
+    var nickname: String
+    var handle: String
+    var roleLabel: String
+    var accentHex: String
+    var status: String // "idle" | "speaking" | "done" | "updated"
+    var todayBadge: String
+}
+
+
 nonisolated struct BeautifulAgentHostStatePayload: Codable, Equatable, Sendable {
     var mode: String // "butler" | "news"
     var isDark: Bool
@@ -214,6 +226,10 @@ nonisolated struct BeautifulAgentHostStatePayload: Codable, Equatable, Sendable 
     var themeCanvasHex: String? = nil
     var proactiveCards: [ButlerProactiveCardPayload]? = nil
     var backgroundWorkers: [ButlerBackgroundWorkerPayload]? = nil
+    var meetingRoomActive: Bool? = nil
+    var meetingRoomIsConvening: Bool? = nil
+    var meetingRoomMessages: [MeetingRoomMessage]? = nil
+    var meetingRoomBots: [MeetingRoomParticipantPayload]? = nil
 }
 
 
@@ -264,6 +280,10 @@ struct BeautifulAgentWebActionCallbacks {
     var onDismissProactiveCard: ((String) -> Void)? = nil
     var onOpenWorkerAction: ((String, String?) -> Void)? = nil
     var onDismissWorker: ((String) -> Void)? = nil
+    var onToggleMeetingRoom: ((Bool) -> Void)? = nil
+    var onSendMeetingPrompt: ((String, String?) -> Void)? = nil
+    var onClearMeetingRoom: (() -> Void)? = nil
+    var onAbortMeetingRoom: (() -> Void)? = nil
 }
 
 
@@ -278,6 +298,9 @@ final class BeautifulAgentWebController {
     fileprivate var lastPushedState: BeautifulAgentHostStatePayload?
     fileprivate var pendingDraftInjection: (text: String, quote: String?)?
     fileprivate var pendingFocusComposer: Bool = false
+    /// Held imperatively on the controller instead of as a stored property on `BeautifulAgentWebView`
+    /// so SwiftUI's `AG::LayoutDescriptor::compare_heap_objects` never traverses closure capture graphs.
+    fileprivate var callbacks = BeautifulAgentWebActionCallbacks()
     
     private static let encoder: JSONEncoder = {
         let enc = JSONEncoder()
@@ -410,16 +433,36 @@ enum BeautifulAgentUIBundle {
 
 // MARK: - SwiftUI NSViewRepresentable Host
 
-struct BeautifulAgentWebView: NSViewRepresentable {
+struct BeautifulAgentWebView: NSViewRepresentable, Equatable {
     
     let state: BeautifulAgentHostStatePayload
     let controller: BeautifulAgentWebController
-    let callbacks: BeautifulAgentWebActionCallbacks
     var cornerRadius: CGFloat = 0
     
     
+    @MainActor
+    init(
+        state: BeautifulAgentHostStatePayload,
+        controller: BeautifulAgentWebController,
+        callbacks: BeautifulAgentWebActionCallbacks,
+        cornerRadius: CGFloat = 0
+    ) {
+        self.state = state
+        self.controller = controller
+        self.cornerRadius = cornerRadius
+        controller.callbacks = callbacks
+    }
+    
+    
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.controller === rhs.controller
+            && lhs.cornerRadius == rhs.cornerRadius
+            && lhs.state == rhs.state
+    }
+    
+    
     func makeCoordinator() -> Coordinator {
-        Coordinator(controller: self.controller, callbacks: self.callbacks)
+        Coordinator(controller: self.controller)
     }
     
     
@@ -467,7 +510,6 @@ struct BeautifulAgentWebView: NSViewRepresentable {
     
     
     func updateNSView(_ nsView: WKWebView, context: Context) {
-        context.coordinator.callbacks = self.callbacks
         Self.applyLayerCornerMask(to: nsView, cornerRadius: self.cornerRadius)
         self.controller.webView = nsView
         self.controller.syncState(self.state)
@@ -512,11 +554,10 @@ struct BeautifulAgentWebView: NSViewRepresentable {
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         
         let controller: BeautifulAgentWebController
-        var callbacks: BeautifulAgentWebActionCallbacks
+        private var callbacks: BeautifulAgentWebActionCallbacks { self.controller.callbacks }
         
-        init(controller: BeautifulAgentWebController, callbacks: BeautifulAgentWebActionCallbacks) {
+        init(controller: BeautifulAgentWebController) {
             self.controller = controller
-            self.callbacks = callbacks
         }
         
         
@@ -726,6 +767,21 @@ struct BeautifulAgentWebView: NSViewRepresentable {
                     if let id = dict["id"] as? String, !id.isEmpty {
                         self.callbacks.onDismissWorker?(id)
                     }
+                    
+                case "toggleMeetingRoom":
+                    let active = (dict["active"] as? Bool) ?? true
+                    self.callbacks.onToggleMeetingRoom?(active)
+                    
+                case "sendMeetingPrompt":
+                    let text = (dict["text"] as? String) ?? ""
+                    let botID = (dict["botId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.callbacks.onSendMeetingPrompt?(text, (botID?.isEmpty == false) ? botID : nil)
+                    
+                case "clearMeetingRoom":
+                    self.callbacks.onClearMeetingRoom?()
+                    
+                case "abortMeetingRoom":
+                    self.callbacks.onAbortMeetingRoom?()
                     
                 default:
                     break

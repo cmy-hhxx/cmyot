@@ -91,8 +91,18 @@ nonisolated struct OrganizeTopicSignature: Equatable, Sendable {
     // MARK: Extraction
     
     static func extract(title: String, content: String, isUntitled: Bool) -> OrganizeTopicSignature {
-        let effectiveTitle = isUntitled ? "" : Self.stripFileExtension(title)
-        let headings = Self.extractHeadings(from: content, maxCount: 6)
+        let headings = Self.extractHeadings(from: content, maxCount: 8)
+        // For untitled/whimsical docs (e.g. "啃瓜的小浣熊"), promote H1 heading as the effective topic title
+        // so same-series detection and title-group coherence work on what's actually inside the doc.
+        let effectiveTitle: String = {
+            if !isUntitled {
+                return Self.stripFileExtension(title)
+            }
+            if let firstHeading = headings.first, !firstHeading.isEmpty {
+                return firstHeading
+            }
+            return DocumentCenterAgentOrganizer.deriveTitleFromExcerpt(String(content.prefix(320))) ?? ""
+        }()
         
         let titleLower = effectiveTitle.lowercased()
         let titleRange = NSRange(effectiveTitle.startIndex..<effectiveTitle.endIndex, in: effectiveTitle)
@@ -103,8 +113,12 @@ nonisolated struct OrganizeTopicSignature: Equatable, Sendable {
         
         let titleProject = Self.extractProjectStems(from: effectiveTitle)
         var allProject = titleProject
-        for h in headings.prefix(4) {
+        for h in headings.prefix(5) {
             allProject.formUnion(Self.extractProjectStems(from: h))
+        }
+        if allProject.isEmpty {
+            let leadSnippet = String(content.prefix(480))
+            allProject.formUnion(Self.extractProjectStems(from: leadSnippet))
         }
         
         let titleTokens = Self.extractDistinctiveTitleTokens(from: effectiveTitle)
@@ -126,6 +140,100 @@ nonisolated struct OrganizeTopicSignature: Equatable, Sendable {
             headings: headings,
             primaryProjectStem: primaryStem
         )
+    }
+    
+    
+    /// Discovers recurring concrete project/workstream group names directly from document contents
+    /// (e.g. 3+ docs genuinely working on `CotEditor` -> `"CotEditor"`, `AIME` -> `"AIME"`)
+    /// so even offline organization groups by what documents actually do inside instead of generic buckets.
+    static func discoverWorkstreamGroupMap(
+        for items: [OrganizeFunnelInput],
+        healthyExistingGroups: [String]
+    ) -> [String: String] {
+        guard items.count >= 4 else { return [:] }
+        var sigByID: [String: OrganizeTopicSignature] = [:]
+        var stemDocIDs: [String: [String]] = [:]
+        var displayByStem: [String: [String]] = [:]
+        
+        for item in items {
+            let sig = Self.extract(title: item.title, content: item.content, isUntitled: item.isUntitled)
+            sigByID[item.id] = sig
+            let candidateStems = !sig.titleProjectStems.isEmpty ? sig.titleProjectStems : sig.allProjectStems
+            let canonicalStem = Self.shortestCanonicalStem(in: candidateStems)
+            guard !canonicalStem.isEmpty else { continue }
+            stemDocIDs[canonicalStem, default: []].append(item.id)
+            let sourceText = item.isUntitled ? (sig.headings.first ?? "") : item.title
+            if let brand = Self.preferredDisplayName(forStem: canonicalStem, in: sourceText) {
+                displayByStem[canonicalStem, default: []].append(brand)
+            }
+        }
+        
+        // Require a recurring project (>= 3 docs, or >= 2 docs when corpus >= 6) that isn't swallowing the entire workspace.
+        let minClusterDocs = items.count >= 10 ? 3 : 2
+        let maxClusterDocs = max(minClusterDocs, Int(Double(items.count) * 0.65))
+        var result: [String: String] = [:]
+        
+        for (stem, docIDs) in stemDocIDs where docIDs.count >= minClusterDocs && docIDs.count <= maxClusterDocs {
+            // Reuse a matching healthy existing user group name if one already exists (e.g. "cot优化")
+            let matchingExisting = healthyExistingGroups.first { group in
+                let groupStems = Self.extractProjectStems(from: group)
+                return Self.sharesProjectStem(groupStems, [stem]) || group.lowercased().contains(stem)
+            }
+            let groupName: String = matchingExisting ?? {
+                let candidates = displayByStem[stem] ?? []
+                let bestBrand = candidates.max { lhs, rhs in
+                    let lMixed = lhs.contains(where: \.isUppercase) && lhs.contains(where: \.isLowercase)
+                    let rMixed = rhs.contains(where: \.isUppercase) && rhs.contains(where: \.isLowercase)
+                    if lMixed != rMixed { return !lMixed && rMixed }
+                    return lhs.count < rhs.count
+                }
+                return bestBrand ?? (stem.unicodeScalars.allSatisfy(\.isASCII) ? stem.uppercased() : stem)
+            }()
+            guard groupName.count >= 2, groupName.count <= 14 else { continue }
+            for docID in docIDs {
+                result[docID] = groupName
+            }
+        }
+        return result
+    }
+    
+    
+    private static func shortestCanonicalStem(in stems: Set<String>) -> String {
+        guard !stems.isEmpty else { return "" }
+        // Prefer ASCII root brand stem (e.g. "cot" over "coteditor") so abbreviations unify automatically.
+        let sorted = stems.sorted { lhs, rhs in
+            if lhs.count != rhs.count { return lhs.count < rhs.count }
+            return lhs < rhs
+        }
+        for candidate in sorted {
+            if sorted.contains(where: { $0 != candidate && Self.isAbbreviatedProjectPair(candidate, $0) }) {
+                return candidate
+            }
+        }
+        return sorted.first ?? ""
+    }
+    
+    
+    private static func preferredDisplayName(forStem stem: String, in text: String) -> String? {
+        guard !text.isEmpty else { return nil }
+        let ns = text as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        if stem.unicodeScalars.allSatisfy(\.isASCII) {
+            var best: String?
+            for match in Self.asciiTokenRegex.matches(in: text, range: range) {
+                let token = ns.substring(with: match.range)
+                let lower = token.lowercased()
+                if lower == stem || Self.isAbbreviatedProjectPair(stem, lower) {
+                    if let current = best {
+                        if token.count > current.count { best = token }
+                    } else {
+                        best = token
+                    }
+                }
+            }
+            return best
+        }
+        return text.contains(stem) ? stem : nil
     }
     
     

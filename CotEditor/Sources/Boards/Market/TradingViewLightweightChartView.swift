@@ -25,7 +25,7 @@ import WebKit
 
 /// TradingView Lightweight Charts v5 interactive K-line / Intraday / MA / Volume surface
 /// powered by the bundled offline `lightweight-charts.standalone.production.js` library.
-struct TradingViewLightweightChartView: NSViewRepresentable {
+struct TradingViewLightweightChartView: NSViewRepresentable, Equatable {
     
     let instrument: MarketInstrument
     let period: MarketChartPeriod
@@ -33,6 +33,16 @@ struct TradingViewLightweightChartView: NSViewRepresentable {
     let previousClose: Double
     let isDark: Bool
     let showMovingAverages: Bool
+    
+    
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.instrument.instrumentID == rhs.instrument.instrumentID
+            && lhs.period == rhs.period
+            && lhs.previousClose == rhs.previousClose
+            && lhs.isDark == rhs.isDark
+            && lhs.showMovingAverages == rhs.showMovingAverages
+            && lhs.bars == rhs.bars
+    }
     
     
     func makeCoordinator() -> Coordinator {
@@ -66,6 +76,11 @@ struct TradingViewLightweightChartView: NSViewRepresentable {
             context.coordinator.lastPushedJSON = json
             nsView.evaluateJavaScript("window.CotChartBridge && window.CotChartBridge.setData(\(json));", completionHandler: nil)
         }
+    }
+    
+    
+    static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
+        nsView.navigationDelegate = nil
     }
     
     

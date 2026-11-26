@@ -61,6 +61,9 @@ type SidebarNavProps = {
   onRenameSession: (id: string, title: string) => void;
   onTogglePinSession: (id: string) => void;
   onOpenSettings: () => void;
+  meetingRoomActive?: boolean;
+  meetingRoomIsConvening?: boolean;
+  onOpenMeetingRoom?: () => void;
 };
 
 type SessionGroup = {
@@ -160,6 +163,9 @@ export default function SidebarNav({
   onRenameSession,
   onTogglePinSession,
   onOpenSettings,
+  meetingRoomActive = false,
+  meetingRoomIsConvening = false,
+  onOpenMeetingRoom,
 }: SidebarNavProps) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -816,6 +822,33 @@ export default function SidebarNav({
               {locale === "zh" ? "新建工作区" : "New workspace"}
             </span>
           </button>
+
+          {onOpenMeetingRoom && (
+            <button
+              data-row
+              type="button"
+              onClick={onOpenMeetingRoom}
+              title={locale === "zh" ? "会议室" : "Meeting Room"}
+              className={`sidebar-row relative z-10 mx-2 flex h-8.5 items-center rounded-[8px] px-2 text-left transition-[width,transform,background-color] duration-150 active:scale-[0.98] ${
+                meetingRoomActive ? "bg-surface shadow-hairline" : ""
+              }`}
+            >
+              <span className={`flex size-4.5 shrink-0 items-center justify-center ${meetingRoomActive ? "text-ink" : "text-ink-2"}`}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="9" cy="8" r="3" />
+                  <circle cx="17" cy="9" r="2.5" />
+                  <path d="M3.5 19a5.5 5.5 0 0 1 11 0" />
+                  <path d="M14.5 18.5a4.5 4.5 0 0 1 6 0" />
+                </svg>
+              </span>
+              <span className={`sidebar-copy ml-2 flex-1 truncate text-[13.5px] font-medium ${meetingRoomActive ? "text-ink" : "text-ink-2"}`}>
+                {locale === "zh" ? "会议室" : "Meeting Room"}
+              </span>
+              {meetingRoomIsConvening && !collapsed && (
+                <span className="sidebar-copy size-1.5 shrink-0 rounded-full bg-accent" />
+              )}
+            </button>
+          )}
         </GlideMenu>
 
         {creatingWorkspace && !collapsed && (

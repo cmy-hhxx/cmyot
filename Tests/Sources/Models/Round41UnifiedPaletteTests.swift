@@ -134,4 +134,19 @@ struct Round41UnifiedPaletteTests {
         #expect(abs(contentView.bounds.width - 1120) <= 2)
         #expect(abs(contentView.bounds.height - 720) <= 2)
     }
+    
+    
+    @Test func softPreviewColorsEliminatePitchBlackAndStayAiryAcrossAllPalettes() {
+        let manager = StudioPaletteManager.shared
+        for preset in StudioPaletteID.allCases {
+            let lightPreview = manager.softPreviewColors(for: preset, isDark: false)
+            let darkPreview = manager.softPreviewColors(for: preset, isDark: true)
+            
+            // Light mode preview surfaces must remain luminous and airy (no harsh dark blocks)
+            #expect(lightPreview.canvasLuminance >= 0.85)
+            // Dark mode preview surfaces must be lifted into Apple-style soft graphite (not pitch-black)
+            #expect(darkPreview.canvasLuminance >= 0.11)
+            #expect(darkPreview.canvasLuminance <= 0.25)
+        }
+    }
 }

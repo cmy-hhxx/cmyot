@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from "re
 import { copyTextWithFallback, postToNative } from "./bridge";
 import LoadingState from "./primitives/LoadingState";
 import MarkdownProse from "./primitives/MarkdownProse";
+import MeetingRoomView from "./primitives/MeetingRoomView";
 import PromptBar, { type PromptBarHandle } from "./primitives/PromptBar";
 import SidebarNav from "./primitives/SidebarNav";
 import ThinkingState from "./primitives/ThinkingState";
@@ -781,6 +782,7 @@ export default function App() {
   };
 
   const isNews = state.mode === "news";
+  const isMeetingRoom = !isNews && Boolean(state.meetingRoomActive);
   const showSidebar = !isNews && state.showSidebar !== false;
   const activeSession = state.sessions.find((s) => s.id === state.activeSessionID);
   const availableWorkspaces = state.availableWorkspaces ?? [];
@@ -842,6 +844,9 @@ export default function App() {
           onRenameSession={(id, title) => postToNative("renameSession", { id, title })}
           onTogglePinSession={(id) => postToNative("togglePinSession", { id })}
           onOpenSettings={() => postToNative("openSettings", { target: "bot" })}
+          meetingRoomActive={isMeetingRoom}
+          meetingRoomIsConvening={Boolean(state.meetingRoomIsConvening)}
+          onOpenMeetingRoom={() => postToNative("toggleMeetingRoom", { active: true })}
         />
       )}
 
@@ -857,6 +862,10 @@ export default function App() {
             {isNews ? (
               <span className="truncate text-[13px] font-medium tracking-tight text-ink-2">
                 {state.locale === "zh" ? "AI" : "AI"}
+              </span>
+            ) : isMeetingRoom ? (
+              <span className="truncate text-[14px] font-semibold text-ink">
+                {state.locale === "zh" ? "会议室" : "Meeting Room"}
               </span>
             ) : (
               <>
@@ -900,6 +909,38 @@ export default function App() {
           </div>
 
           <div className="flex shrink-0 items-center gap-1">
+            {!isNews && isMeetingRoom && (state.meetingRoomMessages?.length ?? 0) > 0 && !state.meetingRoomIsConvening && (
+              <button
+                type="button"
+                onClick={() => postToNative("clearMeetingRoom")}
+                className="flex h-7.5 items-center rounded-[7px] px-2.5 text-[13px] font-medium text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
+              >
+                {state.locale === "zh" ? "清空" : "Clear"}
+              </button>
+            )}
+
+            {!isNews && (
+              <button
+                type="button"
+                onClick={() => postToNative("toggleMeetingRoom", { active: !isMeetingRoom })}
+                className={`flex h-7.5 items-center gap-1.5 rounded-[7px] px-2.5 text-[13px] font-medium transition-colors duration-100 ${
+                  isMeetingRoom
+                    ? "bg-surface text-ink shadow-hairline"
+                    : "text-ink-2 hover:bg-hover hover:text-ink"
+                }`}
+              >
+                <span>
+                  {isMeetingRoom
+                    ? state.locale === "zh"
+                      ? "返回总管"
+                      : "Exit Room"
+                    : state.locale === "zh"
+                      ? "会议室"
+                      : "Meeting Room"}
+                </span>
+              </button>
+            )}
+
             {isNews && hasMessages && !state.isStreaming && (
               <>
                 <button
@@ -1028,8 +1069,24 @@ export default function App() {
           </div>
         )}
 
-        {/* Thread or Empty State */}
-        {!hasMessages ? (
+        {/* Isolated Meeting Room OR Regular Chat Thread */}
+        {isMeetingRoom ? (
+          <MeetingRoomView
+            locale={state.locale}
+            messages={state.meetingRoomMessages ?? []}
+            participants={state.meetingRoomBots ?? []}
+            isConvening={Boolean(state.meetingRoomIsConvening)}
+            availableModels={state.availableModels}
+            selectedModelID={state.selectedModelID}
+            selectedModelTitle={state.selectedModelTitle}
+            onSend={(text, botId) =>
+              postToNative("sendMeetingPrompt", { text, botId: botId ?? "" })
+            }
+            onAbort={() => postToNative("abortMeetingRoom")}
+            onSelectModel={(m) => postToNative("selectModel", { model: m })}
+            onOpenSettings={() => postToNative("openSettings", { target: "bot" })}
+          />
+        ) : !hasMessages ? (
           <div className="bui-scroll flex min-h-0 flex-1 flex-col justify-center overflow-y-auto px-5 py-6">
             <div className="mx-auto flex w-full max-w-[640px] flex-col">
               {!isNews && (

@@ -664,9 +664,10 @@ struct DocumentCenterView: View {
             .background(tokens.positivePillBg, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         } else {
             if let summary = self.state.agentOrganizeSummary {
+                let hasLogs = !self.state.lastOrganizeLogEntries.isEmpty || !self.state.lastOrganizeMergeLogs.isEmpty
                 HStack(spacing: 6) {
                     Button {
-                        if !self.state.lastOrganizeMergeLogs.isEmpty {
+                        if hasLogs {
                             self.isShowingOrganizeLog.toggle()
                         }
                     } label: {
@@ -674,7 +675,7 @@ struct DocumentCenterView: View {
                             Text(summary)
                                 .font(.system(size: 11.5, weight: .medium).monospacedDigit())
                                 .foregroundStyle(tokens.accentText)
-                            if !self.state.lastOrganizeMergeLogs.isEmpty {
+                            if hasLogs {
                                 Image(systemName: "chevron.down")
                                     .font(.system(size: 9.5, weight: .semibold))
                                     .foregroundStyle(tokens.accentText.opacity(0.75))
@@ -1311,6 +1312,7 @@ struct DocumentCenterView: View {
         var existingGroupSet = Set(self.db.documentGroups)
         var createdGroups: [String] = []
         var touchedGroups = Set<String>()
+        var renamedLogs: [DocumentCenterState.OrganizeLogEntry] = []
         var stats = OrganizeApplyStats()
         
         let mergedByPrimaryID = Dictionary(uniqueKeysWithValues: fullPlan.funnel.mergeClusters.map { ($0.primary.id, $0) })
@@ -1330,12 +1332,14 @@ struct DocumentCenterView: View {
             stats.renamed += mergeOutcome.renamed
             self.applyShardedAssignments(
                 fullPlan.assignments,
+                usedAI: fullPlan.usedAI,
                 itemsByID: itemsByID,
                 mergedByPrimaryID: mergedByPrimaryID,
                 existingGroupSet: &existingGroupSet,
                 createdGroups: &createdGroups,
                 touchedGroups: &touchedGroups,
                 undoEntries: &undoEntries,
+                renamedLogs: &renamedLogs,
                 stats: &stats
             )
         }
@@ -1345,7 +1349,12 @@ struct DocumentCenterView: View {
             removedEmptyGroups = self.db.pruneEmptyDocumentGroups(reloadAfter: false)
             self.db.reloadDocuments()
         }
-        stats.groupCount = Set(self.db.documents.map(\.groupName).filter { !$0.isEmpty }).count
+        let activeDocs = self.db.documents.filter { !$0.id.hasPrefix("weekly:") }
+        var groupCounts: [String: Int] = [:]
+        for doc in activeDocs where !doc.groupName.isEmpty {
+            groupCounts[doc.groupName, default: 0] += 1
+        }
+        stats.groupCount = groupCounts.count
         self.state.lastOrganizeUndoSnapshot = undoEntries
         self.state.lastOrganizeCreatedGroups = createdGroups
         self.state.lastOrganizeRemovedGroups = removedEmptyGroups
@@ -1353,6 +1362,20 @@ struct DocumentCenterView: View {
             let sources = ([cluster.primary.title] + cluster.duplicates.map(\.title)).joined(separator: " + ")
             return "\(cluster.bestTitle) ← \(sources)"
         }
+        
+        var logEntries: [DocumentCenterState.OrganizeLogEntry] = []
+        for decision in fullPlan.funnel.junkToDelete {
+            logEntries.append(.init(kind: .deleted, title: decision.item.title, detail: decision.displayReason))
+        }
+        for cluster in fullPlan.funnel.mergeClusters {
+            let sources = ([cluster.primary.title] + cluster.duplicates.map(\.title)).joined(separator: " + ")
+            logEntries.append(.init(kind: .merged, title: "\(cluster.bestTitle) ← \(sources)", detail: cluster.reason))
+        }
+        logEntries.append(contentsOf: renamedLogs)
+        for (name, count) in groupCounts.sorted(by: { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }) {
+            logEntries.append(.init(kind: .groupSummary, title: name, detail: "\(count) 篇"))
+        }
+        self.state.lastOrganizeLogEntries = logEntries
         return stats
     }
     
@@ -1460,12 +1483,14 @@ struct DocumentCenterView: View {
     
     private func applyShardedAssignments(
         _ assignments: [DocumentCenterAgentOrganizer.Assignment],
+        usedAI: Bool,
         itemsByID: [String: DocumentCenterState.ManagedDocumentItem],
         mergedByPrimaryID: [String: OrganizeMergeCluster],
         existingGroupSet: inout Set<String>,
         createdGroups: inout [String],
         touchedGroups: inout Set<String>,
         undoEntries: inout [DocumentCenterState.OrganizeUndoEntry],
+        renamedLogs: inout [DocumentCenterState.OrganizeLogEntry],
         stats: inout OrganizeApplyStats
     ) {
         for assignment in assignments {
@@ -1480,7 +1505,8 @@ struct DocumentCenterView: View {
                 guard let suggested = assignment.suggestedTitle,
                       !suggested.isEmpty,
                       suggested != effectiveTitle,
-                      DocumentCenterAgentOrganizer.isGenericUntitled(effectiveTitle, hasFilePath: item.filePath != nil)
+                      item.filePath == nil,
+                      (usedAI || DocumentCenterAgentOrganizer.isWeakScratchTitle(effectiveTitle, hasFilePath: false))
                 else { return nil }
                 return suggested
             }()
@@ -1516,6 +1542,11 @@ struct DocumentCenterView: View {
                         reloadAfter: false
                     )
                 }
+                renamedLogs.append(.init(
+                    kind: .renamed,
+                    title: "\(effectiveTitle) → \(newTitle)",
+                    detail: targetGroup.isEmpty ? nil : targetGroup
+                ))
                 stats.renamed += 1
             }
             
@@ -1641,6 +1672,7 @@ struct DocumentCenterView: View {
         self.state.lastOrganizeCreatedGroups = []
         self.state.lastOrganizeRemovedGroups = []
         self.state.lastOrganizeMergeLogs = []
+        self.state.lastOrganizeLogEntries = []
         self.state.agentOrganizeSummary = nil
         self.state.sidebarFilter = .all
         self.state.refresh()
@@ -2080,7 +2112,13 @@ struct DocumentCenterView: View {
     
     
     private func organizeMergeLogPopover(tokens: StudioColorTokens) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let entries = self.state.lastOrganizeLogEntries
+        let deletedEntries = entries.filter { $0.kind == .deleted }
+        let mergedEntries = entries.filter { $0.kind == .merged }
+        let renamedEntries = entries.filter { $0.kind == .renamed }
+        let groupEntries = entries.filter { $0.kind == .groupSummary }
+        
+        return VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("整理明细")
                     .font(.system(size: 13, weight: .semibold))
@@ -2096,25 +2134,108 @@ struct DocumentCenterView: View {
             }
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(Array(self.state.lastOrganizeMergeLogs.enumerated()), id: \.offset) { _, line in
-                        HStack(alignment: .top, spacing: 6) {
-                            Image(systemName: "arrow.triangle.merge")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(tokens.accent)
-                                .padding(.top, 2)
-                            Text(line)
-                                .font(.system(size: 12))
-                                .foregroundStyle(tokens.primaryInk.opacity(0.88))
-                                .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 10) {
+                    if !deletedEntries.isEmpty {
+                        self.organizeLogSection(
+                            heading: "已清理",
+                            count: deletedEntries.count,
+                            symbol: "trash",
+                            tint: .red,
+                            entries: deletedEntries,
+                            tokens: tokens
+                        )
+                    }
+                    if !mergedEntries.isEmpty {
+                        self.organizeLogSection(
+                            heading: "已合并",
+                            count: mergedEntries.count,
+                            symbol: "arrow.triangle.merge",
+                            tint: tokens.accent,
+                            entries: mergedEntries,
+                            tokens: tokens
+                        )
+                    }
+                    if !renamedEntries.isEmpty {
+                        self.organizeLogSection(
+                            heading: "已重命名",
+                            count: renamedEntries.count,
+                            symbol: "pencil",
+                            tint: tokens.primaryInk.opacity(0.65),
+                            entries: renamedEntries,
+                            tokens: tokens
+                        )
+                    }
+                    if !groupEntries.isEmpty {
+                        self.organizeLogSection(
+                            heading: "工作主线分组",
+                            count: groupEntries.count,
+                            symbol: "folder",
+                            tint: tokens.accent,
+                            entries: groupEntries,
+                            tokens: tokens
+                        )
+                    }
+                    if entries.isEmpty {
+                        ForEach(Array(self.state.lastOrganizeMergeLogs.enumerated()), id: \.offset) { _, line in
+                            HStack(alignment: .top, spacing: 6) {
+                                Image(systemName: "arrow.triangle.merge")
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .foregroundStyle(tokens.accent)
+                                    .padding(.top, 2)
+                                Text(line)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(tokens.primaryInk.opacity(0.88))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         }
                     }
                 }
             }
-            .frame(maxHeight: 220)
+            .frame(maxHeight: 320)
         }
         .padding(14)
-        .frame(width: 340)
+        .frame(width: 380)
+    }
+    
+    
+    private func organizeLogSection(
+        heading: String,
+        count: Int,
+        symbol: String,
+        tint: Color,
+        entries: [DocumentCenterState.OrganizeLogEntry],
+        tokens: StudioColorTokens
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 5) {
+                Text(heading)
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(tokens.primaryInk.opacity(0.62))
+                Text("\(count)")
+                    .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(tint)
+            }
+            ForEach(entries) { entry in
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: symbol)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(tint)
+                        .frame(width: 13, alignment: .center)
+                        .padding(.top, 2)
+                    Text(entry.title)
+                        .font(.system(size: 12))
+                        .foregroundStyle(tokens.primaryInk.opacity(0.90))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 6)
+                    if let detail = entry.detail, !detail.isEmpty {
+                        Text(detail)
+                            .font(.system(size: 11).monospacedDigit())
+                            .foregroundStyle(tokens.primaryInk.opacity(0.54))
+                            .lineLimit(1)
+                    }
+                }
+            }
+        }
     }
     
     
@@ -2223,9 +2344,9 @@ struct DocumentCenterView: View {
         self.state.lastOrganizeUndoSnapshot = undoEntries
         self.state.lastOrganizeCreatedGroups = []
         self.state.lastOrganizeRemovedGroups = removedEmptyGroups
-        self.state.lastOrganizeMergeLogs = [
-            "\(bestTitle) ← \(unique.map(\.title).joined(separator: " + "))",
-        ]
+        let manualMergeLine = "\(bestTitle) ← \(unique.map(\.title).joined(separator: " + "))"
+        self.state.lastOrganizeMergeLogs = [manualMergeLine]
+        self.state.lastOrganizeLogEntries = [.init(kind: .merged, title: manualMergeLine, detail: "手动合并")]
         self.state.agentOrganizeSummary = "已合并 \(unique.count) 篇为「\(bestTitle)」"
         self.state.refresh()
         self.state.selectedID = primary.id
@@ -2298,7 +2419,9 @@ struct DocumentCenterView: View {
         self.state.lastOrganizeUndoSnapshot = undoEntries
         self.state.lastOrganizeCreatedGroups = []
         self.state.lastOrganizeRemovedGroups = [donorGroup]
-        self.state.lastOrganizeMergeLogs = ["分组「\(donorGroup)」→「\(targetGroup)」（\(donorItems.count) 篇）"]
+        let groupMergeLine = "分组「\(donorGroup)」→「\(targetGroup)」（\(donorItems.count) 篇）"
+        self.state.lastOrganizeMergeLogs = [groupMergeLine]
+        self.state.lastOrganizeLogEntries = [.init(kind: .merged, title: groupMergeLine, detail: "合并分组")]
         self.state.agentOrganizeSummary = "已将「\(donorGroup)」并入「\(targetGroup)」"
         self.state.refresh()
         self.fitRequestToken &+= 1

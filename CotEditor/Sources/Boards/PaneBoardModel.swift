@@ -45,7 +45,7 @@ nonisolated enum PaneBoardKind: String, CaseIterable, Codable, Identifiable, Sen
             case .market: "chart.xyaxis.line"
             case .podcast: "waveform"
             case .news: "newspaper"
-            case .butler: "sparkles"
+            case .butler: "bubble.left.and.text.bubble.right"
         }
     }
 }

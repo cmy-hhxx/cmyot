@@ -32,6 +32,7 @@ import SyntaxFormat
 enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
     
     case general
+    case database
     case appIcon
     case appearance
     case wallpaper
@@ -52,6 +53,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
     var title: String {
         switch self {
             case .general: AppLanguage.text("通用", en: "General")
+            case .database: AppLanguage.text("数据库", en: "Database")
             case .appIcon: AppLanguage.text("图标", en: "App Icon")
             case .appearance: AppLanguage.text("外观", en: "Appearance")
             case .wallpaper: AppLanguage.text("壁纸", en: "Wallpaper")
@@ -72,6 +74,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
     var symbolName: String {
         switch self {
             case .general: "gearshape.fill"
+            case .database: "internaldrive.fill"
             case .appIcon: "sparkles.rectangle.stack.fill"
             case .appearance: "paintpalette.fill"
             case .wallpaper: "photo.on.rectangle.angled"
@@ -92,6 +95,7 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
     var badgeColor: Color {
         switch self {
             case .general: Color(red: 0.56, green: 0.56, blue: 0.58)
+            case .database: Color(red: 0.24, green: 0.54, blue: 0.86)
             case .appIcon: Color(red: 0.85, green: 0.65, blue: 0.16)
             case .appearance: Color(red: 0.44, green: 0.36, blue: 0.70)
             case .wallpaper: Color(red: 0.18, green: 0.52, blue: 0.88)
@@ -225,7 +229,7 @@ private enum SettingsDesignTokens {
     static let readoutWidth: CGFloat = 40
     
     static let sidebarClusters: [[SidebarSettingsItem]] = [
-        [.general, .appIcon, .appearance, .wallpaper, .mediaLibrary],
+        [.general, .database, .appIcon, .appearance, .wallpaper, .mediaLibrary],
         [.typography, .editing, .format, .effects],
         [.models, .bots, .memory, .scheduledTasks, .keyBindings, .pass],
     ]
@@ -239,6 +243,7 @@ private struct SidebarSettingsRootView: View {
     @AppStorage(.documentAppearance) private var documentAppearance
     @State private var studioPalette = StudioPaletteManager.shared
     @State private var dbStatusMessage: String?
+    @State private var databaseRefreshRevision: Int = 0
     @State private var hoveredItem: SidebarSettingsItem?
     @Namespace private var sidebarSelectionNamespace
     
@@ -254,8 +259,8 @@ private struct SidebarSettingsRootView: View {
     private var contentBackground: Color {
         let isDark = (self.resolvedColorScheme ?? self.colorScheme) == .dark
         return isDark
-            ? Color(red: 0.118, green: 0.118, blue: 0.125) // #1E1E20
-            : Color(red: 0.961, green: 0.961, blue: 0.969) // #F5F5F7
+            ? Color(red: 0.141, green: 0.141, blue: 0.149) // #242426 Apple soft dark graphite
+            : Color(red: 0.961, green: 0.961, blue: 0.969) // #F5F5F7 Apple light settings canvas
     }
     
     
@@ -420,20 +425,18 @@ private struct SidebarSettingsRootView: View {
             .background {
                 if isSelected {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(accent)
+                        .fill(accent.opacity(isDark ? 0.84 : 0.90))
                         .matchedGeometryEffect(id: "sidebarActiveTab", in: self.sidebarSelectionNamespace)
                 } else if isHovered {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.045))
+                        .fill(isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.04))
                 }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering in
-            withAnimation(.easeOut(duration: 0.12)) {
-                self.hoveredItem = hovering ? item : (self.hoveredItem == item ? nil : self.hoveredItem)
-            }
+            self.hoveredItem = hovering ? item : (self.hoveredItem == item ? nil : self.hoveredItem)
         }
     }
     
@@ -445,6 +448,12 @@ private struct SidebarSettingsRootView: View {
                 SidebarGeneralSettingsPane(
                     onExportDatabase: { self.exportLocalDatabase() },
                     onImportDatabase: { self.importLocalDatabase() }
+                )
+            case .database:
+                LocalDatabaseSettingsView(
+                    onExportDatabase: { self.exportLocalDatabase() },
+                    onImportDatabase: { self.importLocalDatabase() },
+                    refreshRevision: self.databaseRefreshRevision
                 )
             case .appIcon:
                 SidebarAppIconSettingsPane()
@@ -504,6 +513,7 @@ private struct SidebarSettingsRootView: View {
             Task { @MainActor in
                 do {
                     try CotLocalDatabase.shared.importDatabase(from: url)
+                    self.databaseRefreshRevision &+= 1
                     self.setTemporaryStatus("✓ 已恢复本地数据：\(url.lastPathComponent)")
                 } catch {
                     self.setTemporaryStatus("导入失败：\(error.localizedDescription)")
@@ -608,14 +618,14 @@ private struct SettingsGroupCard<Content: View>: View {
                 RoundedRectangle(cornerRadius: SettingsDesignTokens.cardCornerRadius, style: .continuous)
                     .fill(self.colorScheme == .dark ? Color.white.opacity(0.055) : Color.white)
                     .shadow(
-                        color: self.colorScheme == .dark ? Color.clear : Color.black.opacity(0.03),
-                        radius: 1.5,
+                        color: self.colorScheme == .dark ? Color.clear : Color.black.opacity(0.025),
+                        radius: 2,
                         y: 0.5
                     )
             )
             .overlay(
                 RoundedRectangle(cornerRadius: SettingsDesignTokens.cardCornerRadius, style: .continuous)
-                    .strokeBorder(self.colorScheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.08), lineWidth: 0.5)
+                    .strokeBorder(self.colorScheme == .dark ? Color.white.opacity(0.075) : Color.black.opacity(0.06), lineWidth: 0.5)
             )
         }
     }
@@ -2679,7 +2689,7 @@ private struct InlineFontFamilySelector: View {
 }
 
 
-// MARK: - 3. 外观 (10 套统一深浅配色 · 编辑器 / 侧边栏 / 热力图 / 卡片全局一致)
+// MARK: - 3. 外观 (Apple-Native Soft Appearance & Adaptive Color Palettes)
 
 private struct SidebarAppearanceSettingsPane: View {
     
@@ -2688,40 +2698,44 @@ private struct SidebarAppearanceSettingsPane: View {
     @AppStorage(.windowAlpha) private var windowAlpha
     @State private var studioPalette = StudioPaletteManager.shared
     
-    private var appearanceModeBinding: Binding<AppearanceMode> {
-        Binding(
-            get: { self.documentAppearance },
-            set: { newMode in
-                self.studioPalette.applyAppearanceMode(newMode)
-            }
-        )
-    }
-    
     
     var body: some View {
+        let isDark = (self.colorScheme == .dark)
+        let activePreview = self.studioPalette.softPreviewColors(for: self.studioPalette.selectedID, isDark: isDark)
+        
         VStack(alignment: .leading, spacing: SettingsDesignTokens.sectionSpacing) {
-            // 1. 深浅模式（始终与当前所选配色保持深浅一致）
-            SettingsGroupCard(title: AppLanguage.text("外观模式", en: "Appearance Mode")) {
-                SettingsItemRow(label: AppLanguage.text("深浅模式", en: "Mode")) {
-                    Picker("", selection: self.appearanceModeBinding) {
-                        Text(AppLanguage.text("跟随系统", en: "System")).tag(AppearanceMode.default)
-                        Text(AppLanguage.text("浅色", en: "Light")).tag(AppearanceMode.light)
-                        Text(AppLanguage.text("深色", en: "Dark")).tag(AppearanceMode.dark)
+            // 1. 外观模式（Apple 原生浅色 / 深色 / 自动缩略图选择）
+            SettingsGroupCard(title: AppLanguage.text("外观", en: "Appearance")) {
+                AppearanceModeThumbnailsRow(
+                    selectedMode: self.documentAppearance,
+                    accent: activePreview.swatch,
+                    isDark: isDark
+                ) { newMode in
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        self.studioPalette.applyAppearanceMode(newMode)
                     }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(width: SettingsDesignTokens.controlWidth)
                 }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 14)
             }
             
-            // 2. 固定 10 套全局统一配色（含深浅双模式，同步覆盖编辑器、侧边栏、热力图与卡片）
-            SettingsGroupCard(title: AppLanguage.text("配色方案（10 套）", en: "Color Palettes (10)")) {
+            // 2. 主题配色（柔和适配当前深浅外观，消除刺眼黑块与重框对比）
+            SettingsGroupCard(title: AppLanguage.text("主题配色", en: "Color Palettes")) {
                 LazyVGrid(
                     columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)],
                     spacing: 10
                 ) {
                     ForEach(StudioPaletteID.allCases) { preset in
-                        self.paletteCard(preset)
+                        AppearancePaletteCard(
+                            preset: preset,
+                            preview: self.studioPalette.softPreviewColors(for: preset, isDark: isDark),
+                            isSelected: self.studioPalette.selectedID == preset,
+                            isDark: isDark
+                        ) {
+                            withAnimation(.easeInOut(duration: 0.20)) {
+                                self.studioPalette.selectPalette(preset, syncEditorTheme: true)
+                            }
+                        }
                     }
                 }
                 .padding(12)
@@ -2749,96 +2763,333 @@ private struct SidebarAppearanceSettingsPane: View {
             }
         }
     }
+}
+
+
+private struct AppearanceModeThumbnailsRow: View {
     
+    let selectedMode: AppearanceMode
+    let accent: Color
+    let isDark: Bool
+    let onSelect: (AppearanceMode) -> Void
     
-    @ViewBuilder
-    private func paletteCard(_ preset: StudioPaletteID) -> some View {
-        let lightTokens = self.studioPalette.tokens(isDark: false, id: preset)
-        let darkTokens = self.studioPalette.tokens(isDark: true, id: preset)
-        let isSelected = (self.studioPalette.selectedID == preset)
-        let accentSwatch = (self.colorScheme == .dark) ? darkTokens.accentText : lightTokens.accent
-        
-        Button {
-            withAnimation(.timingCurve(0.22, 1, 0.36, 1, duration: 0.20)) {
-                self.studioPalette.selectPalette(preset, syncEditorTheme: true)
-            }
-        } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                // Split Light / Dark live preview strip (Left = Light, Right = Dark)
-                HStack(spacing: 0) {
-                    self.miniPreviewHalf(tokens: lightTokens)
-                    self.miniPreviewHalf(tokens: darkTokens)
-                }
-                .frame(height: 36)
-                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.5)
+    private static let orderedModes: [AppearanceMode] = [.light, .dark, .default]
+    
+    var body: some View {
+        HStack(spacing: 14) {
+            ForEach(Self.orderedModes, id: \.self) { mode in
+                AppearanceModeThumbnailCard(
+                    mode: mode,
+                    isSelected: self.selectedMode == mode,
+                    accent: self.accent,
+                    isDark: self.isDark,
+                    onSelect: { self.onSelect(mode) }
                 )
-                
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(accentSwatch)
-                        .frame(width: 8, height: 8)
-                    
-                    Text(preset.displayName)
-                        .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
-                        .foregroundStyle(.primary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    
-                    Spacer(minLength: 4)
-                    
-                    if isSelected {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 13))
-                            .foregroundStyle(accentSwatch)
-                    }
-                }
             }
-            .padding(10)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(isSelected ? Color.primary.opacity(self.colorScheme == .dark ? 0.10 : 0.05) : Color.primary.opacity(0.025))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .strokeBorder(isSelected ? accentSwatch.opacity(0.80) : Color.primary.opacity(0.08), lineWidth: isSelected ? 1.5 : 0.75)
-            )
+        }
+    }
+}
+
+
+private struct AppearanceModeThumbnailCard: View {
+    
+    let mode: AppearanceMode
+    let isSelected: Bool
+    let accent: Color
+    let isDark: Bool
+    let onSelect: () -> Void
+    
+    @State private var isHovered = false
+    
+    private var title: String {
+        switch self.mode {
+            case .light: AppLanguage.text("浅色", en: "Light")
+            case .dark: AppLanguage.text("深色", en: "Dark")
+            case .default: AppLanguage.text("自动", en: "Auto")
+        }
+    }
+    
+    var body: some View {
+        Button(action: self.onSelect) {
+            VStack(spacing: 7) {
+                self.thumbnailArtwork
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 58)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(
+                                self.isDark
+                                    ? Color.white.opacity(self.isHovered ? 0.16 : 0.10)
+                                    : Color.black.opacity(self.isHovered ? 0.14 : 0.08),
+                                lineWidth: 0.6
+                            )
+                    )
+                    .padding(2.5)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10.5, style: .continuous)
+                            .strokeBorder(
+                                self.isSelected ? self.accent.opacity(0.82) : Color.clear,
+                                lineWidth: 1.75
+                            )
+                    )
+                
+                Text(self.title)
+                    .font(.system(size: 12, weight: self.isSelected ? .semibold : .regular))
+                    .foregroundStyle(self.isSelected ? .primary : .secondary)
+            }
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .pointerStyle(.link)
+        .onHover { hovering in
+            self.isHovered = hovering
+        }
     }
     
     
-    private func miniPreviewHalf(tokens: StudioColorTokens) -> some View {
-        ZStack(alignment: .leading) {
-            tokens.canvasTop
-            
-            HStack(spacing: 4) {
-                // Mini sidebar sliver
-                RoundedRectangle(cornerRadius: 2, style: .continuous)
-                    .fill(tokens.card)
-                    .frame(width: 14, height: 24)
-                
-                // Mini editor lines + heatmap dots
-                VStack(alignment: .leading, spacing: 3.5) {
-                    RoundedRectangle(cornerRadius: 1.5)
-                        .fill(tokens.accent)
-                        .frame(width: 28, height: 3.5)
-                    RoundedRectangle(cornerRadius: 1.5)
-                        .fill(tokens.primaryInk.opacity(0.55))
-                        .frame(width: 44, height: 3)
-                    HStack(spacing: 2.5) {
-                        RoundedRectangle(cornerRadius: 1).fill(tokens.heat1).frame(width: 5, height: 5)
-                        RoundedRectangle(cornerRadius: 1).fill(tokens.heat2).frame(width: 5, height: 5)
-                        RoundedRectangle(cornerRadius: 1).fill(tokens.heat3).frame(width: 5, height: 5)
-                        RoundedRectangle(cornerRadius: 1).fill(tokens.heat4).frame(width: 5, height: 5)
-                    }
+    @ViewBuilder
+    private var thumbnailArtwork: some View {
+        switch self.mode {
+            case .light:
+                self.miniDesktopMockup(dark: false)
+            case .dark:
+                self.miniDesktopMockup(dark: true)
+            case .default:
+                HStack(spacing: 0) {
+                    self.miniDesktopMockup(dark: false)
+                    self.miniDesktopMockup(dark: true)
                 }
+                .overlay(
+                    Rectangle()
+                        .fill(Color.white.opacity(0.18))
+                        .frame(width: 0.5)
+                )
+        }
+    }
+    
+    
+    private func miniDesktopMockup(dark: Bool) -> some View {
+        let backdropTop = dark
+            ? Color(red: 0.20, green: 0.22, blue: 0.27)
+            : Color(red: 0.90, green: 0.93, blue: 0.97)
+        let backdropBottom = dark
+            ? Color(red: 0.25, green: 0.27, blue: 0.33)
+            : Color(red: 0.95, green: 0.96, blue: 0.98)
+        let windowSurface = dark
+            ? Color(red: 0.21, green: 0.215, blue: 0.24)
+            : Color.white
+        let sidebarSurface = dark
+            ? Color(red: 0.255, green: 0.26, blue: 0.29)
+            : Color(red: 0.955, green: 0.96, blue: 0.975)
+        let lineColor = dark ? Color.white.opacity(0.20) : Color.black.opacity(0.11)
+        let faintLine = dark ? Color.white.opacity(0.10) : Color.black.opacity(0.06)
+        
+        return ZStack(alignment: .bottomTrailing) {
+            LinearGradient(colors: [backdropTop, backdropBottom], startPoint: .topLeading, endPoint: .bottomTrailing)
+            
+            // Soft floating miniature macOS window
+            HStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 2.5) {
+                        Circle().fill(Color(red: 0.90, green: 0.48, blue: 0.45).opacity(0.75)).frame(width: 3.5, height: 3.5)
+                        Circle().fill(Color(red: 0.92, green: 0.74, blue: 0.38).opacity(0.75)).frame(width: 3.5, height: 3.5)
+                        Circle().fill(Color(red: 0.45, green: 0.78, blue: 0.52).opacity(0.75)).frame(width: 3.5, height: 3.5)
+                    }
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(lineColor)
+                        .frame(width: 14, height: 2.5)
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(faintLine)
+                        .frame(width: 10, height: 2.5)
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 5)
+                .padding(.leading, 5)
+                .frame(width: 26, alignment: .leading)
+                .frame(maxHeight: .infinity)
+                .background(sidebarSurface)
+                
+                VStack(alignment: .leading, spacing: 4.5) {
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(self.accent.opacity(dark ? 0.65 : 0.55))
+                        .frame(width: 22, height: 3)
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(lineColor)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 2.5)
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(faintLine)
+                        .frame(width: 34, height: 2.5)
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 7)
+                .padding(.horizontal, 6)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(windowSurface)
             }
-            .padding(.horizontal, 6)
+            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .strokeBorder(dark ? Color.white.opacity(0.10) : Color.black.opacity(0.07), lineWidth: 0.5)
+            )
+            .shadow(color: Color.black.opacity(dark ? 0.22 : 0.07), radius: 3, y: 1)
+            .padding(.top, 9)
+            .padding(.leading, 10)
+            .padding(.trailing, 6)
+            .padding(.bottom, 5)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+
+private struct AppearancePaletteCard: View {
+    
+    let preset: StudioPaletteID
+    let preview: StudioPalettePreviewColors
+    let isSelected: Bool
+    let isDark: Bool
+    let onSelect: () -> Void
+    
+    @State private var isHovered = false
+    
+    var body: some View {
+        let cardFill: Color = if self.isSelected {
+            self.isDark ? Color.white.opacity(0.08) : Color.white
+        } else if self.isHovered {
+            self.isDark ? Color.white.opacity(0.05) : Color.black.opacity(0.032)
+        } else {
+            self.isDark ? Color.white.opacity(0.025) : Color.black.opacity(0.016)
+        }
+        
+        let borderStroke: Color = if self.isSelected {
+            self.preview.swatch.opacity(self.isDark ? 0.58 : 0.48)
+        } else if self.isHovered {
+            self.isDark ? Color.white.opacity(0.13) : Color.black.opacity(0.10)
+        } else {
+            self.isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.05)
+        }
+        
+        Button(action: self.onSelect) {
+            VStack(alignment: .leading, spacing: 8) {
+                AppearancePalettePreviewStrip(preview: self.preview, isDark: self.isDark)
+                
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(self.preview.swatch)
+                        .frame(width: 9, height: 9)
+                        .overlay(
+                            Circle()
+                                .strokeBorder(self.isDark ? Color.white.opacity(0.18) : Color.black.opacity(0.10), lineWidth: 0.5)
+                        )
+                    
+                    Text(self.preset.displayName)
+                        .font(.system(size: 12.5, weight: self.isSelected ? .semibold : .regular))
+                        .foregroundStyle(Color.primary.opacity(self.isSelected ? 1.0 : 0.86))
+                        .lineLimit(1)
+                    
+                    Spacer(minLength: 4)
+                    
+                    if self.isSelected {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundStyle(self.preview.swatch)
+                    }
+                }
+                .padding(.horizontal, 2)
+            }
+            .padding(9)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(cardFill)
+                    .shadow(
+                        color: (self.isSelected && !self.isDark) ? Color.black.opacity(0.05) : Color.clear,
+                        radius: 4,
+                        y: 1.5
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(borderStroke, lineWidth: self.isSelected ? 1.15 : 0.6)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .onHover { hovering in
+            self.isHovered = hovering
+        }
+    }
+}
+
+
+private struct AppearancePalettePreviewStrip: View {
+    
+    let preview: StudioPalettePreviewColors
+    let isDark: Bool
+    
+    var body: some View {
+        ZStack(alignment: .leading) {
+            self.preview.canvas
+            
+            LinearGradient(
+                colors: [self.preview.ambientWash, Color.clear],
+                startPoint: .topTrailing,
+                endPoint: .bottomLeading
+            )
+            
+            HStack(spacing: 0) {
+                // Soft sidebar sliver
+                VStack(alignment: .leading, spacing: 4) {
+                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                        .fill(self.preview.accent.opacity(0.75))
+                        .frame(width: 18, height: 3.5)
+                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                        .fill(self.preview.lineSecondary)
+                        .frame(width: 24, height: 2.5)
+                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                        .fill(self.preview.lineSecondary)
+                        .frame(width: 15, height: 2.5)
+                }
+                .padding(.horizontal, 7)
+                .frame(width: 44, alignment: .leading)
+                .frame(maxHeight: .infinity)
+                .background(self.preview.sidebar)
+                
+                Rectangle()
+                    .fill(self.isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.05))
+                    .frame(width: 0.5)
+                
+                // Clean airy editor preview lines
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 5) {
+                        RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                            .fill(self.preview.accent.opacity(0.82))
+                            .frame(width: 28, height: 3.5)
+                        RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                            .fill(self.preview.linePrimary)
+                            .frame(width: 46, height: 3)
+                    }
+                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                        .fill(self.preview.linePrimary)
+                        .frame(maxWidth: 118)
+                        .frame(height: 3)
+                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                        .fill(self.preview.lineSecondary)
+                        .frame(maxWidth: 78)
+                        .frame(height: 3)
+                }
+                .padding(.horizontal, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .frame(height: 40)
+        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .strokeBorder(self.isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.055), lineWidth: 0.5)
+        )
     }
 }
 

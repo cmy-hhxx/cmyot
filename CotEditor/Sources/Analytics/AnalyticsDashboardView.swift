@@ -1126,30 +1126,32 @@ nonisolated struct DashboardViewportLayout: Equatable, Sendable {
         let vpW = max(680, viewportSize.width)
         let isTight = isEmbeddedInSettings || vpH < 760
         
-        let outerPadH: CGFloat = isEmbeddedInSettings ? 12 : (vpW >= 1280 ? 22 : 16)
-        let outerPadV: CGFloat = isEmbeddedInSettings ? 10 : (vpH >= 840 ? 14 : 11)
-        let vSpacing: CGFloat = isEmbeddedInSettings ? 10 : (vpH >= 840 ? 13 : 10)
+        let outerPadH: CGFloat = isEmbeddedInSettings ? 10 : (vpW >= 1280 ? 14 : 12)
+        let outerPadV: CGFloat = isEmbeddedInSettings ? 6 : (vpH >= 840 ? 9 : 7)
+        let vSpacing: CGFloat = isEmbeddedInSettings ? 8 : (vpH >= 840 ? 10 : 8)
         let hSpacing: CGFloat = isEmbeddedInSettings ? 8 : 10
-        let unifiedInnerGap: CGFloat = isTight ? 8 : 10
+        let unifiedInnerGap: CGFloat = isTight ? 6 : 8
         let unifiedBottomPad: CGFloat = DashboardCornerMetrics.unifiedInset(compact: isEmbeddedInSettings)
         
-        let minHero: CGFloat = isEmbeddedInSettings ? (hasHeroPhoto ? 112 : 98) : (hasHeroPhoto ? 122 : 106)
-        let maxHero: CGFloat = isEmbeddedInSettings ? (hasHeroPhoto ? 138 : 120) : (hasHeroPhoto ? 158 : 134)
-        let minRow1: CGFloat = isEmbeddedInSettings ? 192 : 208
-        let maxRow1: CGFloat = isEmbeddedInSettings ? 232 : 264
-        let minRow2: CGFloat = isEmbeddedInSettings ? 190 : 210
-        let maxRow2: CGFloat = isEmbeddedInSettings ? 242 : 308
+        let minHero: CGFloat = isEmbeddedInSettings ? (hasHeroPhoto ? 102 : 90) : (hasHeroPhoto ? 110 : 96)
+        let maxHero: CGFloat = isEmbeddedInSettings ? (hasHeroPhoto ? 124 : 108) : (hasHeroPhoto ? 144 : 122)
+        let minRow1: CGFloat = isEmbeddedInSettings ? 196 : 216
+        let maxRow1: CGFloat = isEmbeddedInSettings ? 290 : 390
+        let minRow2: CGFloat = isEmbeddedInSettings ? 168 : 186
+        let maxRow2: CGFloat = isEmbeddedInSettings ? 214 : 238
         
         let chromeV = outerPadV * 2 + vSpacing + unifiedInnerGap + unifiedBottomPad
         let minTotal = chromeV + minHero + minRow1 + minRow2
         let needsScroll = vpH < minTotal
         let usableH = max(minHero + minRow1 + minRow2, vpH - chromeV)
         
-        let heroWeight: CGFloat = hasHeroPhoto ? 0.195 : 0.165
+        let heroWeight: CGFloat = hasHeroPhoto ? 0.175 : 0.145
         let heroH = min(maxHero, max(minHero, floor(usableH * heroWeight)))
         
         let remainingAfterHero = usableH - heroH
-        let row1H = min(maxRow1, max(minRow1, floor(remainingAfterHero * 0.475)))
+        // Keep Row 2 crisp and void-free while giving data-dense Row 1 (Heatmap + Curves + Quads) generous breathing room.
+        let desiredRow2 = min(maxRow2, max(minRow2, floor(remainingAfterHero * 0.37)))
+        let row1H = min(maxRow1, max(minRow1, floor(remainingAfterHero - desiredRow2)))
         let row2H = min(maxRow2, max(minRow2, floor(remainingAfterHero - row1H)))
         
         return DashboardViewportLayout(
@@ -1163,7 +1165,7 @@ nonisolated struct DashboardViewportLayout: Equatable, Sendable {
             row1Height: row1H,
             row2Height: row2H,
             leftColumnRatio: isEmbeddedInSettings ? 0.51 : 0.545,
-            maxContentWidth: isEmbeddedInSettings ? 1120 : 1320,
+            maxContentWidth: isEmbeddedInSettings ? 1160 : 1440,
             isTight: isTight,
             needsVerticalScroll: needsScroll
         )
@@ -1267,7 +1269,7 @@ struct AnalyticsDashboardView: View {
                             .padding(.horizontal, layout.outerPadH)
                             .padding(.vertical, layout.outerPadV)
                             .frame(maxWidth: layout.maxContentWidth, alignment: .leading)
-                            .frame(maxWidth: .infinity, minHeight: viewportGeo.size.height, alignment: .center)
+                            .frame(maxWidth: .infinity, minHeight: viewportGeo.size.height, alignment: .top)
                         } else {
                             Color.clear.frame(maxWidth: .infinity, minHeight: viewportGeo.size.height)
                         }
@@ -1280,7 +1282,7 @@ struct AnalyticsDashboardView: View {
                         .transition(.opacity)
                     } else {
                         contentStack
-                            .frame(width: viewportGeo.size.width, height: viewportGeo.size.height, alignment: .center)
+                            .frame(width: viewportGeo.size.width, height: viewportGeo.size.height, alignment: .top)
                             .clipped()
                             .transition(.opacity)
                     }
@@ -1464,31 +1466,40 @@ struct AnalyticsDashboardView: View {
     }
     
     
-    // MARK: Row 2 — Equal 3-Column Layout (干了啥 / 要干啥 / NEWS)
+    // MARK: Row 2 — Balanced Editorial + NEWS Strip (30.5% 干了啥 / 30.5% 要干啥 / 39% NEWS)
     
     private func row2Section(_ snapshot: DashboardSnapshot, layout: DashboardViewportLayout) -> some View {
         let height = layout.row2Height
         let spacing = layout.hSpacing
         let row2Radius = DashboardCornerMetrics.row2CardRadius(compact: self.isEmbeddedInSettings)
-        return HStack(alignment: .top, spacing: spacing) {
-            self.doneTodayColumn(points: snapshot.doneTodayPoints, compact: layout.isTight, cornerRadius: row2Radius)
-                .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
+        return GeometryReader { proxy in
+            let usableW = max(360, proxy.size.width - spacing * 2)
+            let useAsymmetric = (!self.isEmbeddedInSettings && usableW >= 720)
+            let newsW = useAsymmetric ? floor(usableW * 0.39) : floor(usableW / 3.0)
+            let editorialW = max(140, floor((usableW - newsW) * 0.5))
+            let resolvedNewsW = max(160, usableW - editorialW * 2)
             
-            self.predictedActionsColumn(predictions: snapshot.actionPredictions, compact: layout.isTight, cornerRadius: row2Radius)
-                .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
-            
-            DashboardNewsColumnCard(
-                compact: self.isEmbeddedInSettings,
-                tightPadding: layout.isTight,
-                cornerRadius: row2Radius,
-                cardHeight: height,
-                palette: self.palette,
-                onOpenWorkspace: { selectedID in
-                    self.openNewsWorkspace(selecting: selectedID)
-                }
-            )
-            .frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
+            HStack(alignment: .top, spacing: spacing) {
+                self.doneTodayColumn(points: snapshot.doneTodayPoints, compact: layout.isTight, cornerRadius: row2Radius)
+                    .frame(width: editorialW, height: height, alignment: .topLeading)
+                
+                self.predictedActionsColumn(predictions: snapshot.actionPredictions, compact: layout.isTight, cornerRadius: row2Radius)
+                    .frame(width: editorialW, height: height, alignment: .topLeading)
+                
+                DashboardNewsColumnCard(
+                    compact: self.isEmbeddedInSettings,
+                    tightPadding: layout.isTight,
+                    cornerRadius: row2Radius,
+                    cardHeight: height,
+                    palette: self.palette,
+                    onOpenWorkspace: { selectedID in
+                        self.openNewsWorkspace(selecting: selectedID)
+                    }
+                )
+                .frame(width: resolvedNewsW, height: height, alignment: .topLeading)
+            }
         }
+        .frame(height: height)
     }
     
     
@@ -1507,7 +1518,8 @@ struct AnalyticsDashboardView: View {
             predictions: predictions,
             compact: compact,
             cornerRadius: cornerRadius,
-            palette: self.palette
+            palette: self.palette,
+            onOpenDocument: self.onOpenDocument
         )
     }
     
@@ -1548,6 +1560,7 @@ private struct EditorialLedgerRow: View {
     
     let index: Int
     let text: String
+    var subtitle: String? = nil
     let isEmphasized: Bool
     let isHovered: Bool
     let fontSize: CGFloat
@@ -1559,23 +1572,36 @@ private struct EditorialLedgerRow: View {
     let onHoverChange: (Bool) -> Void
     
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
+        HStack(alignment: .firstTextBaseline, spacing: 9) {
             Text(String(format: "%02d", self.index + 1))
-                .font(.system(size: 11, weight: .semibold, design: .monospaced).monospacedDigit())
-                .foregroundStyle(self.index == 0 ? self.palette.emerald : self.palette.mutedInk.opacity(0.72))
-                .frame(width: 20, alignment: .leading)
+                .font(.system(size: 10.5, weight: .semibold, design: .monospaced).monospacedDigit())
+                .foregroundStyle(self.index == 0 ? self.palette.emerald : self.palette.mutedInk.opacity(0.75))
+                .frame(width: 18, alignment: .leading)
             
-            Text(self.text)
-                .font(.system(size: self.fontSize, weight: self.fontWeight))
-                .foregroundStyle(self.palette.pine.opacity(self.isEmphasized || self.isHovered ? 0.96 : 0.86))
-                .lineSpacing(self.lineSpacing)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 2.5) {
+                Text(self.text)
+                    .font(.system(size: self.fontSize, weight: self.fontWeight))
+                    .foregroundStyle(self.palette.pine.opacity(self.isEmphasized || self.isHovered ? 0.96 : 0.86))
+                    .lineSpacing(self.lineSpacing)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                
+                if let subtitle = self.subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.system(size: 10.5, weight: .regular))
+                        .foregroundStyle(self.palette.mutedInk.opacity(0.84))
+                        .lineLimit(1)
+                }
+            }
         }
         .padding(.horizontal, self.horizontalInset)
         .padding(.vertical, self.verticalPad)
-        .contentShape(Rectangle())
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(self.isHovered ? self.palette.inset.opacity(0.72) : Color.clear)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         .onHover { hovering in
             self.onHoverChange(hovering)
         }
@@ -1583,7 +1609,7 @@ private struct EditorialLedgerRow: View {
 }
 
 
-/// Clean Swiss-grid editorial "干了啥" card (no refresh button, aligned indexed ledger).
+/// Clean Swiss-grid editorial "干了啥" card (tight, balanced rhythm with zero cavernous bottom void).
 private struct DoneTodayEditorialCard: View {
     
     let points: [String]
@@ -1595,24 +1621,33 @@ private struct DoneTodayEditorialCard: View {
     
     
     var body: some View {
-        let outerH: CGFloat = self.compact ? 14 : 18
-        let outerV: CGFloat = self.compact ? 12 : 16
-        let scrollOuterH: CGFloat = self.compact ? 8 : 10
+        let outerH: CGFloat = self.compact ? 12 : 15
+        let outerV: CGFloat = self.compact ? 10 : 12
+        let scrollOuterH: CGFloat = self.compact ? 6 : 8
         let rowInsetH: CGFloat = outerH - scrollOuterH
+        let rowPadV: CGFloat = self.compact ? 6.5 : (self.points.count <= 3 ? 9 : 7)
         
         VStack(alignment: .leading, spacing: 0) {
-            Text("干了啥")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(self.palette.pine)
-                .frame(height: 24, alignment: .leading)
-                .padding(.horizontal, outerH)
+            HStack(alignment: .center, spacing: 6) {
+                Text("干了啥")
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(self.palette.pine)
+                Spacer(minLength: 4)
+                if !self.points.isEmpty {
+                    Text("\(self.points.count) 条")
+                        .font(.system(size: 11, weight: .medium).monospacedDigit())
+                        .foregroundStyle(self.palette.mutedInk.opacity(0.78))
+                }
+            }
+            .frame(height: 20)
+            .padding(.horizontal, outerH)
             
             Rectangle()
                 .fill(self.palette.hairline)
                 .frame(height: 0.75)
                 .padding(.horizontal, outerH)
-                .padding(.top, 8)
-                .padding(.bottom, 4)
+                .padding(.top, 6)
+                .padding(.bottom, 3)
             
             ScrollView(.vertical, showsIndicators: false) {
                 if self.points.isEmpty {
@@ -1621,15 +1656,15 @@ private struct DoneTodayEditorialCard: View {
                         .foregroundStyle(self.palette.mutedInk)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, rowInsetH)
-                        .padding(.vertical, 12)
+                        .padding(.vertical, 10)
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(self.points.enumerated()), id: \.offset) { offset, point in
                             if offset > 0 {
                                 Rectangle()
-                                    .fill(self.palette.hairline.opacity(0.85))
-                                    .frame(height: 0.7)
-                                    .padding(.leading, rowInsetH + 30)
+                                    .fill(self.palette.hairline.opacity(0.75))
+                                    .frame(height: 0.65)
+                                    .padding(.leading, rowInsetH + 27)
                                     .padding(.trailing, rowInsetH)
                             }
                             EditorialLedgerRow(
@@ -1637,11 +1672,11 @@ private struct DoneTodayEditorialCard: View {
                                 text: point,
                                 isEmphasized: offset == 0,
                                 isHovered: self.hoveredRow == offset,
-                                fontSize: 13,
+                                fontSize: 12.8,
                                 fontWeight: .regular,
-                                lineSpacing: 4,
+                                lineSpacing: 3.5,
                                 horizontalInset: rowInsetH,
-                                verticalPad: self.compact ? 8.5 : 10,
+                                verticalPad: rowPadV,
                                 palette: self.palette
                             ) { hovering in
                                 if hovering {
@@ -1652,7 +1687,7 @@ private struct DoneTodayEditorialCard: View {
                             }
                         }
                     }
-                    .padding(.bottom, 4)
+                    .padding(.bottom, 2)
                 }
             }
             .padding(.horizontal, scrollOuterH)
@@ -1664,36 +1699,46 @@ private struct DoneTodayEditorialCard: View {
 }
 
 
-/// Clean Swiss-grid editorial "要干啥" card aligned 1:1 with "干了啥" (no refresh button, concise non-bracketed items).
+/// Clean Swiss-grid editorial "要干啥" card aligned 1:1 with "干了啥" with clickable source-doc links.
 private struct NextActionsEditorialCard: View {
     
     let predictions: [DocumentActionPrediction]
     let compact: Bool
     var cornerRadius: CGFloat = 18
     let palette: DashPalette
+    var onOpenDocument: ((StoredDocumentRecord) -> Void)? = nil
     
     @State private var hoveredID: String?
     
     
     var body: some View {
-        let outerH: CGFloat = self.compact ? 14 : 18
-        let outerV: CGFloat = self.compact ? 12 : 16
-        let scrollOuterH: CGFloat = self.compact ? 8 : 10
+        let outerH: CGFloat = self.compact ? 12 : 15
+        let outerV: CGFloat = self.compact ? 10 : 12
+        let scrollOuterH: CGFloat = self.compact ? 6 : 8
         let rowInsetH: CGFloat = outerH - scrollOuterH
+        let rowPadV: CGFloat = self.compact ? 6.5 : (self.predictions.count <= 4 ? 8 : 6.5)
         
         VStack(alignment: .leading, spacing: 0) {
-            Text("要干啥")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(self.palette.pine)
-                .frame(height: 24, alignment: .leading)
-                .padding(.horizontal, outerH)
+            HStack(alignment: .center, spacing: 6) {
+                Text("要干啥")
+                    .font(.system(size: 13.5, weight: .semibold))
+                    .foregroundStyle(self.palette.pine)
+                Spacer(minLength: 4)
+                if !self.predictions.isEmpty {
+                    Text("\(self.predictions.count) 项")
+                        .font(.system(size: 11, weight: .medium).monospacedDigit())
+                        .foregroundStyle(self.palette.mutedInk.opacity(0.78))
+                }
+            }
+            .frame(height: 20)
+            .padding(.horizontal, outerH)
             
             Rectangle()
                 .fill(self.palette.hairline)
                 .frame(height: 0.75)
                 .padding(.horizontal, outerH)
-                .padding(.top, 8)
-                .padding(.bottom, 4)
+                .padding(.top, 6)
+                .padding(.bottom, 3)
             
             ScrollView(.vertical, showsIndicators: false) {
                 if self.predictions.isEmpty {
@@ -1702,27 +1747,30 @@ private struct NextActionsEditorialCard: View {
                         .foregroundStyle(self.palette.mutedInk)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, rowInsetH)
-                        .padding(.vertical, 12)
+                        .padding(.vertical, 10)
                 } else {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(self.predictions.enumerated()), id: \.element.id) { idx, pred in
                             if idx > 0 {
                                 Rectangle()
-                                    .fill(self.palette.hairline.opacity(0.85))
-                                    .frame(height: 0.7)
-                                    .padding(.leading, rowInsetH + 30)
+                                    .fill(self.palette.hairline.opacity(0.75))
+                                    .frame(height: 0.65)
+                                    .padding(.leading, rowInsetH + 27)
                                     .padding(.trailing, rowInsetH)
                             }
-                            EditorialLedgerRow(
+                            let sourceLabel = self.resolvedSubtitle(for: pred)
+                            let linkedDoc = self.resolveDocument(for: pred)
+                            let row = EditorialLedgerRow(
                                 index: idx,
                                 text: pred.action,
+                                subtitle: sourceLabel,
                                 isEmphasized: idx == 0,
                                 isHovered: self.hoveredID == pred.id,
-                                fontSize: 13.2,
+                                fontSize: 12.8,
                                 fontWeight: .medium,
-                                lineSpacing: 3,
+                                lineSpacing: 2.5,
                                 horizontalInset: rowInsetH,
-                                verticalPad: self.compact ? 9 : 12.5,
+                                verticalPad: rowPadV,
                                 palette: self.palette
                             ) { hovering in
                                 if hovering {
@@ -1731,9 +1779,20 @@ private struct NextActionsEditorialCard: View {
                                     self.hoveredID = nil
                                 }
                             }
+                            if let linkedDoc, let onOpenDocument = self.onOpenDocument {
+                                Button {
+                                    onOpenDocument(linkedDoc)
+                                } label: {
+                                    row
+                                }
+                                .buttonStyle(.plain)
+                                .pointerStyle(.link)
+                            } else {
+                                row
+                            }
                         }
                     }
-                    .padding(.bottom, 4)
+                    .padding(.bottom, 2)
                 }
             }
             .padding(.horizontal, scrollOuterH)
@@ -1741,6 +1800,24 @@ private struct NextActionsEditorialCard: View {
         .padding(.vertical, outerV)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .dashboardCardSurface(palette: self.palette, cornerRadius: self.cornerRadius, showsShadow: false)
+    }
+    
+    
+    private func resolvedSubtitle(for pred: DocumentActionPrediction) -> String? {
+        let title = pred.sourceDocumentTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty,
+              !GeneratedDocumentName.isGeneratedName(title),
+              !pred.action.localizedCaseInsensitiveContains(title)
+        else { return nil }
+        return title
+    }
+    
+    
+    private func resolveDocument(for pred: DocumentActionPrediction) -> StoredDocumentRecord? {
+        guard let targetID = pred.sourceDocumentID, !targetID.isEmpty else { return nil }
+        return CotLocalDatabase.shared.documents.first {
+            $0.id == targetID || $0.filePath == targetID
+        }
     }
 }
 
@@ -1760,17 +1837,17 @@ private struct DashboardNewsColumnCard: View {
     
     var body: some View {
         let items = self.newsService.feedItems(for: self.newsService.selectedCategory)
-        let outerH: CGFloat = (self.compact || self.tightPadding) ? 14 : 18
-        let outerV: CGFloat = (self.compact || self.tightPadding) ? 12 : 16
+        let outerH: CGFloat = (self.compact || self.tightPadding) ? 12 : 15
+        let outerV: CGFloat = (self.compact || self.tightPadding) ? 10 : 12
         
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Button {
                     self.onOpenWorkspace(nil)
                 } label: {
                     HStack(spacing: 5) {
                         Text("NEWS")
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(.system(size: 13.5, weight: .semibold))
                             .foregroundStyle(self.palette.pine)
                         
                         Image(systemName: "chevron.right")
@@ -1829,17 +1906,17 @@ private struct DashboardNewsColumnCard: View {
                     }
                 }
             }
-            .frame(height: 24)
+            .frame(height: 22)
             
             GeometryReader { geo in
                 let colCount = (!self.compact && geo.size.width >= 200) ? 2 : 1
-                let rowCount = geo.size.height >= 166 ? 2 : 1
+                let rowCount = geo.size.height >= 150 ? 2 : 1
                 let slotCount = colCount * rowCount
-                let gridGap: CGFloat = 9
-                let slotH: CGFloat = max(84, floor((geo.size.height - CGFloat(max(0, rowCount - 1)) * gridGap) / CGFloat(rowCount)))
-                let showFooterLine = (slotH >= 122)
-                let textReservedH: CGFloat = showFooterLine ? 60 : 42
-                let coverH: CGFloat = max(48, floor(slotH - textReservedH))
+                let gridGap: CGFloat = 8
+                let slotH: CGFloat = max(72, floor((geo.size.height - CGFloat(max(0, rowCount - 1)) * gridGap) / CGFloat(rowCount)))
+                let showFooterLine = (slotH >= 114)
+                let textReservedH: CGFloat = showFooterLine ? 54 : 36
+                let coverH: CGFloat = max(40, floor(slotH - textReservedH))
                 let activeItems = Array(items.prefix(slotCount))
                 
                 if activeItems.isEmpty {
@@ -3149,21 +3226,22 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.vertical, 2)
                     
-                    // Borderless identity + telemetry strip seamlessly resting in the progressive-blur zone
+                    // Borderless identity + telemetry strip seamlessly fused with the vivid scenic backdrop
                     HStack(alignment: .center, spacing: 0) {
-                        self.identityLockup(streakDays: streakDays)
-                            .frame(width: self.compact ? 182 : 218, alignment: .leading)
+                        self.identityLockup(streakDays: streakDays, overPhoto: hasPhoto)
+                            .frame(width: self.compact ? 182 : 216, alignment: .leading)
                         
                         Rectangle()
-                            .fill(self.palette.hairlineStrong.opacity(0.65))
-                            .frame(width: 0.75, height: self.compact ? 24 : 28)
-                            .padding(.horizontal, self.compact ? 12 : 18)
+                            .fill(hasPhoto ? Color.white.opacity(0.28) : self.palette.hairlineStrong.opacity(0.65))
+                            .frame(width: 0.75, height: self.compact ? 22 : 26)
+                            .padding(.horizontal, self.compact ? 12 : 16)
                         
                         self.telemetryMatrixZone(
                             todayTotal: todayTotal,
                             streakDays: streakDays,
                             avg14: avg14,
-                            displayMood: displayMood
+                            displayMood: displayMood,
+                            overPhoto: hasPhoto
                         )
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -3580,31 +3658,44 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
     }
     
     
-    private func identityLockup(streakDays: Int) -> some View {
+    private func identityLockup(streakDays: Int, overPhoto: Bool) -> some View {
         let tierBadge = self.hasProLicense ? "PRO" : "PASS"
         let subLabel = "#\(String(self.serialCode.prefix(4)))"
+        let primaryInk: Color = overPhoto ? .white : self.palette.pine
+        let secondaryInk: Color = overPhoto ? Color.white.opacity(0.76) : self.palette.mutedInk
+        let textShadow: Color = overPhoto ? Color.black.opacity(0.28) : .clear
         
-        return HStack(alignment: .center, spacing: 12) {
-            self.authorPortrait(size: self.compact ? 40 : 46)
+        return HStack(alignment: .center, spacing: 11) {
+            self.authorPortrait(size: self.compact ? 38 : 44)
             
             VStack(alignment: .leading, spacing: 3) {
                 Text(self.profile.displayName)
-                    .font(.system(size: self.compact ? 16.5 : 19, weight: .bold))
-                    .foregroundStyle(self.palette.pine)
+                    .font(.system(size: self.compact ? 16 : 18.5, weight: .bold))
+                    .foregroundStyle(primaryInk)
+                    .shadow(color: textShadow, radius: 2.5, y: 1)
                     .lineLimit(1)
                     .minimumScaleFactor(0.80)
                 
                 HStack(spacing: 6) {
                     Text(tierBadge)
                         .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                        .foregroundStyle(self.palette.accentFill)
+                        .foregroundStyle(overPhoto ? .white : self.palette.accentFill)
                         .padding(.horizontal, 6)
                         .frame(height: 16)
-                        .background(self.palette.tokens.positivePillBg, in: Capsule())
+                        .background(
+                            overPhoto ? Color.white.opacity(0.18) : self.palette.tokens.positivePillBg,
+                            in: Capsule()
+                        )
+                        .overlay {
+                            if overPhoto {
+                                Capsule().strokeBorder(Color.white.opacity(0.32), lineWidth: 0.6)
+                            }
+                        }
                     
                     Text(subLabel)
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundStyle(self.palette.mutedInk)
+                        .foregroundStyle(secondaryInk)
+                        .shadow(color: textShadow, radius: 1.5, y: 0.5)
                         .lineLimit(1)
                 }
             }
@@ -3618,29 +3709,38 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
         todayTotal: Int,
         streakDays: Int,
         avg14: Int,
-        displayMood: String
+        displayMood: String,
+        overPhoto: Bool
     ) -> some View {
         let rhythmBars = Array(self.snapshot.busyness.slices.suffix(6))
+        let primaryInk: Color = overPhoto ? .white : self.palette.pine
+        let labelInk: Color = overPhoto ? Color.white.opacity(0.76) : self.palette.mutedInk
+        let accentInk: Color = overPhoto ? Color(red: 0.62, green: 0.84, blue: 1.0) : self.palette.accentFill
+        let inactiveBar: Color = overPhoto ? Color.white.opacity(0.28) : self.palette.accentFill.opacity(0.22)
+        let textShadow: Color = overPhoto ? Color.black.opacity(0.26) : .clear
         
         return HStack(alignment: .center, spacing: 0) {
             self.headerStatBlock(
                 label: AppLanguage.text("今日码字", en: "Today"),
                 value: todayTotal.formatted(),
-                unit: AppLanguage.text("字", en: "ch")
+                unit: AppLanguage.text("字", en: "ch"),
+                overPhoto: overPhoto
             )
             .frame(maxWidth: .infinity, alignment: .leading)
             
             self.headerStatBlock(
                 label: AppLanguage.text("连续", en: "Streak"),
                 value: "\(streakDays)",
-                unit: AppLanguage.text("天", en: "d")
+                unit: AppLanguage.text("天", en: "d"),
+                overPhoto: overPhoto
             )
             .frame(maxWidth: .infinity, alignment: .leading)
             
             self.headerStatBlock(
                 label: AppLanguage.text("年度活跃", en: "Active"),
                 value: "\(self.snapshot.yearlyHeatmap.activeDays)",
-                unit: AppLanguage.text("天", en: "d")
+                unit: AppLanguage.text("天", en: "d"),
+                overPhoto: overPhoto
             )
             .frame(maxWidth: .infinity, alignment: .leading)
             
@@ -3648,7 +3748,8 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
                 self.headerStatBlock(
                     label: AppLanguage.text("14日均", en: "14d"),
                     value: avg14.formatted(),
-                    unit: AppLanguage.text("字", en: "ch")
+                    unit: AppLanguage.text("字", en: "ch"),
+                    overPhoto: overPhoto
                 )
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -3658,18 +3759,20 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
                     HStack(spacing: 5) {
                         Text(AppLanguage.text("心境", en: "Mood"))
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(self.palette.mutedInk)
+                            .foregroundStyle(labelInk)
                         Text("\(self.snapshot.mood.score)")
                             .font(.system(size: 11, weight: .semibold, design: .rounded).monospacedDigit())
-                            .foregroundStyle(self.palette.accentFill)
+                            .foregroundStyle(accentInk)
                             .contentTransition(.numericText())
                     }
+                    .shadow(color: textShadow, radius: 1.5, y: 0.5)
                     .lineLimit(1)
                     
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(displayMood)
-                            .font(.system(size: 20, weight: .bold))
-                            .foregroundStyle(self.palette.pine)
+                            .font(.system(size: 19.5, weight: .bold))
+                            .foregroundStyle(primaryInk)
+                            .shadow(color: textShadow, radius: 2.5, y: 1)
                             .lineLimit(1)
                             .minimumScaleFactor(0.75)
                         
@@ -3677,7 +3780,7 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
                             ForEach(Array(rhythmBars.enumerated()), id: \.element.id) { _, slice in
                                 let h = max(5, CGFloat(slice.intensity) * 18)
                                 Capsule(style: .continuous)
-                                    .fill(slice.intensity > 0.35 ? self.palette.accentFill : self.palette.accentFill.opacity(0.22))
+                                    .fill(slice.intensity > 0.35 ? accentInk : inactiveBar)
                                     .frame(width: 3, height: h)
                             }
                         }
@@ -3768,22 +3871,29 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
     }
     
     
-    private func headerStatBlock(label: String, value: String, unit: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+    private func headerStatBlock(label: String, value: String, unit: String, overPhoto: Bool) -> some View {
+        let primaryInk: Color = overPhoto ? .white : self.palette.pine
+        let labelInk: Color = overPhoto ? Color.white.opacity(0.76) : self.palette.mutedInk
+        let textShadow: Color = overPhoto ? Color.black.opacity(0.26) : .clear
+        
+        return VStack(alignment: .leading, spacing: 3) {
             Text(label)
                 .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(self.palette.mutedInk)
+                .foregroundStyle(labelInk)
+                .shadow(color: textShadow, radius: 1.5, y: 0.5)
                 .lineLimit(1)
             
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Text(value)
-                    .font(.system(size: self.compact ? 17 : 20, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(self.palette.pine)
+                    .font(.system(size: self.compact ? 17 : 19.5, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(primaryInk)
+                    .shadow(color: textShadow, radius: 2.5, y: 1)
                     .contentTransition(.numericText())
                     .lineLimit(1)
                 Text(unit)
                     .font(.system(size: 11, weight: .regular))
-                    .foregroundStyle(self.palette.mutedInk)
+                    .foregroundStyle(labelInk)
+                    .shadow(color: textShadow, radius: 1.5, y: 0.5)
                     .lineLimit(1)
             }
         }
@@ -3936,14 +4046,14 @@ private struct HeroPhotoFadeBackdrop: View {
                                 .frame(width: renderedW, height: renderedH)
                                 .offset(x: xOffset, y: yOffset)
                                 .frame(width: targetW, height: targetH, alignment: .topLeading)
-                                .blur(radius: 26, opaque: true)
+                                .blur(radius: 30, opaque: true)
                                 .mask(
                                     LinearGradient(
                                         stops: [
                                             .init(color: .clear, location: 0.00),
-                                            .init(color: .clear, location: 0.16),
-                                            .init(color: .white.opacity(0.72), location: 0.34),
-                                            .init(color: .white, location: 0.50),
+                                            .init(color: .clear, location: 0.24),
+                                            .init(color: .white.opacity(0.68), location: 0.42),
+                                            .init(color: .white, location: 0.58),
                                             .init(color: .white, location: 1.00),
                                         ],
                                         startPoint: .top,
@@ -3955,24 +4065,32 @@ private struct HeroPhotoFadeBackdrop: View {
                     }
                 }
                 
-                // Luminous Apple progressive frost veil ensuring effortless contrast across identity strip & Row 2 glass cards
+                // Photo-harmonized atmospheric depth scrim (zero chalky milky-white veil):
+                // keeps upper photo vivid, anchors crisp luminous white typography across the identity/KPI band,
+                // and lets natural photo chroma breathe harmoniously behind Row 1 frosted-glass cards.
+                let deepPhotoScrim = Color(
+                    red: max(0.03, self.bottomTone.red * 0.22),
+                    green: max(0.04, self.bottomTone.green * 0.24),
+                    blue: max(0.06, self.bottomTone.blue * 0.30)
+                )
                 LinearGradient(
                     stops: [
-                        .init(color: .clear, location: 0.00),
-                        .init(color: .clear, location: 0.16),
-                        .init(color: cardColor.opacity(isDark ? 0.44 : 0.56), location: 0.34),
-                        .init(color: cardColor.opacity(isDark ? 0.54 : 0.62), location: 0.54),
-                        .init(color: cardColor.opacity(isDark ? 0.42 : 0.48), location: 1.00),
+                        .init(color: deepPhotoScrim.opacity(0.22), location: 0.00),
+                        .init(color: deepPhotoScrim.opacity(0.06), location: 0.12),
+                        .init(color: deepPhotoScrim.opacity(0.36), location: 0.28),
+                        .init(color: deepPhotoScrim.opacity(isDark ? 0.42 : 0.26), location: 0.44),
+                        .init(color: deepPhotoScrim.opacity(isDark ? 0.32 : 0.12), location: 1.00),
                     ],
                     startPoint: .top,
                     endPoint: .bottom
                 )
                 
-                // Subtle chromatic tint echoing the photo's natural hue across the lower frost
+                // Subtle ambient chromatic wash echoing the cover photo across the lower frosted zone
                 LinearGradient(
                     stops: [
-                        .init(color: .clear, location: 0.28),
-                        .init(color: ambientTint.opacity(isDark ? 0.14 : 0.10), location: 1.00),
+                        .init(color: .clear, location: 0.30),
+                        .init(color: ambientTint.opacity(isDark ? 0.20 : 0.16), location: 0.72),
+                        .init(color: cardColor.opacity(isDark ? 0.22 : 0.14), location: 1.00),
                     ],
                     startPoint: .top,
                     endPoint: .bottom
@@ -6994,8 +7112,15 @@ private extension View {
             .background(
                 ZStack {
                     if overPhoto {
-                        shape.fill(.ultraThinMaterial)
-                        shape.fill(palette.card.opacity(isDark ? (isHighlighted ? 0.56 : 0.48) : (isHighlighted ? 0.66 : 0.56)))
+                        shape
+                            .fill(.regularMaterial)
+                            .shadow(
+                                color: Color.black.opacity(isDark ? 0.22 : 0.07),
+                                radius: 10,
+                                x: 0,
+                                y: 3
+                            )
+                        shape.fill(palette.card.opacity(isDark ? (isHighlighted ? 0.40 : 0.30) : (isHighlighted ? 0.52 : 0.42)))
                     } else {
                         shape
                             .fill(palette.card)
@@ -7013,17 +7138,17 @@ private extension View {
             )
             .overlay {
                 if overPhoto {
-                    // Apple liquid-glass whisper top specular highlight only (zero boxy perimeter wireframe)
+                    // Authentic Apple frosted-glass luminous specular rim fusing cleanly with the photo backdrop
                     shape.strokeBorder(
                         LinearGradient(
                             colors: [
-                                Color.white.opacity(isDark ? (isHighlighted ? 0.24 : 0.15) : (isHighlighted ? 0.80 : 0.62)),
-                                Color.white.opacity(isDark ? 0.03 : 0.10),
+                                Color.white.opacity(isDark ? (isHighlighted ? 0.26 : 0.16) : (isHighlighted ? 0.78 : 0.64)),
+                                Color.white.opacity(isDark ? 0.04 : 0.16),
                             ],
                             startPoint: .top,
                             endPoint: .bottom
                         ),
-                        lineWidth: 0.5
+                        lineWidth: 0.75
                     )
                 } else {
                     shape.strokeBorder(

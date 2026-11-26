@@ -521,9 +521,7 @@ struct ButlerCommandHubView: View {
     @State private var piKernel = PiKernelManager.shared
     @State private var userProfile = UserProfileManager.shared
     @State private var proactiveEngine = CotButlerProactiveEngine.shared
-    @State private var marketService = CotMarketService.shared
-    @State private var podcastService = CotPodcastService.shared
-    @State private var newsService = AIHotNewsService.shared
+    @State private var meetingRoom = ButlerMeetingRoomManager.shared
     @State private var webController = BeautifulAgentWebController()
     @State private var availableModels: [BeautifulAgentModelPayload] = []
     @State private var quotedExcerpt: String? = nil
@@ -544,13 +542,16 @@ struct ButlerCommandHubView: View {
         guard self.isDockedPane, let surfaceColor else {
             return (nil, nil)
         }
-        let srgb = NSColor(surfaceColor).usingColorSpace(.sRGB) ?? NSColor(surfaceColor)
-        let target: NSColor = isDark ? .white : .black
+        let fallbackSRGB = isDark
+            ? NSColor(srgbRed: 0.11, green: 0.12, blue: 0.14, alpha: 1.0)
+            : NSColor(srgbRed: 0.98, green: 0.98, blue: 0.99, alpha: 1.0)
+        let srgb = NSColor(surfaceColor).usingColorSpace(.sRGB) ?? fallbackSRGB
+        let targetComponent: CGFloat = isDark ? 1.0 : 0.0
         let ratio: CGFloat = isDark ? 0.035 : 0.025
         let blended = NSColor(
-            srgbRed: srgb.redComponent * (1 - ratio) + target.redComponent * ratio,
-            green: srgb.greenComponent * (1 - ratio) + target.greenComponent * ratio,
-            blue: srgb.blueComponent * (1 - ratio) + target.blueComponent * ratio,
+            srgbRed: srgb.redComponent * (1 - ratio) + targetComponent * ratio,
+            green: srgb.greenComponent * (1 - ratio) + targetComponent * ratio,
+            blue: srgb.blueComponent * (1 - ratio) + targetComponent * ratio,
             alpha: 1.0
         )
         if self.hasCustomBackground {
@@ -589,6 +590,7 @@ struct ButlerCommandHubView: View {
             callbacks: self.buildCallbacks(),
             cornerRadius: self.panelCornerRadius
         )
+        .equatable()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             self.reloadModels()
@@ -761,6 +763,7 @@ struct ButlerCommandHubView: View {
         }
         
         let slashCommands: [BeautifulAgentSlashCommandPayload] = [
+            .init(key: "meeting", name: "/meeting", desc: AppLanguage.text("进入会议室召集所有 Bot 复盘汇报", en: "Convene all bots in Meeting Room"), insertText: "/meeting "),
             .init(key: "market", name: "/market", desc: AppLanguage.text("查实时股价并分析走势", en: "Lookup live stock quote"), insertText: "/market "),
             .init(key: "news", name: "/news", desc: AppLanguage.text("汇总今天最值得关注的 AI/科技热点", en: "Summarize today's news"), insertText: "/news "),
             .init(key: "memory", name: "/memory", desc: AppLanguage.text("记住我的长期偏好或习惯", en: "Save to long-term memory"), insertText: "/memory "),
@@ -772,7 +775,9 @@ struct ButlerCommandHubView: View {
         let isDark = self.resolvedIsDark
         let surfaces = self.resolvedThemeSurfaces(isDark: isDark)
         let _ = self.proactiveEngine.revision
+        let _ = self.meetingRoom.revision
         let workers = self.proactiveEngine.workers
+        let meetingBots = self.meetingRoom.participantRoster(botStore: self.botStore)
         
         return BeautifulAgentHostStatePayload(
             mode: "butler",
@@ -811,7 +816,11 @@ struct ButlerCommandHubView: View {
             themePageHex: surfaces.pageHex,
             themeCanvasHex: surfaces.canvasHex,
             proactiveCards: nil,
-            backgroundWorkers: workers
+            backgroundWorkers: workers,
+            meetingRoomActive: self.meetingRoom.isActive,
+            meetingRoomIsConvening: self.meetingRoom.isConvening,
+            meetingRoomMessages: self.meetingRoom.messages,
+            meetingRoomBots: meetingBots
         )
     }
     
@@ -967,7 +976,19 @@ struct ButlerCommandHubView: View {
         let handleSendRich: (String, String, [ButlerDocumentAttachment], String?) -> Void = { prompt, quote, attachedDocs, delegatedBotID in
             let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed == "/new" {
+                self.meetingRoom.setActive(false)
                 self.butler.startNewSession(workspaceID: self.butler.activeWorkspaceID, workspacePath: self.butler.activeWorkspacePath)
+                return
+            }
+            if MeetingRoomRouter.isMeetingTriggerInButlerChat(trimmed) {
+                let agenda = trimmed.hasPrefix("/meeting")
+                    ? String(trimmed.dropFirst("/meeting".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                    : trimmed
+                self.meetingRoom.setActive(true)
+                let finalAgenda = agenda.isEmpty ? AppLanguage.text("汇总一下今天的信息", en: "Summarize today's updates") : agenda
+                Task {
+                    await self.meetingRoom.submitPrompt(finalAgenda, explicitBotID: delegatedBotID)
+                }
                 return
             }
             let effectiveQuote = quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1032,15 +1053,19 @@ struct ButlerCommandHubView: View {
             _ = try? PiKernelManager.shared.syncWorkspace()
         }
         cb.onNewSession = {
+            self.meetingRoom.setActive(false)
             self.butler.startNewSession(workspaceID: self.butler.activeWorkspaceID, workspacePath: self.butler.activeWorkspacePath)
         }
         cb.onNewSessionInWorkspace = { wsPath in
+            self.meetingRoom.setActive(false)
             self.butler.startNewSession(workspacePath: wsPath)
         }
         cb.onNewSessionInWorkspaceTarget = { wsID, wsPath in
+            self.meetingRoom.setActive(false)
             self.butler.startNewSession(workspaceID: wsID, workspacePath: wsPath)
         }
         cb.onSelectSession = { id in
+            self.meetingRoom.setActive(false)
             self.butler.selectSession(id)
         }
         cb.onDeleteSession = { id in
@@ -1136,6 +1161,21 @@ struct ButlerCommandHubView: View {
         }
         cb.onDismissWorker = { id in
             self.proactiveEngine.dismissWorker(id: id)
+        }
+        cb.onToggleMeetingRoom = { active in
+            self.meetingRoom.setActive(active)
+        }
+        cb.onSendMeetingPrompt = { prompt, botID in
+            self.meetingRoom.setActive(true)
+            Task {
+                await self.meetingRoom.submitPrompt(prompt, explicitBotID: botID)
+            }
+        }
+        cb.onClearMeetingRoom = {
+            self.meetingRoom.clearMeeting()
+        }
+        cb.onAbortMeetingRoom = {
+            self.meetingRoom.abortMeeting()
         }
         return cb
     }

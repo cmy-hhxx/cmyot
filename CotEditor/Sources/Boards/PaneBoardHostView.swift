@@ -31,9 +31,11 @@ import SwiftUI
 @MainActor @Observable
 final class PaneBoardControllerModel {
     
+    @ObservationIgnored private var isUpdatingFromHost = false
+    
     var state: PaneBoardState {
         didSet {
-            guard self.state != oldValue else { return }
+            guard !self.isUpdatingFromHost, self.state != oldValue else { return }
             self.onStateChanged?(self.state)
         }
     }
@@ -42,6 +44,15 @@ final class PaneBoardControllerModel {
     
     init(state: PaneBoardState) {
         self.state = state
+    }
+    
+    
+    /// Updates state pushed down from `EditorViewController` without echoing back through `onStateChanged`.
+    func setStateFromHost(_ newState: PaneBoardState) {
+        guard self.state != newState else { return }
+        self.isUpdatingFromHost = true
+        self.state = newState
+        self.isUpdatingFromHost = false
     }
 }
 
@@ -180,9 +191,7 @@ struct PaneBoardHostView: View {
             .padding(.trailing, 8)
             .help(AppLanguage.text("设置当前看板背景", en: "Board Background"))
             .onHover { hovering in
-                withAnimation(.easeOut(duration: 0.14)) {
-                    self.isBgButtonHovered = hovering
-                }
+                self.isBgButtonHovered = hovering
             }
             .popover(isPresented: self.$isShowingBgPicker, arrowEdge: .leading) {
                 BackgroundLibraryPickerPopover(

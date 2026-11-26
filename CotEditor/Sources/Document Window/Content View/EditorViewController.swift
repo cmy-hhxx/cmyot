@@ -762,7 +762,7 @@ final class EditorViewController: NSSplitViewController {
         if let boardState = tab.boardState {
             let entry: (controller: NSHostingController<PaneBoardHostView>, model: PaneBoardControllerModel)
             if let existing = self.boardControllers[tabKey] {
-                existing.model.state = boardState
+                existing.model.setStateFromHost(boardState)
                 entry = existing
             } else {
                 let model = PaneBoardControllerModel(state: boardState)

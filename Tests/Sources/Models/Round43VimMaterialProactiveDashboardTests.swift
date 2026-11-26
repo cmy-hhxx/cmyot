@@ -254,8 +254,21 @@ struct Round43VimMaterialProactiveDashboardTests {
         #expect(laptop.unifiedTopStageHeight == laptop.heroHeight + laptop.unifiedInnerGap + laptop.row1Height + laptop.unifiedBottomPad)
         let stageAspect = 1236.0 / laptop.unifiedTopStageHeight
         #expect(stageAspect < 3.6)
-        #expect(laptop.heroHeight <= 158)
+        #expect(laptop.heroHeight <= 146)
+        #expect(laptop.outerPadV <= 9)
+        #expect(laptop.row2Height <= 238)
         #expect(laptop.totalContentHeight <= 700)
+        
+        // Tall display (1440×900) avoids giant top/bottom dead margins and keeps Row 2 compact & void-free
+        let desktop = DashboardViewportLayout.resolve(
+            viewportSize: CGSize(width: 1440, height: 900),
+            isEmbeddedInSettings: false,
+            hasHeroPhoto: true
+        )
+        #expect(desktop.needsVerticalScroll == false)
+        #expect(desktop.outerPadV <= 10)
+        #expect(desktop.row2Height <= 238)
+        #expect(desktop.row1Height >= 320)
         
         // Verify Apple HIG concentric corner radius law (`innerRadius + inset == outerRadius`)
         #expect(DashboardCornerMetrics.innerCardRadius(compact: false) + DashboardCornerMetrics.unifiedInset(compact: false) == DashboardCornerMetrics.unifiedOuterRadius(compact: false))
@@ -1514,5 +1527,467 @@ struct Round43VimMaterialProactiveDashboardTests {
         let rankedTargets = OrganizeTopicSignature.rankedMergeCandidates(for: inputs[1], in: inputs)
         #expect(rankedTargets.first?.item.id == "doc:cot-r3")
         #expect(rankedTargets.first?.badge == "同系列")
+    }
+    
+    
+    // MARK: 16. Deep Substance Hollow-Doc Purge, Workstream Discovery, AI Delete Guardrails & Lossless Synthesis
+    
+    @Test func oneClickOrganizePurgesTitleOnlyAndEmptyTemplatesAndProtectsRealNotes() {
+        // 1. Title-only / empty-template / title-echo scratch docs MUST be classified as junk.
+        #expect(DocumentOrganizeFunnel.classifyJunk(title: "啃瓜的小浣熊", content: "# 新版星图设计方案\n") == .titleOnly)
+        #expect(DocumentOrganizeFunnel.classifyJunk(title: "架构重构计划", content: "架构重构计划") == .titleOnly)
+        #expect(DocumentOrganizeFunnel.classifyJunk(title: "晚风的熊猫", content: "文档中心重构方案") == .titleOnly)
+        
+        let longEmptyTemplate = """
+        # Q4 架构升级方案
+
+        ## 一、背景
+        待补充
+
+        ## 二、目标
+        - [ ] 
+        - [ ] 待定
+
+        ## 三、里程碑排期
+        | 阶段 | 负责人 | 截止日期 |
+        |---|---|---|
+        | | | |
+        | TBD | 暂无 | 待填写 |
+        """
+        #expect(longEmptyTemplate.count > 120)
+        #expect(DocumentOrganizeFunnel.classifyJunk(title: "Q4 架构升级方案", content: longEmptyTemplate) == .emptyTemplate)
+        
+        // 2. Real concise notes, URLs, code, populated tables, and saved disk files MUST be preserved.
+        #expect(DocumentOrganizeFunnel.classifyJunk(title: "啃瓜的小浣熊", content: "明天下午3点找张三对齐接口") == nil)
+        #expect(DocumentOrganizeFunnel.classifyJunk(title: "啃瓜的小浣熊", content: "https://github.com/coteditor/CotEditor") == nil)
+        #expect(DocumentOrganizeFunnel.classifyJunk(title: "啃瓜的小浣熊", content: "import Foundation\nfunc run() { print(1) }") == nil)
+        #expect(DocumentOrganizeFunnel.classifyJunk(title: "readme.md", content: "# Project Title", filePath: "/tmp/readme.md") == nil)
+        
+        let populatedTable = """
+        | 模块 | 耗时 |
+        |---|---|
+        | StarMap | 12ms |
+        """
+        #expect(DocumentOrganizeFunnel.classifyJunk(title: "性能数据", content: populatedTable) == nil)
+    }
+    
+    
+    @Test func aiDeleteValidationAndLosslessSynthesisGuardrailsAnd30DocWorkspaceOrganize() async throws {
+        let now = Date()
+        
+        // 1. Parse AI JSON with deletes + merges + assignments, then enforce strict delete guardrails.
+        let aiJSON = """
+        {
+          "deletes": [
+            {"id": "d-stub", "reason": "未展开的临时占位"},
+            {"id": "d-real", "reason": "误删测试"},
+            {"id": "d-file", "reason": "误删磁盘文件"}
+          ],
+          "merges": [],
+          "assignments": [
+            {"id": "d-real", "group": "CotEditor 研发", "suggestedTitle": "星图性能调优记录"}
+          ]
+        }
+        """
+        let parsed = try #require(DocumentCenterAgentOrganizer.parsePlan(from: aiJSON, validIDs: ["d-stub", "d-real", "d-file"]))
+        #expect(parsed.deletes.count == 3)
+        
+        let guardDocs: [OrganizeFunnelInput] = [
+            OrganizeFunnelInput(id: "d-stub", dbRecordID: "d-stub", title: "想法", filePath: nil, syntax: "Markdown", currentGroup: "", content: "回头想想怎么做。", updatedAt: now, isOpenNow: false, isUntitled: false),
+            OrganizeFunnelInput(id: "d-real", dbRecordID: "d-real", title: "笔记1", filePath: nil, syntax: "Markdown", currentGroup: "", content: String(repeating: "星图布局渲染耗时从 48ms 压降到 11ms，缓存命中率提升至 96%。\n", count: 6), updatedAt: now, isOpenNow: false, isUntitled: false),
+            OrganizeFunnelInput(id: "d-file", dbRecordID: "d-file", title: "stub.md", filePath: "/tmp/stub.md", syntax: "Markdown", currentGroup: "", content: "回头想想。", updatedAt: now, isOpenNow: false, isUntitled: false),
+        ]
+        let baseFunnel = OrganizeFunnelStageResult(junkToDelete: [], mergeClusters: [], survivors: guardDocs)
+        let deleteOutcome = DocumentOrganizeFunnel.applyValidatedAIDeletes(
+            parsed.deletes,
+            baseFunnel: baseFunnel,
+            rawAssignments: parsed.assignments
+        )
+        // Sparse stub IS deleted with AI's reason; substantive doc & saved disk file are strictly protected!
+        #expect(deleteOutcome.funnel.junkToDelete.map(\.item.id) == ["d-stub"])
+        #expect(deleteOutcome.funnel.junkToDelete.first?.displayReason == "未展开的临时占位")
+        #expect(Set(deleteOutcome.funnel.survivors.map(\.id)) == ["d-real", "d-file"])
+        
+        // 2. Weak scratch titles are recognized while real user titles & saved files stay untouched.
+        #expect(DocumentCenterAgentOrganizer.isWeakScratchTitle("笔记1", hasFilePath: false))
+        #expect(DocumentCenterAgentOrganizer.isWeakScratchTitle("方案 2", hasFilePath: false))
+        #expect(DocumentCenterAgentOrganizer.isWeakScratchTitle("想法", hasFilePath: false))
+        #expect(!DocumentCenterAgentOrganizer.isWeakScratchTitle("AIME r533 重评方案", hasFilePath: false))
+        #expect(!DocumentCenterAgentOrganizer.isWeakScratchTitle("笔记1", hasFilePath: true))
+        
+        // 3. Multi-section AI dossier includes full body for short docs and head/mid/tail for long docs.
+        let longBody = "HEAD_ANCHOR " + String(repeating: "中间迭代讨论内容。", count: 160) + " TAIL_ANCHOR"
+        let dossier = OrganizeDocumentAnalyzer.buildAIDossier(
+            for: OrganizeFunnelInput(id: "d-long", dbRecordID: "d-long", title: "长文档", filePath: nil, syntax: "Markdown", currentGroup: "", content: longBody, updatedAt: now, isOpenNow: false, isUntitled: false),
+            index: 1,
+            totalInBatch: 30,
+            bloatedGroups: []
+        )
+        #expect(dossier.contains("HEAD_ANCHOR"))
+        #expect(dossier.contains("[中段]"))
+        #expect(dossier.contains("TAIL_ANCHOR"))
+        
+        // 4. Lossless synthesis factual-retention verifier accepts faithful merges and rejects fact loss.
+        let baseline = """
+        # AIME r533 重评与聚类回写
+        - aime_expert 合并后 157,601 条，verify.json errors=0。
+        - aime_fast 合并后 460,501 条，产物写入 /mnt/aime_eval_ssd/1_aime/eval_output/0_daily_eval_reeval_r533/。
+        - 内存峰值 10.5 GB，oom_kill 计数 23。
+        """
+        let goodSynth = """
+        以下是合并后的文档：
+        # AIME r533 重评与聚类回写
+        本次 r533 重评产物写入 /mnt/aime_eval_ssd/1_aime/eval_output/0_daily_eval_reeval_r533/，verify.json 校验 errors=0：
+        - aime_expert：157,601 条；aime_fast：460,501 条。
+        - 资源监控：内存峰值 10.5 GB，oom_kill 23 次。
+        """
+        let validated = try #require(OrganizeDocumentAnalyzer.validateSynthesizedContent(goodSynth, localBaseline: baseline))
+        #expect(!validated.hasPrefix("以下是合并"))
+        #expect(validated.contains("157,601"))
+        #expect(validated.contains("460,501"))
+        
+        let lossySummary = "本次重评已完成，整体运行正常，无报错。"
+        #expect(OrganizeDocumentAnalyzer.validateSynthesizedContent(lossySummary, localBaseline: baseline) == nil)
+        
+        // 5. Realistic 30-document messy workspace: hollow docs purged, untitled + named same-series docs merged,
+        //    weak scratch titles renamed, and workstream groups discovered from inside content!
+        var workspace: [OrganizeFunnelInput] = [
+            // 6 meaningless/hollow docs (MUST ALL BE DELETED)
+            .init(id: "j1", dbRecordID: "j1", title: "啃瓜的小浣熊", filePath: nil, syntax: "Markdown", currentGroup: "技术笔记", content: "# 新建想法\n", updatedAt: now, isOpenNow: false, isUntitled: true),
+            .init(id: "j2", dbRecordID: "j2", title: "项目规划", filePath: nil, syntax: "Markdown", currentGroup: "技术笔记", content: "项目规划", updatedAt: now, isOpenNow: false, isUntitled: false),
+            .init(id: "j3", dbRecordID: "j3", title: "晚风的熊猫", filePath: nil, syntax: "Markdown", currentGroup: "技术笔记", content: "# 周会模板\n## 议题\n待补充\n## 结论\n- [ ] \n", updatedAt: now, isOpenNow: false, isUntitled: true),
+            .init(id: "j4", dbRecordID: "j4", title: "泡茶的烤冷面", filePath: nil, syntax: "Markdown", currentGroup: "技术笔记", content: "文档中心优化方案", updatedAt: now, isOpenNow: false, isUntitled: true),
+            .init(id: "j5", dbRecordID: "j5", title: "test", filePath: nil, syntax: "Plain Text", currentGroup: "技术笔记", content: "asdfghjkl", updatedAt: now, isOpenNow: false, isUntitled: true),
+            .init(id: "j6", dbRecordID: "j6", title: "空白", filePath: nil, syntax: "Plain Text", currentGroup: "技术笔记", content: "   \n---\n   ", updatedAt: now, isOpenNow: false, isUntitled: true),
+            // CotEditor same-series iterations (including an UNTITLED scratch doc whose H1 is `# CotEditor Roadmap 5`!)
+            .init(id: "c1", dbRecordID: "c1", title: "CoTEditor Roadmap 3", filePath: nil, syntax: "Markdown", currentGroup: "技术笔记", content: "# CoTEditor Roadmap 3\n完成星图双指缩放与空格 Quick Look 交互体验升级。", updatedAt: now.addingTimeInterval(-900), isOpenNow: false, isUntitled: false),
+            .init(id: "c2", dbRecordID: "c2", title: "cot优化roadmap 7", filePath: nil, syntax: "Markdown", currentGroup: "技术笔记", content: "# CotEditor 优化 Roadmap 7\n升级文档中心一键整合，清理仅标题文档并按工作主线自动归组。", updatedAt: now.addingTimeInterval(-300), isOpenNow: false, isUntitled: false),
+            .init(id: "c3", dbRecordID: "c3", title: "口袋里的风铃", filePath: nil, syntax: "Markdown", currentGroup: "技术笔记", content: "# CotEditor Roadmap 5\n补齐右键菜单无极缩放与内联图片尺寸持久化能力。", updatedAt: now.addingTimeInterval(-600), isOpenNow: false, isUntitled: true),
+            .init(id: "c4", dbRecordID: "c4", title: "CotEditor 内联图片缩放记录", filePath: nil, syntax: "Markdown", currentGroup: "技术笔记", content: "# CotEditor 内联图片缩放记录\n记录 EditorTextView 双指手势缩放与边界拖拽数学推导。", updatedAt: now, isOpenNow: false, isUntitled: false),
+            .init(id: "c5", dbRecordID: "c5", title: "CotEditor 表格对齐协议", filePath: nil, syntax: "Markdown", currentGroup: "技术笔记", content: "# CotEditor 表格对齐协议\n基于 NSLayoutManager 实测列宽对齐到像素级 Tab Stop。", updatedAt: now, isOpenNow: false, isUntitled: false),
+            // AIME workstream docs (including overlapping r533 fragments)
+            .init(id: "a1", dbRecordID: "a1", title: "笔记1", filePath: nil, syntax: "Markdown", currentGroup: "技术笔记", content: "# AIME r533 重评与回写\n第一批重评 4.5 万条覆盖 aime_fast 与 aime_expert，写入 0_daily_eval_reeval_r533。", updatedAt: now.addingTimeInterval(-500), isOpenNow: false, isUntitled: false),
+            .init(id: "a2", dbRecordID: "a2", title: "写诗的柴犬", filePath: nil, syntax: "Markdown", currentGroup: "技术笔记", content: "# AIME r533 增量聚类核对\naime_fast 460,501 与 aime_expert 157,601 均通过 verify.json 校验，待回写 0_daily_eval_reeval_r533。", updatedAt: now.addingTimeInterval(-200), isOpenNow: false, isUntitled: true),
+            .init(id: "a3", dbRecordID: "a3", title: "AIME Badcase 归因分析", filePath: nil, syntax: "Markdown", currentGroup: "技术笔记", content: "# AIME Badcase 归因分析\n统计误报率下降幅度并抽检高优 badcase 类别分布。", updatedAt: now, isOpenNow: false, isUntitled: false),
+            .init(id: "a4", dbRecordID: "a4", title: "AIME 数据大盘口径文档", filePath: nil, syntax: "Markdown", currentGroup: "技术笔记", content: "# AIME 数据大盘口径文档\n明确日活 trace 去重规则与新旧口径切换日期。", updatedAt: now, isOpenNow: false, isUntitled: false),
+        ]
+        // Add 15 more realistic distinct docs across Weekly/Meetings/Infra to hit exactly 30 documents.
+        let extraTopics: [(id: String, title: String, content: String)] = [
+            ("w1", "2026-11-18 周报", "# 2026-11-18 周报\n本周完成权限中心联调与接口压测。"),
+            ("w2", "2026-11-25 周报", "# 2026-11-25 周报\n本周上线文档星图与表格对齐能力。"),
+            ("w3", "下周排期与待办清单", "# 下周排期与待办清单\n整理核心里程碑与风险点 todo。"),
+            ("m1", "周三产品评审会议纪要", "# 周三产品评审会议纪要\n对齐深浅色对比度与弹窗交互细节。"),
+            ("m2", "周五架构评审例会纪要", "# 周五架构评审例会纪要\n确定 SQLite 批量事务提交方案。"),
+            ("m3", "客户端性能专项同步会", "# 客户端性能专项同步会\n评审帧率监控与内存占用基线。"),
+            ("p1", "权限中心 RBAC 设计方案", "# 权限中心 RBAC 设计方案\n规划多租户角色继承与菜单权限隔离。"),
+            ("p2", "权限中心审批流接口文档", "# 权限中心审批流接口文档\n定义回调签名、幂等键与重试策略。"),
+            ("p3", "权限中心灰度发布清单", "# 权限中心灰度发布清单\n按租户分批放量并监控鉴权延迟。"),
+            ("s1", "部署脚本与 Docker 配置", "import Foundation\nfunc deployWorker() { /* docker compose 发布脚本 */ }"),
+            ("s2", "压测环境 Nginx 调优参数", "# Nginx 调优\n调整 keepalive_timeout 与 worker_connections 应对高并发。"),
+            ("s3", "SQLite 索引优化备忘", "# SQLite 索引优化\n为 documents(group_name, updated_at) 建立复合索引。"),
+            ("r1", "方案2", "# 新手引导精简方案\n去掉冗余浮层，直接通过空间层级传达交互。"),
+            ("r2", "想法", "# 快捷键面板检索优化\n支持拼音首字母与命令模糊匹配。"),
+            ("r3", "读书摘录：信息架构原则", "# 信息架构原则\n按用户心智任务组织层级，避免按文件类型机械切分。"),
+        ]
+        for entry in extraTopics {
+            workspace.append(.init(
+                id: entry.id,
+                dbRecordID: entry.id,
+                title: entry.title,
+                filePath: nil,
+                syntax: entry.id == "s1" ? "Swift" : "Markdown",
+                currentGroup: "技术笔记",
+                content: entry.content,
+                updatedAt: now,
+                isOpenNow: false,
+                isUntitled: DocumentCenterAgentOrganizer.isGenericUntitled(entry.title, hasFilePath: false)
+            ))
+        }
+        #expect(workspace.count == 30)
+        
+        let plan = await DocumentOrganizeFunnel.runFullPipeline(
+            items: workspace,
+            existingGroups: ["技术笔记"],
+            allowRemoteAI: false
+        )
+        
+        // All 6 hollow/meaningless docs purged automatically!
+        #expect(Set(plan.funnel.junkToDelete.map(\.item.id)) == ["j1", "j2", "j3", "j4", "j5", "j6"])
+        
+        // All 3 CotEditor roadmaps (including the untitled "口袋里的风铃"!) merged into ONE clean cluster!
+        let cotRoadmapCluster = try #require(plan.funnel.mergeClusters.first { cluster in
+            let ids = Set([cluster.primary.id] + cluster.duplicates.map(\.id))
+            return ids.contains("c1") && ids.contains("c2") && ids.contains("c3")
+        })
+        #expect(cotRoadmapCluster.mergedContent.contains("双指缩放"))
+        #expect(cotRoadmapCluster.mergedContent.contains("一键整合"))
+        #expect(cotRoadmapCluster.mergedContent.contains("无极缩放"))
+        
+        // AIME r533 fragments merged into 1!
+        #expect(plan.funnel.mergeClusters.contains { cluster in
+            let ids = Set([cluster.primary.id] + cluster.duplicates.map(\.id))
+            return ids.contains("a1") && ids.contains("a2")
+        })
+        
+        // Weak scratch titles ("方案2", "想法") upgraded to crisp content-accurate titles!
+        let r1Assign = try #require(plan.assignments.first(where: { $0.id == "r1" }))
+        let r2Assign = try #require(plan.assignments.first(where: { $0.id == "r2" }))
+        #expect(r1Assign.suggestedTitle == "新手引导精简方案")
+        #expect(r2Assign.suggestedTitle == "快捷键面板检索优化")
+        
+        // Monolithic "技术笔记" cleanly decomposed into real workstreams (CotEditor, AIME, 权限中心, etc.) within target budget!
+        let finalGroupSet = Set(plan.assignments.map(\.group))
+        #expect(finalGroupSet.count >= 3 && finalGroupSet.count <= DocumentOrganizeFunnel.targetMaxGroups(for: plan.assignments.count))
+        #expect(finalGroupSet.contains(where: { $0.lowercased().contains("cot") }))
+        #expect(finalGroupSet.contains(where: { $0.lowercased().contains("aime") }))
+    }
+    
+    
+    // MARK: 17. Butler Tab Conversion Crash Fix, Zero-Loss Backing Doc Persistence & Refined Market/Podcast Boards
+    
+    @Test func butlerTabConversionMountsWithoutAttributeGraphRecursionAndPreservesBackingDraft() throws {
+        // 1. Butler tab icon uses clean restrained SF Symbol (never cliché "sparkles").
+        #expect(PaneBoardKind.butler.symbolName != "sparkles")
+        
+        // 2. PaneBoardControllerModel.setStateFromHost never triggers re-entrant onStateChanged echo loops.
+        let model = PaneBoardControllerModel(state: PaneBoardState(kind: .butler, query: "初始问题"))
+        var echoCount = 0
+        model.onStateChanged = { _ in echoCount += 1 }
+        model.setStateFromHost(PaneBoardState(kind: .butler, query: "宿主刷新"))
+        #expect(echoCount == 0)
+        #expect(model.state.query == "宿主刷新")
+        model.state.query = "用户修改"
+        #expect(echoCount == 1)
+        
+        // 3. Mounting & repeatedly updating PaneBoardHostView in `.butler` mode inside NSHostingView
+        //    must NEVER stack-overflow in SwiftUI's AG::LayoutDescriptor::compare_heap_objects.
+        let hostView = PaneBoardHostView(
+            model: model,
+            onRevertToDocument: {},
+            onOpenNote: { _, _ in }
+        )
+        let hosting = NSHostingView(rootView: hostView)
+        hosting.frame = NSRect(x: 0, y: 0, width: 820, height: 540)
+        hosting.layoutSubtreeIfNeeded()
+        model.setStateFromHost(PaneBoardState(kind: .market, query: "NVDA"))
+        hosting.layoutSubtreeIfNeeded()
+        model.setStateFromHost(PaneBoardState(kind: .podcast, query: "大模型训练"))
+        hosting.layoutSubtreeIfNeeded()
+        model.setStateFromHost(PaneBoardState(kind: .butler, query: "再次切回总管"))
+        hosting.layoutSubtreeIfNeeded()
+        #expect(hosting.bounds.width == 820)
+        #expect(hosting.bounds.height == 540)
+        
+        // 4. BeautifulAgentWebView conforms to Equatable without storing closure graphs.
+        let ctrl = BeautifulAgentWebController()
+        let baseState = BeautifulAgentHostStatePayload(
+            mode: "butler",
+            isDark: false,
+            locale: "zh",
+            botName: "总管",
+            botNickname: "butler",
+            botAvatarDataURL: nil,
+            piAvailable: false,
+            piStatusLabel: nil,
+            isPinnedPanel: false,
+            isDockedPane: true,
+            showSidebar: true,
+            sessions: [],
+            activeSessionID: "s1",
+            messages: [],
+            isStreaming: false,
+            streamingStatusLabel: nil,
+            errorMessage: nil,
+            placeholder: "Ask",
+            greetingName: "Test",
+            greetingSubtitle: nil,
+            articleTitle: nil,
+            articleSource: nil,
+            quotedExcerpt: nil,
+            availableModels: [],
+            selectedModelID: "m1",
+            selectedModelTitle: "m1",
+            effort: nil,
+            suggestions: [],
+            contextSources: [],
+            slashCommands: []
+        )
+        let v1 = BeautifulAgentWebView(state: baseState, controller: ctrl, callbacks: .init(), cornerRadius: 0)
+        let v2 = BeautifulAgentWebView(state: baseState, controller: ctrl, callbacks: .init(), cornerRadius: 0)
+        #expect(v1 == v2)
+        
+        // 5. Unsaved backing document persisted before converting to a board tab is cleanly recoverable from SQLite.
+        let tempDir = FileManager.default.temporaryDirectory
+            .appending(path: "cot-board-draft-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let db = CotLocalDatabase(customURL: tempDir.appending(path: "drafts.sqlite3"))
+        let docID = "doc:unsaved-before-butler"
+        db.saveDocument(
+            id: docID,
+            title: "核心草稿文档",
+            filePath: nil,
+            syntax: "Markdown",
+            content: "# 核心草稿\n这是一份尚未保存到磁盘但绝不能丢失的重要内容。",
+            groupName: ""
+        )
+        let recovered = try #require(db.fetchDocumentRecord(id: "unsaved-before-butler", filePath: nil))
+        #expect(recovered.title == "核心草稿文档")
+        #expect(recovered.content.contains("绝不能丢失的重要内容"))
+    }
+    
+    
+    @Test func localDatabaseInspectorReportsStorageTablesTokensAndMasksSecrets() throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appending(path: "cot-db-inspector-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let db = CotLocalDatabase(customURL: tempDir.appending(path: "vault.sqlite3"))
+        db.saveDocument(
+            id: "doc:inspect-1",
+            title: "数据库架构设计",
+            filePath: nil,
+            syntax: "Markdown",
+            content: "# 数据库设计\n所有用户资产统一持久化到本地 SQLite 文件中，方便随时跨机迁移。",
+            groupName: "架构"
+        )
+        db.set("sk-secret-api-key-value", forKey: CotLocalDatabase.ConfigKey.syncAIProfileAPIKeys)
+        db.executeSQL("""
+        INSERT INTO ai_usage_events (date_key, timestamp, feature, model, provider, input_tokens, output_tokens, latency_ms, success)
+        VALUES ('2026-11-25', 1795610000, 'butler_chat', 'claude-sonnet-4', 'anthropic', 1200, 480, 920, 1);
+        INSERT INTO ai_usage_events (date_key, timestamp, feature, model, provider, input_tokens, output_tokens, latency_ms, success)
+        VALUES ('2026-11-25', 1795610600, 'organize', 'gpt-4.1', 'openai', 2400, 620, 1180, 1);
+        """)
+        
+        let snapshot = db.inspectDatabaseSnapshot()
+        #expect(snapshot.totalBytes > 0)
+        #expect(snapshot.tables.count >= 15)
+        #expect(snapshot.tables.contains(where: { $0.name == "documents" && $0.rowCount == 1 }))
+        #expect(snapshot.tables.contains(where: { $0.name == "ai_usage_events" && $0.rowCount == 2 }))
+        #expect(snapshot.assets.activeDocuments == 1)
+        #expect(snapshot.tokenSummary.totalRequests == 2)
+        #expect(snapshot.tokenSummary.totalInputTokens == 3600)
+        #expect(snapshot.tokenSummary.totalOutputTokens == 1100)
+        #expect(snapshot.tokenSummary.totalTokens == 4700)
+        #expect(snapshot.tokenSummary.byModel.count == 2)
+        #expect(snapshot.tokenSummary.byFeature.count == 2)
+        #expect(snapshot.tokenSummary.dailyTrend.count == 1)
+        #expect(snapshot.tokenSummary.recentEvents.count == 2)
+        
+        // Table preview masks sensitive API keys and rejects unknown/malicious table names safely
+        let configPreview = db.inspectTablePreview(tableName: "configs", limit: 50)
+        let keyIdx = try #require(configPreview.columns.firstIndex(of: "key"))
+        let valIdx = try #require(configPreview.columns.firstIndex(of: "value"))
+        let secretRow = try #require(configPreview.rows.first(where: { $0[keyIdx] == CotLocalDatabase.ConfigKey.syncAIProfileAPIKeys }))
+        #expect(secretRow[valIdx] == "••••••••")
+        
+        let invalidPreview = db.inspectTablePreview(tableName: "documents; DROP TABLE documents;", limit: 10)
+        #expect(invalidPreview.rows.isEmpty)
+        #expect(db.inspectDatabaseSnapshot().assets.activeDocuments == 1)
+        
+        // Compact succeeds without losing data
+        _ = db.compactDatabase()
+        #expect(db.inspectDatabaseSnapshot().assets.activeDocuments == 1)
+        
+        // Sidebar item exists and view mounts cleanly
+        #expect(SidebarSettingsItem.allCases.contains(.database))
+        #expect(!SidebarSettingsItem.database.title.contains("与"))
+        #expect(NSImage(systemSymbolName: SidebarSettingsItem.database.symbolName, accessibilityDescription: nil) != nil)
+        
+        let host = NSHostingView(rootView: LocalDatabaseSettingsView(onExportDatabase: {}, onImportDatabase: {}))
+        host.frame = NSRect(x: 0, y: 0, width: 575, height: 520)
+        host.layoutSubtreeIfNeeded()
+        #expect(host.bounds.width == 575)
+    }
+    
+    
+    @Test func butlerMeetingRoomSupportsStandupDirectAtUpdatesAndButlerGovernanceInIsolation() async throws {
+        // 1. Natural language & slash triggers from normal Butler chat
+        #expect(MeetingRoomRouter.isMeetingTriggerInButlerChat("汇总一下信息"))
+        #expect(MeetingRoomRouter.isMeetingTriggerInButlerChat("/meeting 今天复盘"))
+        #expect(!MeetingRoomRouter.isMeetingTriggerInButlerChat("帮我解释一下 Swift concurrency"))
+        
+        // 2. Routing modes: all-hands standup, direct @Bot callout with refresh, and Butler governance
+        let enabled = AIBotID.allCases
+        let standupPlan = MeetingRoomRouter.parsePrompt(
+            "汇总一下今天的信息",
+            availableBots: enabled,
+            activeTodayBots: [.translate]
+        )
+        if case .allHandsStandup(let participants) = standupPlan.mode {
+            #expect(participants.contains(.organizeAndMerge))
+            #expect(participants.contains(.persona))
+            #expect(participants.contains(.translate))
+            #expect(!participants.contains(.butler))
+        } else {
+            Issue.record("Expected allHandsStandup mode")
+        }
+        
+        let directPlan = MeetingRoomRouter.parsePrompt(
+            "@整理 更新一下当前文档状态",
+            availableBots: enabled
+        )
+        #expect(directPlan.mode == .directCallout(targets: [.organizeAndMerge], shouldRefresh: true))
+        
+        let govPlan = MeetingRoomRouter.parsePrompt(
+            "@总管 让整理师和周报搭子更新一下",
+            availableBots: enabled
+        )
+        if case .butlerGoverned(let subs, let shouldRefresh) = govPlan.mode {
+            #expect(shouldRefresh)
+            #expect(subs.contains(.organizeAndMerge))
+            #expect(subs.contains(.weeklyReport))
+        } else {
+            Issue.record("Expected butlerGoverned mode")
+        }
+        
+        // 3. End-to-end Meeting Room execution stays 100% isolated from butler_messages
+        let tempDir = FileManager.default.temporaryDirectory
+            .appending(path: "cot-meeting-room-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let db = CotLocalDatabase(customURL: tempDir.appending(path: "meeting.sqlite3"))
+        db.saveDocument(
+            id: "doc:standup-1",
+            title: "今日会议室开发记录",
+            filePath: nil,
+            syntax: "Markdown",
+            content: "# 会议室\n完成了独立 Meeting Room 与总管统筹调度。",
+            groupName: "工程"
+        )
+        let manager = ButlerMeetingRoomManager(database: db)
+        
+        // All-hands standup
+        await manager.submitPrompt("汇总一下今天的信息", allowRemoteAI: false)
+        let botReplies = manager.messages.filter { $0.role == "bot" }
+        #expect(botReplies.count >= 4)
+        #expect(botReplies.last?.botID == AIBotID.butler.rawValue)
+        #expect(db.inspectDatabaseSnapshot().assets.butlerMessages == 0)
+        
+        // Direct @Bot refresh callout
+        let beforeCount = manager.messages.count
+        await manager.submitPrompt("@观察 更新一下对我的印象", allowRemoteAI: false)
+        let added = Array(manager.messages.dropFirst(beforeCount))
+        let addedBots = added.filter { $0.role == "bot" }
+        #expect(addedBots.count == 1)
+        #expect(addedBots[0].botID == AIBotID.persona.rawValue)
+        #expect(!addedBots[0].receipts.isEmpty)
+        
+        // Butler governance: user manages Butler, Butler dispatches subordinate and wraps up
+        let beforeGov = manager.messages.count
+        await manager.submitPrompt("@总管 让整理师更新一下", allowRemoteAI: false)
+        let govBots = manager.messages.dropFirst(beforeGov).filter { $0.role == "bot" }
+        #expect(govBots.count == 2)
+        #expect(govBots[0].botID == AIBotID.organizeAndMerge.rawValue)
+        #expect(govBots[0].delegatedFromButler == true)
+        #expect(!govBots[0].receipts.isEmpty)
+        #expect(govBots[1].botID == AIBotID.butler.rawValue)
+        
+        // Persistence survives reload in its own isolated config key
+        let reloaded = ButlerMeetingRoomManager(database: db)
+        #expect(reloaded.messages.count == manager.messages.count)
     }
 }

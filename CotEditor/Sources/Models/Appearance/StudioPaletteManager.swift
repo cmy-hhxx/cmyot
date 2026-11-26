@@ -141,6 +141,21 @@ struct StudioColorTokens: Equatable, Sendable {
 }
 
 
+/// Soft, eye-friendly preview colors derived from a `StudioPaletteID` for the Settings Appearance pane,
+/// avoiding harsh pitch-black blocks in Light mode and lifting near-black voids into Apple-style graphite in Dark mode.
+struct StudioPalettePreviewColors: Equatable, Sendable {
+    
+    let canvas: Color
+    let sidebar: Color
+    let accent: Color
+    let swatch: Color
+    let linePrimary: Color
+    let lineSecondary: Color
+    let ambientWash: Color
+    let canvasLuminance: Double
+}
+
+
 /// Harmonized window chrome colors (titlebar, tab bar, status bar, toolbar pills) derived
 /// from the active editor `Theme` and the user's `StudioPaletteManager` accent triad.
 struct WindowChromePalette: Equatable, Sendable {
@@ -789,6 +804,55 @@ final class StudioPaletteManager {
         }
         self.cachedChromeEntry = (rev, theme, appearanceIsDark, built)
         return built
+    }
+    
+    
+    /// Produces serene, appearance-adaptive preview colors for the Appearance Settings palette cards.
+    func softPreviewColors(for id: StudioPaletteID, isDark: Bool) -> StudioPalettePreviewColors {
+        let triad = self.triad(for: id)
+        let lightPaperNS = Self.nsColor(hex: triad.lightPaperHex)
+        let darkInkNS = Self.nsColor(hex: triad.darkInkHex)
+        let accentNS = Self.nsColor(hex: triad.accentHex)
+        
+        if isDark {
+            // Lift pitch-black inks (#0D1524 / #111111) toward Apple's warm-neutral dark graphite (#303238)
+            // while preserving each palette's signature undertone.
+            let appleGraphite = NSColor(srgbRed: 0.196, green: 0.200, blue: 0.220, alpha: 1.0)
+            let softCanvasNS = Self.blend(darkInkNS, with: appleGraphite, ratio: 0.48)
+            let softSidebarNS = Self.blend(softCanvasNS, with: .white, ratio: 0.065)
+            let liftedAccentNS = Self.ensureDarkModeVisibility(accentNS)
+            let softAccentNS = Self.blend(liftedAccentNS, with: softCanvasNS, ratio: 0.14)
+            
+            return StudioPalettePreviewColors(
+                canvas: Color(nsColor: softCanvasNS),
+                sidebar: Color(nsColor: softSidebarNS),
+                accent: Color(nsColor: softAccentNS),
+                swatch: Color(nsColor: liftedAccentNS),
+                linePrimary: Color.white.opacity(0.22),
+                lineSecondary: Color.white.opacity(0.11),
+                ambientWash: Color(nsColor: liftedAccentNS).opacity(0.11),
+                canvasLuminance: Double(Self.relativeLuminance(softCanvasNS))
+            )
+        } else {
+            // Lift tinted papers smoothly toward luminous stationery white so cards blend effortlessly
+            // into macOS Light Mode without heavy gray or yellow blocks.
+            let isMatcha = (id == .matchaParchment)
+            let softCanvasNS = Self.blend(lightPaperNS, with: .white, ratio: isMatcha ? 0.42 : 0.48)
+            let softSidebarNS = Self.blend(lightPaperNS, with: .white, ratio: isMatcha ? 0.24 : 0.22)
+            let readableAccentNS = Self.ensureLightModeTextContrast(accentNS, against: softCanvasNS)
+            let softBarAccentNS = Self.blend(accentNS, with: softCanvasNS, ratio: 0.16)
+            
+            return StudioPalettePreviewColors(
+                canvas: Color(nsColor: softCanvasNS),
+                sidebar: Color(nsColor: softSidebarNS),
+                accent: Color(nsColor: softBarAccentNS),
+                swatch: Color(nsColor: readableAccentNS),
+                linePrimary: Color.black.opacity(0.13),
+                lineSecondary: Color.black.opacity(0.075),
+                ambientWash: Color(nsColor: accentNS).opacity(0.065),
+                canvasLuminance: Double(Self.relativeLuminance(softCanvasNS))
+            )
+        }
     }
     
     

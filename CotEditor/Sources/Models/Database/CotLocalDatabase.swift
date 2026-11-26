@@ -188,6 +188,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         static let aiPersonalityAutoEnabled = "analytics.personalityAutoEnabled"
         static let cotPassStyleIndex = "pass.styleIndex"
         static let cotPassLicenseKey = "pass.licenseKey"
+        static let butlerMeetingRoomJSON = "butler.meetingRoomHistoryJSON"
         static let cotPassSerialCode = "pass.serialCode"
         static let analyticsHistoricalBackfillV2 = "analytics.historicalBackfillV2"
         static let studioPaletteID = "ui.studioPaletteID"

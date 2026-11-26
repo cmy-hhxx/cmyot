@@ -138,6 +138,32 @@ export type ButlerBackgroundWorker = {
   updatedAtMs: number;
 };
 
+export type MeetingRoomMessage = {
+  id: string;
+  role: "user" | "bot";
+  botID?: string | null;
+  botName?: string | null;
+  botHandle?: string | null;
+  botAccentHex?: string | null;
+  botRoleLabel?: string | null;
+  text: string;
+  status: "speaking" | "done" | "error";
+  receipts: string[];
+  delegatedFromButler: boolean;
+  createdAtMs: number;
+};
+
+export type MeetingRoomParticipant = {
+  id: string;
+  name: string;
+  nickname: string;
+  handle: string;
+  roleLabel: string;
+  accentHex: string;
+  status: "idle" | "speaking" | "done" | "updated";
+  todayBadge: string;
+};
+
 export type HostState = {
   mode: AgentMode;
   isDark: boolean;
@@ -176,6 +202,10 @@ export type HostState = {
   themeCanvasHex?: string | null;
   proactiveCards?: ButlerProactiveCard[];
   backgroundWorkers?: ButlerBackgroundWorker[];
+  meetingRoomActive?: boolean;
+  meetingRoomIsConvening?: boolean;
+  meetingRoomMessages?: MeetingRoomMessage[];
+  meetingRoomBots?: MeetingRoomParticipant[];
 };
 
 export type StreamPatch = {
