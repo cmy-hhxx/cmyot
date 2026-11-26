@@ -126,6 +126,19 @@ struct Round44ButlerPersonaDashboardStarMapTests {
         let white = HeroRegionTone(red: 1, green: 1, blue: 1)
         let black = HeroRegionTone(red: 0, green: 0, blue: 0)
         #expect(abs(DashboardImageColorExtractor.contrastRatio(white, black) - 21.0) < 0.1)
+        
+        let oceanBlue = HeroRegionTone(red: 0.28, green: 0.54, blue: 0.84)
+        let lightCard = (0.98, 0.98, 0.99)
+        let harmonized = try #require(
+            DashboardImageColorExtractor.harmonizedAccentRGB(from: oceanBlue, against: lightCard, isDark: false)
+        )
+        let harmonizedTone = HeroRegionTone(red: harmonized.0, green: harmonized.1, blue: harmonized.2)
+        let cardTone = HeroRegionTone(red: lightCard.0, green: lightCard.1, blue: lightCard.2)
+        #expect(DashboardImageColorExtractor.contrastRatio(harmonizedTone, cardTone) >= 3.4)
+        #expect(harmonized.2 > harmonized.1)
+        
+        let series = DashboardImageColorExtractor.analogousSeriesRGB(from: harmonized, isDark: false)
+        #expect(series.count == 4)
     }
     
     

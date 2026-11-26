@@ -38,6 +38,7 @@ struct DocumentCenterView: View {
     @Environment(\.registerWorkspaceCenterEscPop) private var registerEscPop
     @State private var db = CotLocalDatabase.shared
     @State private var focusedClusterID: String?
+    @State private var layoutStyle: StarMapLayoutStyle = .timeline
     @State private var quickLook = StarMapQuickLookController()
     @State private var panRequestToken = 0
     @State private var fitRequestToken = 0
@@ -175,7 +176,7 @@ struct DocumentCenterView: View {
                     panRequestToken: self.panRequestToken,
                     fitRequestToken: self.fitRequestToken,
                     isOverlayBlockingInteraction: self.quickLook.mountedID != nil,
-                    layoutStyle: .orbital,
+                    layoutStyle: self.layoutStyle,
                     onSelectedLeafFrameChange: { rect in
                         self.quickLook.anchorRect = rect.map { $0.offsetBy(dx: 0, dy: 49) }
                     },
@@ -415,6 +416,7 @@ struct DocumentCenterView: View {
                 .foregroundStyle(tokens.primaryInk)
             
             self.scopeFilterBar(tokens: tokens)
+            self.layoutStyleSwitcher(tokens: tokens)
             self.groupAndTimeMenus(tokens: tokens, clusters: clusters)
             
             Spacer(minLength: 6)
@@ -443,6 +445,20 @@ struct DocumentCenterView: View {
                     self.focusedClusterID = nil
                     self.state.sidebarFilter = .trash
                 }
+            }
+        }
+        .padding(2.5)
+        .background(tokens.inset, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+    
+    
+    private func layoutStyleSwitcher(tokens: StudioColorTokens) -> some View {
+        HStack(spacing: 2) {
+            self.scopeChip(title: "时间线", isActive: self.layoutStyle == .timeline, tokens: tokens) {
+                self.layoutStyle = .timeline
+            }
+            self.scopeChip(title: "星图", isActive: self.layoutStyle == .orbital, tokens: tokens) {
+                self.layoutStyle = .orbital
             }
         }
         .padding(2.5)

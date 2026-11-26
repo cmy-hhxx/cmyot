@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 type GlideMenuProps = {
   children: ReactNode;
@@ -15,16 +15,25 @@ export default function GlideMenu({
   rowSelector = "[data-menu-row]",
 }: GlideMenuProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const activeRowRef = useRef<HTMLElement | null>(null);
   const [box, setBox] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const [visible, setVisible] = useState(false);
 
-  const moveTo = (target: EventTarget | null) => {
+  const syncRowRect = (row: HTMLElement | null) => {
     const container = ref.current;
-    if (!(target instanceof Element) || !container) return;
-    const row = target.closest(rowSelector);
-    if (!(row instanceof HTMLElement) || !container.contains(row)) return;
+    if (!row || !container || !row.isConnected || !container.contains(row)) {
+      activeRowRef.current = null;
+      setVisible(false);
+      return;
+    }
     const containerRect = container.getBoundingClientRect();
     const rowRect = row.getBoundingClientRect();
+    if (rowRect.width <= 0 || rowRect.height <= 0) {
+      activeRowRef.current = null;
+      setVisible(false);
+      return;
+    }
+    activeRowRef.current = row;
     setBox({
       left: rowRect.left - containerRect.left,
       top: rowRect.top - containerRect.top,
@@ -34,14 +43,48 @@ export default function GlideMenu({
     setVisible(true);
   };
 
+  const moveTo = (target: EventTarget | null) => {
+    const container = ref.current;
+    if (!(target instanceof Element) || !container) {
+      activeRowRef.current = null;
+      setVisible(false);
+      return;
+    }
+    const row = target.closest(rowSelector);
+    if (!(row instanceof HTMLElement) || !container.contains(row)) {
+      activeRowRef.current = null;
+      setVisible(false);
+      return;
+    }
+    syncRowRect(row);
+  };
+
+  // Re-sync or hide whenever children collapse/expand so the pill never freezes over shifted headers.
+  useEffect(() => {
+    if (!visible) return;
+    const row = activeRowRef.current;
+    if (!row || !row.isConnected) {
+      activeRowRef.current = null;
+      setVisible(false);
+      return;
+    }
+    syncRowRect(row);
+  }, [children, visible]);
+
   return (
     <div
       ref={ref}
       onMouseOver={(event) => moveTo(event.target)}
-      onMouseLeave={() => setVisible(false)}
+      onMouseLeave={() => {
+        activeRowRef.current = null;
+        setVisible(false);
+      }}
       onFocusCapture={(event) => moveTo(event.target)}
       onBlurCapture={(event) => {
-        if (!ref.current?.contains(event.relatedTarget as Node | null)) setVisible(false);
+        if (!ref.current?.contains(event.relatedTarget as Node | null)) {
+          activeRowRef.current = null;
+          setVisible(false);
+        }
       }}
       className={`group/glide-menu relative ${className}`}
     >

@@ -848,6 +848,7 @@ struct DashPalette: Sendable, Equatable {
     
     let tokens: StudioColorTokens
     let editorialSurface: Color
+    let chartSeries: [Color]
     let secondaryInk: Color
     let mutedInk: Color
     let statusPositive: Color
@@ -857,14 +858,15 @@ struct DashPalette: Sendable, Equatable {
         let built = Self.resolvedTokens(isDark: isDark, imageTone: imageTone)
         self.tokens = built.tokens
         self.editorialSurface = built.editorialSurface
+        self.chartSeries = built.chartSeries
         if isDark {
             self.secondaryInk = Color(red: 0.604, green: 0.635, blue: 0.706) // #9AA2B4
             self.mutedInk = Color(red: 0.455, green: 0.490, blue: 0.565)     // #747D90
-            self.statusPositive = Color(red: 0.298, green: 0.765, blue: 0.541) // #4CC38A
+            self.statusPositive = built.tokens.heat3
         } else {
             self.secondaryInk = Color(red: 0.306, green: 0.337, blue: 0.408) // #4E5668
             self.mutedInk = Color(red: 0.451, green: 0.486, blue: 0.561)     // #737C8F
-            self.statusPositive = Color(red: 0.086, green: 0.639, blue: 0.290) // #16A34A
+            self.statusPositive = built.tokens.heat3
         }
     }
     
@@ -872,7 +874,10 @@ struct DashPalette: Sendable, Equatable {
         Self.resolvedTokens(isDark: isDark, imageTone: nil).tokens
     }
     
-    static func resolvedTokens(isDark: Bool, imageTone: DashboardImageTone?) -> (tokens: StudioColorTokens, editorialSurface: Color) {
+    static func resolvedTokens(
+        isDark: Bool,
+        imageTone: DashboardImageTone?
+    ) -> (tokens: StudioColorTokens, editorialSurface: Color, chartSeries: [Color]) {
         let avgRGB = imageTone.map { ($0.average.red, $0.average.green, $0.average.blue) }
         return isDark
             ? Self.darkEditorialTokens(avgRGB: avgRGB, dominantTone: imageTone?.dominant)
@@ -882,17 +887,17 @@ struct DashPalette: Sendable, Equatable {
     private static func darkEditorialTokens(
         avgRGB: (Double, Double, Double)?,
         dominantTone: HeroRegionTone?
-    ) -> (tokens: StudioColorTokens, editorialSurface: Color) {
+    ) -> (tokens: StudioColorTokens, editorialSurface: Color, chartSeries: [Color]) {
         let baseCanvas = (0.0824, 0.0863, 0.1020) // #15161A
         let baseCard = (0.1098, 0.1176, 0.1412)   // #1C1E24
         let baseInset = (0.1333, 0.1451, 0.1765)  // #22252D
         let baseInsetHover = (0.1647, 0.1804, 0.2196) // #2A2E38
         
-        let canvasRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseCanvas, $0, t: 0.14) } ?? baseCanvas
-        let cardRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseCard, $0, t: 0.08) } ?? baseCard
-        let insetRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseInset, $0, t: 0.10) } ?? baseInset
-        let insetHoverRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseInsetHover, $0, t: 0.10) } ?? baseInsetHover
-        let editorialRGB = DashboardImageColorExtractor.mixRGB(cardRGB, canvasRGB, t: 0.50)
+        let canvasRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseCanvas, $0, t: 0.16) } ?? baseCanvas
+        let cardRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseCard, $0, t: 0.10) } ?? baseCard
+        let insetRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseInset, $0, t: 0.12) } ?? baseInset
+        let insetHoverRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseInsetHover, $0, t: 0.12) } ?? baseInsetHover
+        let editorialRGB = DashboardImageColorExtractor.mixRGB(cardRGB, canvasRGB, t: 0.45)
         
         let canvas = Color(red: canvasRGB.0, green: canvasRGB.1, blue: canvasRGB.2)
         let card = Color(red: cardRGB.0, green: cardRGB.1, blue: cardRGB.2)
@@ -900,19 +905,22 @@ struct DashPalette: Sendable, Equatable {
         let insetHover = Color(red: insetHoverRGB.0, green: insetHoverRGB.1, blue: insetHoverRGB.2)
         let editorialSurface = Color(red: editorialRGB.0, green: editorialRGB.1, blue: editorialRGB.2)
         
-        let cardTone = HeroRegionTone(red: cardRGB.0, green: cardRGB.1, blue: cardRGB.2)
         let defaultAccentRGB = (0.3176, 0.6039, 0.9922) // #519AFD
-        let useImageAccent = dominantTone.map { $0.saturation > 0.25 && DashboardImageColorExtractor.contrastRatio($0, cardTone) >= 3.0 } ?? false
-        let accentRGB = (useImageAccent ? dominantTone : nil).map { ($0.red, $0.green, $0.blue) } ?? defaultAccentRGB
-        let accentTextRGB = useImageAccent
-            ? DashboardImageColorExtractor.mixRGB(accentRGB, (1.0, 1.0, 1.0), t: 0.28)
-            : (0.5608, 0.7529, 1.0)
-        let secondaryAccRGB = useImageAccent
-            ? DashboardImageColorExtractor.mixRGB(accentRGB, cardRGB, t: 0.25)
-            : (0.220, 0.365, 0.765)
-        let paleAccRGB = useImageAccent
-            ? DashboardImageColorExtractor.mixRGB(accentRGB, cardRGB, t: 0.68)
-            : (0.145, 0.216, 0.396)
+        let harmonized = dominantTone.flatMap {
+            DashboardImageColorExtractor.harmonizedAccentRGB(from: $0, against: cardRGB, isDark: true)
+        }
+        let accentRGB = harmonized ?? defaultAccentRGB
+        let accentTextRGB = DashboardImageColorExtractor.mixRGB(accentRGB, (1.0, 1.0, 1.0), t: 0.26)
+        let secondaryAccRGB = DashboardImageColorExtractor.mixRGB(accentRGB, cardRGB, t: 0.26)
+        let paleAccRGB = DashboardImageColorExtractor.mixRGB(accentRGB, cardRGB, t: 0.68)
+        let emptyDotRGB = DashboardImageColorExtractor.mixRGB(cardRGB, insetHoverRGB, t: 0.55)
+        
+        let heat1RGB = DashboardImageColorExtractor.mixRGB(accentRGB, cardRGB, t: 0.72)
+        let heat2RGB = DashboardImageColorExtractor.mixRGB(accentRGB, cardRGB, t: 0.44)
+        let heat3RGB = accentRGB
+        let heat4RGB = DashboardImageColorExtractor.mixRGB(accentRGB, (0.96, 0.98, 1.0), t: 0.30)
+        let chartSeries = DashboardImageColorExtractor.analogousSeriesRGB(from: accentRGB, isDark: true)
+            .map { Color(red: $0.0, green: $0.1, blue: $0.2) }
         
         let accent = Color(red: accentRGB.0, green: accentRGB.1, blue: accentRGB.2)
         let tokens = StudioColorTokens(
@@ -934,31 +942,31 @@ struct DashPalette: Sendable, Equatable {
             onAccentInk: .white,
             secondaryAccent: Color(red: secondaryAccRGB.0, green: secondaryAccRGB.1, blue: secondaryAccRGB.2),
             paleAccent: Color(red: paleAccRGB.0, green: paleAccRGB.1, blue: paleAccRGB.2),
-            emptyDot: Color(red: 0.137, green: 0.153, blue: 0.188),
+            emptyDot: Color(red: emptyDotRGB.0, green: emptyDotRGB.1, blue: emptyDotRGB.2),
             positivePillBg: accent.opacity(0.16),
             neutralPillBg: Color.white.opacity(0.07),
-            heat1: Color(red: 0.094, green: 0.255, blue: 0.196),
-            heat2: Color(red: 0.125, green: 0.447, blue: 0.325),
-            heat3: Color(red: 0.196, green: 0.682, blue: 0.490),
-            heat4: Color(red: 0.431, green: 0.906, blue: 0.714)
+            heat1: Color(red: heat1RGB.0, green: heat1RGB.1, blue: heat1RGB.2),
+            heat2: Color(red: heat2RGB.0, green: heat2RGB.1, blue: heat2RGB.2),
+            heat3: Color(red: heat3RGB.0, green: heat3RGB.1, blue: heat3RGB.2),
+            heat4: Color(red: heat4RGB.0, green: heat4RGB.1, blue: heat4RGB.2)
         )
-        return (tokens, editorialSurface)
+        return (tokens, editorialSurface, chartSeries)
     }
     
     private static func lightEditorialTokens(
         avgRGB: (Double, Double, Double)?,
         dominantTone: HeroRegionTone?
-    ) -> (tokens: StudioColorTokens, editorialSurface: Color) {
+    ) -> (tokens: StudioColorTokens, editorialSurface: Color, chartSeries: [Color]) {
         let baseCanvas = (0.9569, 0.9608, 0.9686)     // #F4F5F7
         let baseCard = (0.9843, 0.9843, 0.9882)       // #FBFBFC
         let baseInset = (0.9451, 0.9529, 0.9647)      // #F1F3F6
         let baseInsetHover = (0.9098, 0.9216, 0.9412) // #E8EBF0
         
-        let canvasRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseCanvas, $0, t: 0.10) } ?? baseCanvas
-        let cardRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseCard, $0, t: 0.05) } ?? baseCard
-        let insetRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseInset, $0, t: 0.10) } ?? baseInset
-        let insetHoverRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseInsetHover, $0, t: 0.10) } ?? baseInsetHover
-        let editorialRGB = DashboardImageColorExtractor.mixRGB(cardRGB, canvasRGB, t: 0.50)
+        let canvasRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseCanvas, $0, t: 0.12) } ?? baseCanvas
+        let cardRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseCard, $0, t: 0.07) } ?? baseCard
+        let insetRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseInset, $0, t: 0.12) } ?? baseInset
+        let insetHoverRGB = avgRGB.map { DashboardImageColorExtractor.mixRGB(baseInsetHover, $0, t: 0.12) } ?? baseInsetHover
+        let editorialRGB = DashboardImageColorExtractor.mixRGB(cardRGB, canvasRGB, t: 0.45)
         
         let canvas = Color(red: canvasRGB.0, green: canvasRGB.1, blue: canvasRGB.2)
         let card = Color(red: cardRGB.0, green: cardRGB.1, blue: cardRGB.2)
@@ -966,19 +974,22 @@ struct DashPalette: Sendable, Equatable {
         let insetHover = Color(red: insetHoverRGB.0, green: insetHoverRGB.1, blue: insetHoverRGB.2)
         let editorialSurface = Color(red: editorialRGB.0, green: editorialRGB.1, blue: editorialRGB.2)
         
-        let cardTone = HeroRegionTone(red: cardRGB.0, green: cardRGB.1, blue: cardRGB.2)
         let defaultAccentRGB = (0.1843, 0.4863, 0.9647) // #2F7CF6
-        let useImageAccent = dominantTone.map { $0.saturation > 0.25 && DashboardImageColorExtractor.contrastRatio($0, cardTone) >= 3.0 } ?? false
-        let accentRGB = (useImageAccent ? dominantTone : nil).map { ($0.red, $0.green, $0.blue) } ?? defaultAccentRGB
-        let accentTextRGB = useImageAccent
-            ? DashboardImageColorExtractor.mixRGB(accentRGB, (0.05, 0.08, 0.14), t: 0.22)
-            : (0.1137, 0.4039, 0.8588)
-        let secondaryAccRGB = useImageAccent
-            ? DashboardImageColorExtractor.mixRGB(accentRGB, cardRGB, t: 0.25)
-            : (0.431, 0.576, 0.961)
-        let paleAccRGB = useImageAccent
-            ? DashboardImageColorExtractor.mixRGB(accentRGB, cardRGB, t: 0.78)
-            : (0.871, 0.906, 0.992)
+        let harmonized = dominantTone.flatMap {
+            DashboardImageColorExtractor.harmonizedAccentRGB(from: $0, against: cardRGB, isDark: false)
+        }
+        let accentRGB = harmonized ?? defaultAccentRGB
+        let accentTextRGB = DashboardImageColorExtractor.mixRGB(accentRGB, (0.04, 0.07, 0.13), t: 0.22)
+        let secondaryAccRGB = DashboardImageColorExtractor.mixRGB(accentRGB, cardRGB, t: 0.28)
+        let paleAccRGB = DashboardImageColorExtractor.mixRGB(accentRGB, cardRGB, t: 0.78)
+        let emptyDotRGB = DashboardImageColorExtractor.mixRGB(cardRGB, insetHoverRGB, t: 0.65)
+        
+        let heat1RGB = DashboardImageColorExtractor.mixRGB(accentRGB, cardRGB, t: 0.76)
+        let heat2RGB = DashboardImageColorExtractor.mixRGB(accentRGB, cardRGB, t: 0.48)
+        let heat3RGB = DashboardImageColorExtractor.mixRGB(accentRGB, (0.04, 0.08, 0.14), t: 0.08)
+        let heat4RGB = DashboardImageColorExtractor.mixRGB(accentRGB, (0.02, 0.05, 0.10), t: 0.36)
+        let chartSeries = DashboardImageColorExtractor.analogousSeriesRGB(from: accentRGB, isDark: false)
+            .map { Color(red: $0.0, green: $0.1, blue: $0.2) }
         
         let accent = Color(red: accentRGB.0, green: accentRGB.1, blue: accentRGB.2)
         let tokens = StudioColorTokens(
@@ -1000,15 +1011,15 @@ struct DashPalette: Sendable, Equatable {
             onAccentInk: .white,
             secondaryAccent: Color(red: secondaryAccRGB.0, green: secondaryAccRGB.1, blue: secondaryAccRGB.2),
             paleAccent: Color(red: paleAccRGB.0, green: paleAccRGB.1, blue: paleAccRGB.2),
-            emptyDot: Color(red: 0.914, green: 0.929, blue: 0.949),
+            emptyDot: Color(red: emptyDotRGB.0, green: emptyDotRGB.1, blue: emptyDotRGB.2),
             positivePillBg: accent.opacity(0.09),
             neutralPillBg: Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.05),
-            heat1: Color(red: 0.690, green: 0.890, blue: 0.788),
-            heat2: Color(red: 0.365, green: 0.753, blue: 0.573),
-            heat3: Color(red: 0.137, green: 0.569, blue: 0.396),
-            heat4: Color(red: 0.059, green: 0.337, blue: 0.243)
+            heat1: Color(red: heat1RGB.0, green: heat1RGB.1, blue: heat1RGB.2),
+            heat2: Color(red: heat2RGB.0, green: heat2RGB.1, blue: heat2RGB.2),
+            heat3: Color(red: heat3RGB.0, green: heat3RGB.1, blue: heat3RGB.2),
+            heat4: Color(red: heat4RGB.0, green: heat4RGB.1, blue: heat4RGB.2)
         )
-        return (tokens, editorialSurface)
+        return (tokens, editorialSurface, chartSeries)
     }
     
     var canvasTop: Color { self.tokens.canvasTop }
@@ -1177,8 +1188,12 @@ nonisolated struct DashboardViewportLayout: Equatable, Sendable {
         self.heroHeight + self.unifiedInnerGap + self.row1Height + self.unifiedBottomPad
     }
     
+    var unifiedFullStageHeight: CGFloat {
+        self.heroHeight + self.unifiedInnerGap + self.row1Height + self.vSpacing + self.row2Height + self.unifiedBottomPad
+    }
+    
     var totalContentHeight: CGFloat {
-        self.outerPadV * 2 + self.vSpacing + self.unifiedTopStageHeight + self.row2Height
+        self.outerPadV * 2 + self.unifiedFullStageHeight
     }
     
     static func resolve(
@@ -1308,26 +1323,25 @@ struct AnalyticsDashboardView: View {
                     
                     let contentStack = Group {
                         if let snapshot = self.snapshot {
-                            VStack(alignment: .leading, spacing: layout.vSpacing) {
-                                DashboardAchievementHeroBar(
-                                    profile: self.profileManager.activeProfile,
-                                    avatarImage: self.profileManager.avatarImage(for: self.profileManager.activeProfile),
-                                    snapshot: snapshot,
-                                    heroHeight: layout.heroHeight,
-                                    innerGap: layout.unifiedInnerGap,
-                                    bottomPad: layout.unifiedBottomPad,
-                                    compact: self.isEmbeddedInSettings,
-                                    palette: self.palette,
-                                    onBack: self.isEmbeddedInSettings ? nil : self.onDismiss
-                                ) {
+                            DashboardAchievementHeroBar(
+                                profile: self.profileManager.activeProfile,
+                                avatarImage: self.profileManager.avatarImage(for: self.profileManager.activeProfile),
+                                snapshot: snapshot,
+                                heroHeight: layout.heroHeight,
+                                innerGap: layout.unifiedInnerGap,
+                                bottomPad: layout.unifiedBottomPad,
+                                compact: self.isEmbeddedInSettings,
+                                palette: self.palette,
+                                onBack: self.isEmbeddedInSettings ? nil : self.onDismiss
+                            ) {
+                                VStack(alignment: .leading, spacing: layout.vSpacing) {
                                     self.row1Section(snapshot, layout: layout, overPhoto: hasHeroPhoto)
+                                    self.row2Section(snapshot, layout: layout)
                                 }
-                                .frame(maxWidth: .infinity)
-                                .frame(height: layout.unifiedTopStageHeight)
-                                .animation(DashMotion.resolve(DashMotion.standard), value: hasHeroPhoto)
-                                
-                                self.row2Section(snapshot, layout: layout)
                             }
+                            .frame(maxWidth: .infinity)
+                            .frame(height: layout.unifiedFullStageHeight)
+                            .animation(DashMotion.resolve(DashMotion.standard), value: hasHeroPhoto)
                             .opacity(self.hasAppeared ? 1 : 0)
                             .animation(DashMotion.resolve(DashMotion.staggeredEntrance), value: self.hasAppeared)
                             .padding(.horizontal, layout.outerPadH)
@@ -1959,18 +1973,25 @@ private struct DashboardNewsColumnCard: View {
             .frame(height: 22)
             
             GeometryReader { geo in
-                let rowGap: CGFloat = 8
-                let count = min(4, max(2, Int((geo.size.height + rowGap) / (58 + rowGap))))
-                let rowH = max(44, floor((geo.size.height - rowGap * CGFloat(max(0, count - 1))) / CGFloat(count)))
+                let gap: CGFloat = 8
+                let cols = 2
+                let rows = (self.compact || geo.size.height < 156) ? 1 : 2
+                let count = cols * rows
+                let cellW = max(90, floor((geo.size.width - gap * CGFloat(cols - 1)) / CGFloat(cols)))
+                let cellH = max(68, floor((geo.size.height - gap * CGFloat(rows - 1)) / CGFloat(rows)))
                 let activeItems = Array(items.prefix(count))
                 
                 if activeItems.isEmpty {
                     if self.newsService.isLoading {
-                        VStack(spacing: rowGap) {
-                            ForEach(0..<count, id: \.self) { _ in
-                                RoundedRectangle(cornerRadius: DashboardCornerMetrics.newsMiniCardRadius, style: .continuous)
-                                    .fill(self.palette.inset)
-                                    .frame(height: rowH)
+                        VStack(spacing: gap) {
+                            ForEach(0..<rows, id: \.self) { _ in
+                                HStack(spacing: gap) {
+                                    ForEach(0..<cols, id: \.self) { _ in
+                                        RoundedRectangle(cornerRadius: DashboardCornerMetrics.newsMiniCardRadius, style: .continuous)
+                                            .fill(self.palette.inset)
+                                            .frame(width: cellW, height: cellH)
+                                    }
+                                }
                             }
                         }
                     } else {
@@ -1998,31 +2019,36 @@ private struct DashboardNewsColumnCard: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 } else {
-                    VStack(alignment: .leading, spacing: rowGap) {
-                        ForEach(activeItems) { item in
-                            NewsHorizontalRowCard(
-                                item: item,
-                                cover: self.newsService.cachedCoverImage(for: item),
-                                isRead: self.newsService.isRead(item),
-                                rowHeight: rowH,
-                                palette: self.palette,
-                                onAppearLoadCover: {
-                                    self.newsService.requestCoverLoad(for: item)
+                    VStack(alignment: .leading, spacing: gap) {
+                        ForEach(0..<rows, id: \.self) { rowIdx in
+                            HStack(spacing: gap) {
+                                ForEach(0..<cols, id: \.self) { colIdx in
+                                    let slotIndex = rowIdx * cols + colIdx
+                                    if slotIndex < activeItems.count {
+                                        let item = activeItems[slotIndex]
+                                        NewsCompactGridCard(
+                                            item: item,
+                                            cover: self.newsService.cachedCoverImage(for: item),
+                                            isRead: self.newsService.isRead(item),
+                                            cardWidth: cellW,
+                                            cardHeight: cellH,
+                                            palette: self.palette,
+                                            onAppearLoadCover: {
+                                                self.newsService.requestCoverLoad(for: item)
+                                            }
+                                        ) {
+                                            self.onOpenWorkspace(item.id)
+                                        }
+                                    } else {
+                                        RoundedRectangle(cornerRadius: DashboardCornerMetrics.newsMiniCardRadius, style: .continuous)
+                                            .fill(self.palette.inset.opacity(0.55))
+                                            .frame(width: cellW, height: cellH)
+                                    }
                                 }
-                            ) {
-                                self.onOpenWorkspace(item.id)
-                            }
-                        }
-                        if activeItems.count < count {
-                            ForEach(0..<(count - activeItems.count), id: \.self) { _ in
-                                RoundedRectangle(cornerRadius: DashboardCornerMetrics.newsMiniCardRadius, style: .continuous)
-                                    .fill(self.palette.inset.opacity(0.60))
-                                    .frame(maxWidth: .infinity)
-                                    .frame(height: rowH)
                             }
                         }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .id("dash-news-\(self.newsService.selectedCategory.rawValue)-\(self.newsService.feedRefreshToken)")
                     .transition(.opacity)
                     .animation(DashMotion.resolve(DashMotion.quick), value: self.newsService.feedRefreshToken)
@@ -2050,13 +2076,14 @@ private struct DashboardNewsColumnCard: View {
 }
 
 
-/// Balanced horizontal news story row preserving natural 16:10 thumbnail proportions alongside crisp editorial copy.
-private struct NewsHorizontalRowCard: View {
+/// Compact uniform 2x2 editorial NEWS card with balanced proportions (no stretched horizontal strips).
+private struct NewsCompactGridCard: View {
     
     let item: AIHotNewsItem
     let cover: NSImage?
     let isRead: Bool
-    let rowHeight: CGFloat
+    let cardWidth: CGFloat
+    let cardHeight: CGFloat
     let palette: DashPalette
     let onAppearLoadCover: () -> Void
     let onTap: () -> Void
@@ -2066,23 +2093,51 @@ private struct NewsHorizontalRowCard: View {
     var body: some View {
         let publisher = self.item.displayPublisherLabel
         let category = self.item.resolvedCategory
-        let thumbH = max(34, min(54, self.rowHeight - 12))
-        let thumbW = round(thumbH * 1.48)
+        let showTopCover = self.cardHeight >= 92
+        let coverH: CGFloat = showTopCover ? max(30, min(48, floor(self.cardHeight * 0.40))) : 0
+        let tint: Color = switch category {
+            case .finance: self.palette.chartSeries[1 % max(1, self.palette.chartSeries.count)]
+            case .xSocial: self.palette.chartSeries[2 % max(1, self.palette.chartSeries.count)]
+            case .ai, .all: self.palette.accentFill
+        }
         
         Button(action: self.onTap) {
-            HStack(alignment: .center, spacing: 9) {
-                VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 0) {
+                if showTopCover {
+                    ZStack(alignment: .topLeading) {
+                        if let cover = self.cover {
+                            Color.clear
+                                .overlay {
+                                    Image(nsImage: cover)
+                                        .resizable()
+                                        .interpolation(.medium)
+                                        .scaledToFill()
+                                }
+                                .clipped()
+                        } else {
+                            LinearGradient(
+                                colors: [tint.opacity(self.palette.tokens.isDark ? 0.30 : 0.16), tint.opacity(0.05)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        }
+                    }
+                    .frame(width: self.cardWidth, height: coverH)
+                    .clipped()
+                }
+                
+                VStack(alignment: .leading, spacing: 3) {
                     Text(self.item.title)
-                        .font(.system(size: 11.8, weight: self.isRead ? .regular : .semibold))
+                        .font(.system(size: 11.5, weight: self.isRead ? .regular : .semibold))
                         .foregroundStyle(self.isRead ? self.palette.secondaryInk : self.palette.pine)
                         .lineLimit(2, reservesSpace: true)
-                        .lineSpacing(1.5)
+                        .lineSpacing(1.4)
                         .multilineTextAlignment(.leading)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                     
                     Spacer(minLength: 2)
                     
-                    HStack(spacing: 5) {
+                    HStack(spacing: 4) {
                         if !self.isRead {
                             Circle()
                                 .fill(self.palette.accentFill)
@@ -2109,42 +2164,13 @@ private struct NewsHorizontalRowCard: View {
                         }
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: thumbH, alignment: .topLeading)
-                
-                ZStack {
-                    if let cover = self.cover {
-                        Color.clear
-                            .overlay {
-                                Image(nsImage: cover)
-                                    .resizable()
-                                    .interpolation(.medium)
-                                    .scaledToFill()
-                            }
-                            .clipped()
-                    } else {
-                        let tint: Color = switch category {
-                            case .finance: self.palette.statusPositive
-                            case .xSocial: Color(red: 0.212, green: 0.478, blue: 0.612)
-                            case .ai, .all: self.palette.accentFill
-                        }
-                        LinearGradient(
-                            colors: [tint.opacity(self.palette.tokens.isDark ? 0.28 : 0.16), tint.opacity(0.05)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    }
-                }
-                .frame(width: thumbW, height: thumbH)
-                .clipShape(RoundedRectangle(cornerRadius: DashboardCornerMetrics.newsCoverRadius, style: .continuous))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .frame(maxWidth: .infinity)
-            .frame(height: self.rowHeight, alignment: .center)
-            .background(
-                RoundedRectangle(cornerRadius: DashboardCornerMetrics.newsMiniCardRadius, style: .continuous)
-                    .fill(self.isHovered ? self.palette.insetHover : self.palette.inset)
-            )
+            .frame(width: self.cardWidth, height: self.cardHeight, alignment: .topLeading)
+            .background(self.isHovered ? self.palette.insetHover : self.palette.inset)
+            .clipShape(RoundedRectangle(cornerRadius: DashboardCornerMetrics.newsMiniCardRadius, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: DashboardCornerMetrics.newsMiniCardRadius, style: .continuous)
                     .strokeBorder(self.isHovered ? self.palette.hairlineStrong : Color.clear, lineWidth: 0.7)
@@ -3788,7 +3814,7 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
                 endPoint: .bottom
             )
         let labelInk: Color = overPhoto ? Color.white.opacity(0.78) : self.palette.mutedInk
-        let accentInk: Color = overPhoto ? Color(red: 0.58, green: 0.94, blue: 0.78) : self.palette.tokens.heat3
+        let accentInk: Color = overPhoto ? self.palette.tokens.heat4 : self.palette.tokens.heat3
         let inactiveBar: Color = overPhoto ? Color.white.opacity(0.28) : self.palette.tokens.heat3.opacity(0.22)
         let textShadow: Color = overPhoto ? Color.black.opacity(0.28) : .clear
         
@@ -6926,13 +6952,9 @@ struct EmotionSankeyChartView: View {
     private func leftTimeSlotNodes(now: Date = Date()) -> [SankeyNode] {
         let currentHour = Calendar.current.component(.hour, from: now)
         let descriptors = Self.timeSlotDescriptors(slices: self.snapshot.busyness.slices, currentHour: currentHour)
-        let isDark = self.palette.tokens.isDark
+        let series = self.palette.chartSeries
         return descriptors.map { d in
-            let col: Color = switch d.toneSlot {
-                case 0: isDark ? Color(red: 0.42, green: 0.67, blue: 0.96) : Color(red: 0.25, green: 0.52, blue: 0.90)
-                case 1: isDark ? Color(red: 0.36, green: 0.78, blue: 0.70) : Color(red: 0.16, green: 0.60, blue: 0.56)
-                default: isDark ? Color(red: 0.62, green: 0.55, blue: 0.94) : Color(red: 0.43, green: 0.38, blue: 0.80)
-            }
+            let col = series[d.toneSlot % max(1, series.count)]
             return SankeyNode(label: d.label, shortLabel: d.label, weight: d.weight, color: col)
         }
     }
@@ -6940,25 +6962,12 @@ struct EmotionSankeyChartView: View {
     
     private func middleMoodNodes() -> [SankeyNode] {
         let segs = Array(self.snapshot.mood.segments.prefix(self.detailed ? 4 : 3))
-        let isDark = self.palette.tokens.isDark
-        let stageColors: [Color] = isDark
-            ? [
-                Color(red: 0.31, green: 0.78, blue: 0.58),
-                Color(red: 0.46, green: 0.66, blue: 0.98),
-                Color(red: 0.85, green: 0.64, blue: 0.36),
-                Color(red: 0.68, green: 0.54, blue: 0.92),
-            ]
-            : [
-                Color(red: 0.14, green: 0.58, blue: 0.41),
-                Color(red: 0.20, green: 0.48, blue: 0.88),
-                Color(red: 0.78, green: 0.52, blue: 0.18),
-                Color(red: 0.48, green: 0.38, blue: 0.80),
-            ]
+        let stageColors = self.palette.chartSeries
         guard !segs.isEmpty else {
             return [
                 SankeyNode(label: "沉稳", shortLabel: "沉稳", weight: 45, color: stageColors[0]),
-                SankeyNode(label: "专注", shortLabel: "专注", weight: 35, color: stageColors[1]),
-                SankeyNode(label: "松弛", shortLabel: "松弛", weight: 20, color: stageColors[2]),
+                SankeyNode(label: "专注", shortLabel: "专注", weight: 35, color: stageColors[1 % stageColors.count]),
+                SankeyNode(label: "松弛", shortLabel: "松弛", weight: 20, color: stageColors[2 % stageColors.count]),
             ]
         }
         return segs.enumerated().map { idx, seg in
@@ -6973,20 +6982,13 @@ struct EmotionSankeyChartView: View {
     
     
     private func rightSubMoodNodes() -> [SankeyNode] {
-        let isDark = self.palette.tokens.isDark
-        let rightPalette: [Color] = isDark
-            ? [
-                Color(red: 0.38, green: 0.72, blue: 0.98),
-                Color(red: 0.34, green: 0.80, blue: 0.60),
-                Color(red: 0.88, green: 0.65, blue: 0.36),
-                Color(red: 0.72, green: 0.56, blue: 0.96),
-            ]
-            : [
-                Color(red: 0.18, green: 0.50, blue: 0.92),
-                Color(red: 0.14, green: 0.60, blue: 0.42),
-                Color(red: 0.80, green: 0.52, blue: 0.16),
-                Color(red: 0.48, green: 0.38, blue: 0.82),
-            ]
+        let series = self.palette.chartSeries
+        let rightPalette: [Color] = [
+            series[1 % series.count],
+            series[0],
+            series[3 % series.count],
+            series[2 % series.count],
+        ]
         var collected: [SankeyNode] = []
         for (idx, seg) in self.snapshot.mood.segments.enumerated() {
             for (cIdx, child) in seg.children.prefix(2).enumerated() {

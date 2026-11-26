@@ -2955,6 +2955,15 @@ struct ConstellationStarMapView<ClusterMenu: View, LeafMenu: View>: View {
                 self.cachedLeafMap = nextMaps.leafMap
                 self.reportSelectedLeafFrame(layout: self.cachedLayout, viewportCenter: viewportCenter)
             }
+            .onChange(of: self.layoutStyle) { _, nextStyle in
+                let freshLayout = Self.computeLayout(for: self.clusters, layoutStyle: nextStyle)
+                self.cachedLayout = freshLayout
+                self.cachedLayoutStyle = nextStyle
+                if geo.size.width > 100 {
+                    self.fitViewport(bounds: freshLayout.bounds, size: geo.size, animated: true)
+                }
+                self.reportSelectedLeafFrame(layout: freshLayout, viewportCenter: viewportCenter)
+            }
             .onChange(of: self.selectedLeafID) { _, _ in
                 self.reportSelectedLeafFrame(layout: layout, viewportCenter: viewportCenter)
             }
