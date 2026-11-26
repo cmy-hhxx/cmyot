@@ -627,7 +627,14 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
     
     
     /// Persists a stepless transform (scale, offsetX/Y, rotation) for an image token.
-    func setTransform(_ transform: InlineImageTransform, for identifier: String, documentURL: URL?) {
+    /// Pass `persist: false` during high-frequency live drag/pinch frames to avoid redundant disk writes,
+    /// then flush once with `persist: true` on gesture end.
+    func setTransform(
+        _ transform: InlineImageTransform,
+        for identifier: String,
+        documentURL: URL?,
+        persist: Bool = true
+    ) {
         
         let clamped = transform.clamped()
         let folder = self.assetsFolder(for: documentURL)
@@ -643,6 +650,7 @@ nonisolated final class PlainTextInlineImageStore: @unchecked Sendable {
             self.transformsByFolder[folderKey] = map
             return map
         }
+        guard persist else { return }
         // Serialize disk writes off the main thread so 120Hz live resize/drag never stalls UI.
         self.persistQueue.async {
             Self.writeTransformMap(updatedMap, in: folder)

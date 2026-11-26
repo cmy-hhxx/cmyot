@@ -1323,19 +1323,27 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
             rawScores.append(RawDay(key: key, date: day, stat: stat, score: score, isFuture: isFuture, isOutOfYear: isOutOfYear))
         }
         
-        let maxScore = max(120, rawScores.lazy.map(\.score).max() ?? 0)
+        let activeScores = rawScores
+            .lazy
+            .filter { !$0.isOutOfYear && !$0.isFuture && $0.score > 0 }
+            .map(\.score)
+            .sorted()
+        let p92Index = activeScores.isEmpty ? 0 : min(activeScores.count - 1, Int(Double(activeScores.count - 1) * 0.92))
+        let referencePeak = max(120, activeScores.isEmpty ? 120 : activeScores[p92Index])
         
         return rawScores.map { item in
             let level: Int
             if item.isOutOfYear || item.isFuture || item.score <= 0 {
                 level = 0
             } else {
-                let ratio = Double(item.score) / Double(maxScore)
-                if ratio >= 0.75 {
+                // Square-root compression against the 92nd percentile prevents a single outlier spike
+                // from crushing all other active days down to level 1.
+                let normalized = min(1.0, sqrt(Double(item.score) / Double(referencePeak)))
+                if normalized >= 0.80 {
                     level = 4
-                } else if ratio >= 0.45 {
+                } else if normalized >= 0.56 {
                     level = 3
-                } else if ratio >= 0.18 {
+                } else if normalized >= 0.34 {
                     level = 2
                 } else {
                     level = 1

@@ -1743,10 +1743,14 @@ private final class PackCoreAnimationStageNSView: NSView {
     private final class CardLayerSlot {
         let container = CALayer()
         let face = CALayer()
+        let dimScrim = CALayer()
         let focusRing = CALayer()
+        let hoverBorder = CALayer()
         var currentCenter: CGPoint = .zero
         var currentScale: CGFloat = 1.0
         var currentRotation: CGFloat = 0.0
+        var hoverAmount: CGFloat = 0.0
+        var pressAmount: CGFloat = 0.0
         var isVisibleOnStage: Bool = false
     }
     
@@ -1760,16 +1764,22 @@ private final class PackCoreAnimationStageNSView: NSView {
     
     private var slots: [CardLayerSlot] = []
     private var lastAppliedStateSignature: String = ""
+    private var deckTrackingArea: NSTrackingArea?
     
     // Continuous deck position in [0, count - 1] (with rubber-banding at ends)
     private var position: CGFloat = 0
     private var reportedIndex: Int = 0
     
-    // 120Hz ProMotion CADisplayLink critically-damped spring state
+    // 120Hz ProMotion CADisplayLink spring & hover/press state
     private var displayLink: CADisplayLink?
+    private var isPositionSpringActive = false
     private var springTarget: CGFloat = 0
     private var springVelocity: CGFloat = 0
     private var lastFrameTimestamp: CFTimeInterval = 0
+    
+    // Hover & tactile press state
+    private var hoveredCardIndex: Int?
+    private var pressedCardIndex: Int?
     
     // Direct gesture tracking
     private var isTrackpadDragging = false
@@ -1800,17 +1810,27 @@ private final class PackCoreAnimationStageNSView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
     
-    override func resetCursorRects() {
-        super.resetCursorRects()
-        self.addCursorRect(self.bounds, cursor: .pointingHand)
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = self.deckTrackingArea {
+            self.removeTrackingArea(existing)
+        }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        self.addTrackingArea(area)
+        self.deckTrackingArea = area
     }
     
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if self.window == nil {
-            self.stopSpring()
-        } else {
-            self.window?.invalidateCursorRects(for: self)
+            self.stopDisplayLink()
+            self.hoveredCardIndex = nil
+            self.pressedCardIndex = nil
         }
     }
     
@@ -1887,17 +1907,28 @@ private final class PackCoreAnimationStageNSView: NSView {
             let slot = CardLayerSlot()
             slot.container.anchorPoint = CGPoint(x: 0.5, y: 0.5)
             slot.container.shadowColor = NSColor.black.cgColor
-            slot.container.shadowRadius = 6.5
-            slot.container.shadowOffset = CGSize(width: 0, height: -3)
+            slot.container.shadowRadius = 7.0
+            slot.container.shadowOffset = CGSize(width: 0, height: -4)
             
             slot.face.contentsGravity = .resizeAspectFill
             slot.face.contentsScale = 2.0
             slot.container.addSublayer(slot.face)
             
+            slot.dimScrim.cornerCurve = .continuous
+            slot.dimScrim.backgroundColor = NSColor.black.cgColor
+            slot.dimScrim.opacity = 0
+            slot.container.addSublayer(slot.dimScrim)
+            
             slot.focusRing.cornerCurve = .continuous
             slot.focusRing.borderWidth = 1.75
             slot.focusRing.backgroundColor = nil
             slot.container.addSublayer(slot.focusRing)
+            
+            slot.hoverBorder.cornerCurve = .continuous
+            slot.hoverBorder.borderWidth = 1.25
+            slot.hoverBorder.backgroundColor = nil
+            slot.hoverBorder.opacity = 0
+            slot.container.addSublayer(slot.hoverBorder)
             
             root.addSublayer(slot.container)
             self.slots.append(slot)
@@ -1915,7 +1946,7 @@ private final class PackCoreAnimationStageNSView: NSView {
             let slot = self.slots[idx]
             slot.container.bounds = cardBounds
             slot.container.shadowPath = shadowCGPath
-            slot.container.shadowOpacity = self.isDark ? 0.34 : 0.13
+            slot.container.shadowOpacity = self.isDark ? 0.36 : 0.14
             
             slot.face.frame = cardBounds
             slot.face.contents = PackBakedCardTextureCache.shared.texture(
@@ -1926,13 +1957,22 @@ private final class PackCoreAnimationStageNSView: NSView {
                 isDark: self.isDark
             )
             
+            slot.dimScrim.frame = cardBounds
+            slot.dimScrim.cornerRadius = self.cardCornerRadius
+            
             slot.focusRing.frame = cardBounds
             slot.focusRing.cornerRadius = self.cardCornerRadius
             slot.focusRing.borderColor = NSColor(Color(hexString: snap.accentHex)).cgColor
+            
+            slot.hoverBorder.frame = cardBounds
+            slot.hoverBorder.cornerRadius = self.cardCornerRadius
+            slot.hoverBorder.borderColor = (self.isDark
+                ? NSColor.white.withAlphaComponent(0.45)
+                : NSColor.white.withAlphaComponent(0.95)).cgColor
         }
     }
     
-    // MARK: Fan Curve & Zero-Allocation Layer Transform Commit
+    // MARK: Fan Curve & Zero-Allocation 3D Layer Transform Commit
     
     private static func rubberBanded(_ raw: CGFloat, maxIndex: CGFloat) -> CGFloat {
         if raw < 0 {
@@ -1946,7 +1986,7 @@ private final class PackCoreAnimationStageNSView: NSView {
     private func applyPositionsImmediately() {
         guard !self.slots.isEmpty, self.bounds.width > 10 else { return }
         let stageCenterX = self.bounds.width * 0.5
-        let stageCenterY = self.bounds.height * 0.5 + 3.0
+        let stageCenterY = self.bounds.height * 0.5 + 2.0
         
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -1967,46 +2007,83 @@ private final class PackCoreAnimationStageNSView: NSView {
             }
             slot.isVisibleOnStage = true
             
-            // Contained smooth CoverFlow fan: at ±3, outer edge stays ~49pt INSIDE both left & right borders of 527pt stage!
-            let offsetX = CGFloat(tanh(Double(delta) * 0.45)) * 194.0
-            let dropY = min(15.0, delta * delta * 1.75)
-            let scale = max(0.70, 1.0 - absDelta * 0.095)
-            // Unflipped coords (+Y up): negative Z angle tilts right cards clockwise and left cards counter-clockwise
-            let rotationRad = -CGFloat(tanh(Double(delta) * 0.58)) * (5.8 * .pi / 180.0)
+            let hover = slot.hoverAmount
+            let press = slot.pressAmount
+            
+            // Smooth 3D CoverFlow fan with subtle hover peek & tactile press compression
+            let offsetX = CGFloat(tanh(Double(delta) * 0.46)) * 196.0
+            let baseDropY = min(15.0, delta * delta * 1.70)
+            let hoverLiftY: CGFloat = (absDelta > 0.35 ? 6.5 : 2.5) * hover
+            let pressSinkY: CGFloat = -2.0 * press
+            
+            let baseScale = max(0.71, 1.0 - absDelta * 0.092)
+            let hoverScaleBoost: CGFloat = (absDelta > 0.35 ? 0.032 : 0.018) * hover
+            let pressScaleDip: CGFloat = -0.028 * press
+            let scale = max(0.66, baseScale + hoverScaleBoost + pressScaleDip)
+            
+            let rotationZ = -CGFloat(tanh(Double(delta) * 0.54)) * (4.8 * .pi / 180.0) * (1.0 - hover * 0.22)
+            let rotationY = -CGFloat(tanh(Double(delta) * 0.68)) * (13.5 * .pi / 180.0) * (1.0 - hover * 0.30)
+            
             let opacity: Float = absDelta <= 2.65
                 ? 1.0
                 : Float(max(0.0, (3.45 - absDelta) / 0.80))
             let focusOpacity = Float(max(0.0, 1.0 - absDelta * 1.45))
             
-            let center = CGPoint(x: stageCenterX + offsetX, y: stageCenterY - dropY)
+            // Depth scrim darkens distant cards subtly and lifts away smoothly on hover or focus
+            let rawDim = min(0.32, Double(absDelta) * (self.isDark ? 0.13 : 0.085))
+            let scrimAlpha = Float(max(0.0, rawDim * (1.0 - Double(hover) * 0.72)))
+            
+            let center = CGPoint(x: stageCenterX + offsetX, y: stageCenterY - baseDropY + hoverLiftY + pressSinkY)
             slot.currentCenter = center
             slot.currentScale = scale
-            slot.currentRotation = rotationRad
+            slot.currentRotation = rotationZ
             
             var transform = CATransform3DIdentity
+            transform.m34 = -1.0 / 920.0
             transform = CATransform3DScale(transform, scale, scale, 1.0)
-            transform = CATransform3DRotate(transform, rotationRad, 0, 0, 1)
+            transform = CATransform3DRotate(transform, rotationY, 0, 1, 0)
+            transform = CATransform3DRotate(transform, rotationZ, 0, 0, 1)
             
             slot.container.position = center
             slot.container.transform = transform
             slot.container.opacity = opacity
-            slot.container.zPosition = 200.0 - absDelta * 20.0
+            slot.container.zPosition = 200.0 - absDelta * 20.0 + (hover * 3.0)
+            slot.container.shadowRadius = CGFloat(max(4.0, (12.0 - Double(absDelta) * 2.4) + Double(hover) * 2.5 - Double(press) * 3.0))
+            slot.container.shadowOpacity = Float(
+                (self.isDark ? 0.44 : 0.18) * max(0.45, 1.0 - Double(absDelta) * 0.18) + Double(hover) * 0.05
+            )
+            slot.dimScrim.opacity = scrimAlpha
             slot.focusRing.opacity = focusOpacity
+            slot.hoverBorder.opacity = Float(hover * (absDelta > 0.35 ? 0.92 : 0.55))
         }
         CATransaction.commit()
     }
     
-    private func notifyNearestIndexIfChanged() {
+    private func notifyNearestIndexIfChanged(haptic: Bool = false) {
         guard !self.snapshots.isEmpty else { return }
         let maxIdx = max(0, self.snapshots.count - 1)
         let nearest = min(maxIdx, max(0, Int(self.position.rounded())))
         if nearest != self.reportedIndex {
             self.reportedIndex = nearest
+            if haptic {
+                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
+            }
             self.onActiveIndexChanged?(nearest)
         }
     }
     
-    // MARK: 120Hz ProMotion Critically-Damped Spring
+    // MARK: 120Hz ProMotion Spring + Hover/Press Loop
+    
+    private func ensureDisplayLinkRunning() {
+        guard self.displayLink == nil else { return }
+        self.lastFrameTimestamp = CACurrentMediaTime()
+        let link = self.displayLink(target: self, selector: #selector(self.stepFrame(_:)))
+        if #available(macOS 14.0, *) {
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+        }
+        link.add(to: .main, forMode: .common)
+        self.displayLink = link
+    }
     
     private func animateToIndex(_ index: Int, initialVelocity: CGFloat) {
         let maxIdx = max(0, self.snapshots.count - 1)
@@ -2016,55 +2093,129 @@ private final class PackCoreAnimationStageNSView: NSView {
         
         if abs(self.position - clamped) < 0.001 && abs(initialVelocity) < 0.01 {
             self.position = clamped
+            self.isPositionSpringActive = false
             self.applyPositionsImmediately()
             self.notifyNearestIndexIfChanged()
-            self.stopSpring()
             return
         }
         
-        if self.displayLink == nil {
-            self.lastFrameTimestamp = CACurrentMediaTime()
-            let link = self.displayLink(target: self, selector: #selector(self.stepSpring(_:)))
-            if #available(macOS 14.0, *) {
-                link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
-            }
-            link.add(to: .main, forMode: .common)
-            self.displayLink = link
-        }
+        self.isPositionSpringActive = true
+        self.ensureDisplayLinkRunning()
     }
     
     private func stopSpring() {
-        self.displayLink?.invalidate()
-        self.displayLink = nil
+        self.isPositionSpringActive = false
         self.springVelocity = 0
     }
     
-    @objc private func stepSpring(_ link: CADisplayLink) {
+    private func stopDisplayLink() {
+        self.displayLink?.invalidate()
+        self.displayLink = nil
+        self.isPositionSpringActive = false
+        self.springVelocity = 0
+    }
+    
+    @objc private func stepFrame(_ link: CADisplayLink) {
         let now = link.timestamp > 0 ? link.timestamp : CACurrentMediaTime()
         let rawDT = now - self.lastFrameTimestamp
         self.lastFrameTimestamp = now
         let dt = CGFloat(min(1.0 / 30.0, max(1.0 / 240.0, rawDT)))
+        var anyMoving = false
         
-        // Exact analytical critically-damped spring (omega = 21 rad/s -> crisp ~0.22s settle with zero overshoot)
-        let omega: CGFloat = 21.0
-        let x0 = self.position - self.springTarget
-        let v0 = self.springVelocity
-        let expTerm = CGFloat(exp(Double(-omega * dt)))
-        let c2 = v0 + omega * x0
-        let xNext = (x0 + c2 * dt) * expTerm
-        let vNext = (v0 - omega * c2 * dt) * expTerm
-        
-        if abs(xNext) < 0.0015 && abs(vNext) < 0.015 {
-            self.position = self.springTarget
-            self.springVelocity = 0
-            self.applyPositionsImmediately()
+        if self.isPositionSpringActive {
+            // Smooth lightly underdamped harmonic spring (zeta = 0.88, omega = 19.5 rad/s -> tactile Apple CoverFlow settle)
+            let omega: CGFloat = 19.5
+            let zeta: CGFloat = 0.88
+            let x = self.position - self.springTarget
+            let v = self.springVelocity
+            let accel = -(omega * omega) * x - (2.0 * zeta * omega) * v
+            let vNext = v + accel * dt
+            let xNext = x + vNext * dt
+            
+            if abs(xNext) < 0.0014 && abs(vNext) < 0.014 {
+                self.position = self.springTarget
+                self.springVelocity = 0
+                self.isPositionSpringActive = false
+            } else {
+                self.position = self.springTarget + xNext
+                self.springVelocity = vNext
+                anyMoving = true
+            }
             self.notifyNearestIndexIfChanged()
-            self.stopSpring()
+        }
+        
+        // Smooth 120Hz exponential interpolation for per-card hover peek & press depth
+        let hoverAlpha = min(1.0, 1.0 - exp(-20.0 * dt))
+        let pressAlpha = min(1.0, 1.0 - exp(-28.0 * dt))
+        for (idx, slot) in self.slots.enumerated() {
+            let hoverTarget: CGFloat = (!self.isMouseDragging && !self.isTrackpadDragging && self.hoveredCardIndex == idx) ? 1.0 : 0.0
+            let pressTarget: CGFloat = (!self.isMouseDragging && self.pressedCardIndex == idx) ? 1.0 : 0.0
+            
+            if abs(slot.hoverAmount - hoverTarget) > 0.004 {
+                slot.hoverAmount += (hoverTarget - slot.hoverAmount) * hoverAlpha
+                anyMoving = true
+            } else {
+                slot.hoverAmount = hoverTarget
+            }
+            
+            if abs(slot.pressAmount - pressTarget) > 0.004 {
+                slot.pressAmount += (pressTarget - slot.pressAmount) * pressAlpha
+                anyMoving = true
+            } else {
+                slot.pressAmount = pressTarget
+            }
+        }
+        
+        self.applyPositionsImmediately()
+        if !anyMoving {
+            self.stopDisplayLink()
+        }
+    }
+    
+    // MARK: Card Hit-Testing & Hover Tracking
+    
+    private func hitTestCardIndex(at point: CGPoint) -> Int? {
+        let hitIndices = self.slots.indices
+            .filter { self.slots[$0].isVisibleOnStage }
+            .sorted { abs(CGFloat($0) - self.position) < abs(CGFloat($1) - self.position) }
+        
+        for idx in hitIndices {
+            let slot = self.slots[idx]
+            let dx = point.x - slot.currentCenter.x
+            let dy = point.y - slot.currentCenter.y
+            let cosA = cos(-slot.currentRotation)
+            let sinA = sin(-slot.currentRotation)
+            let localX = (dx * cosA - dy * sinA) / max(0.2, slot.currentScale)
+            let localY = (dx * sinA + dy * cosA) / max(0.2, slot.currentScale)
+            if abs(localX) <= self.cardWidth * 0.5 && abs(localY) <= self.cardHeight * 0.5 {
+                return idx
+            }
+        }
+        return nil
+    }
+    
+    override func mouseMoved(with event: NSEvent) {
+        guard !self.isMouseDragging else { return }
+        let pt = self.convert(event.locationInWindow, from: nil)
+        let hit = self.hitTestCardIndex(at: pt)
+        if hit != self.hoveredCardIndex {
+            self.hoveredCardIndex = hit
+            self.ensureDisplayLinkRunning()
+        }
+        if hit != nil {
+            NSCursor.pointingHand.set()
         } else {
-            self.position = self.springTarget + xNext
-            self.springVelocity = vNext
-            self.applyPositionsImmediately()
-            self.notifyNearestIndexIfChanged()
+            NSCursor.arrow.set()
+        }
+    }
+    
+    override func mouseExited(with event: NSEvent) {
+        if self.hoveredCardIndex != nil {
+            self.hoveredCardIndex = nil
+            self.ensureDisplayLinkRunning()
+        }
+        if !self.isMouseDragging {
+            NSCursor.arrow.set()
         }
     }
     
@@ -2095,6 +2246,7 @@ private final class PackCoreAnimationStageNSView: NSView {
             if event.phase == .began || event.phase == .changed {
                 if !self.isTrackpadDragging {
                     self.isTrackpadDragging = true
+                    self.hoveredCardIndex = nil
                     self.stopSpring()
                     self.smoothedScrollVelocity = 0
                     self.lastScrollSampleTime = CACurrentMediaTime()
@@ -2110,7 +2262,7 @@ private final class PackCoreAnimationStageNSView: NSView {
                 let unclamped = self.position + deltaCards
                 self.position = Self.rubberBanded(unclamped, maxIndex: maxIdx)
                 self.applyPositionsImmediately()
-                self.notifyNearestIndexIfChanged()
+                self.notifyNearestIndexIfChanged(haptic: true)
                 return
             }
             if event.phase == .ended || event.phase == .cancelled {
@@ -2122,15 +2274,16 @@ private final class PackCoreAnimationStageNSView: NSView {
                 self.animateToIndex(targetIdx, initialVelocity: v * 0.55)
                 return
             }
-            // Ignore trailing momentumPhase events after our 120Hz spring has already taken control
             if !event.momentumPhase.isEmpty {
                 return
             }
         } else if abs(dx) > 0.05 {
-            // Discrete notched mouse horizontal scroll wheel
-            let baseIdx = Int((self.displayLink != nil ? self.springTarget : self.position).rounded())
+            let baseIdx = Int((self.isPositionSpringActive ? self.springTarget : self.position).rounded())
             let step = dx > 0 ? -1 : 1
             let nextIdx = min(Int(maxIdx), max(0, baseIdx + step))
+            if nextIdx != baseIdx {
+                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
+            }
             self.animateToIndex(nextIdx, initialVelocity: 0)
         } else {
             self.nextResponder?.scrollWheel(with: event)
@@ -2147,7 +2300,11 @@ private final class PackCoreAnimationStageNSView: NSView {
         self.mouseVelocity = 0
         self.lastMouseX = pt.x
         self.lastMouseSampleTime = CACurrentMediaTime()
+        self.pressedCardIndex = self.hitTestCardIndex(at: pt)
         self.stopSpring()
+        if self.pressedCardIndex != nil {
+            self.ensureDisplayLinkRunning()
+        }
     }
     
     override func mouseDragged(with event: NSEvent) {
@@ -2156,6 +2313,9 @@ private final class PackCoreAnimationStageNSView: NSView {
         let totalDX = pt.x - startPt.x
         if !self.isMouseDragging && abs(totalDX) > 4 {
             self.isMouseDragging = true
+            self.pressedCardIndex = nil
+            self.hoveredCardIndex = nil
+            NSCursor.closedHand.set()
         }
         guard self.isMouseDragging else { return }
         
@@ -2172,50 +2332,43 @@ private final class PackCoreAnimationStageNSView: NSView {
         let raw = self.mouseDragStartPosition - (totalDX / 84.0)
         self.position = Self.rubberBanded(raw, maxIndex: maxIdx)
         self.applyPositionsImmediately()
-        self.notifyNearestIndexIfChanged()
+        self.notifyNearestIndexIfChanged(haptic: true)
     }
     
     override func mouseUp(with event: NSEvent) {
         defer {
             self.mouseDownPoint = nil
             self.isMouseDragging = false
+            if self.pressedCardIndex != nil {
+                self.pressedCardIndex = nil
+                self.ensureDisplayLinkRunning()
+            }
         }
         guard !self.snapshots.isEmpty else { return }
         let maxIdx = max(0, self.snapshots.count - 1)
+        let pt = self.convert(event.locationInWindow, from: nil)
         
         if self.isMouseDragging {
             let v = min(14.0, max(-14.0, self.mouseVelocity))
             let projected = self.position + v * 0.14
             let targetIdx = min(maxIdx, max(0, Int(projected.rounded())))
             self.animateToIndex(targetIdx, initialVelocity: v * 0.55)
+            let hoverAfter = self.hitTestCardIndex(at: pt)
+            self.hoveredCardIndex = hoverAfter
+            (hoverAfter != nil ? NSCursor.pointingHand : NSCursor.arrow).set()
             return
         }
         
-        // Tap hit-testing in front-to-back z-order (smallest |delta| first)
-        let pt = self.convert(event.locationInWindow, from: nil)
-        let hitIndices = self.slots.indices
-            .filter { self.slots[$0].isVisibleOnStage }
-            .sorted { abs(CGFloat($0) - self.position) < abs(CGFloat($1) - self.position) }
-        
-        for idx in hitIndices {
-            let slot = self.slots[idx]
-            let dx = pt.x - slot.currentCenter.x
-            let dy = pt.y - slot.currentCenter.y
-            let cosA = cos(-slot.currentRotation)
-            let sinA = sin(-slot.currentRotation)
-            let localX = (dx * cosA - dy * sinA) / max(0.2, slot.currentScale)
-            let localY = (dx * sinA + dy * cosA) / max(0.2, slot.currentScale)
-            if abs(localX) <= self.cardWidth * 0.5 && abs(localY) <= self.cardHeight * 0.5 {
-                if abs(CGFloat(idx) - self.position) > 0.32 {
-                    self.animateToIndex(idx, initialVelocity: 0)
-                } else {
-                    self.onInspectBot?(self.snapshots[idx].botID)
-                }
-                return
+        if let idx = self.hitTestCardIndex(at: pt) {
+            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
+            if abs(CGFloat(idx) - self.position) > 0.32 {
+                self.animateToIndex(idx, initialVelocity: 0)
+            } else {
+                self.onInspectBot?(self.snapshots[idx].botID)
             }
+            return
         }
         
-        // Ensure settled if tapped on empty margin after catching a spring
         let nearest = min(maxIdx, max(0, Int(self.position.rounded())))
         self.animateToIndex(nearest, initialVelocity: 0)
     }
@@ -2509,7 +2662,7 @@ struct AIBotsSettingsView: View {
         let stageHeight: CGFloat = switch self.layoutMode {
             case .list: CGFloat(count) * 56.0
             case .card: CGFloat(rowsCount) * Self.galleryRowStride
-            case .pack: Self.packStageHeight + 70.0
+            case .pack: Self.packStageHeight + 88.0
         }
         let enabledCount = self.snapshots.filter(\.isEnabled).count
         let focusedPackSnap: BotCardSnapshot? = self.snapshots.indices.contains(liveNearestIndex)
@@ -2559,7 +2712,7 @@ struct AIBotsSettingsView: View {
             
             // Stage
             if self.layoutMode == .pack {
-                VStack(spacing: 10) {
+                VStack(spacing: 9) {
                     PackCoreAnimationDeckView(
                         snapshots: self.snapshots,
                         activeIndex: liveNearestIndex,
@@ -2580,6 +2733,31 @@ struct AIBotsSettingsView: View {
                     )
                     .frame(width: Self.fixedStageWidth, height: Self.packStageHeight)
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    
+                    // Interactive deck progress pills
+                    HStack(spacing: 5) {
+                        ForEach(Array(self.snapshots.enumerated()), id: \.element.id) { idx, snap in
+                            let isCurrent = (idx == liveNearestIndex)
+                            let pillAccent = Color(hexString: snap.accentHex)
+                            Button {
+                                guard idx != liveNearestIndex else { return }
+                                self.packActiveIndex = idx
+                                self.packExternalStepToken &+= 1
+                                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
+                            } label: {
+                                Capsule(style: .continuous)
+                                    .fill(isCurrent
+                                          ? pillAccent
+                                          : Color.primary.opacity(isDark ? 0.18 : 0.14))
+                                    .frame(width: isCurrent ? 18 : 5.5, height: 5.5)
+                                    .animation(.snappy(duration: 0.22, extraBounce: 0), value: liveNearestIndex)
+                            }
+                            .buttonStyle(.plain)
+                            .pointerStyle(.link)
+                            .help(snap.displayTitle)
+                        }
+                    }
+                    .frame(height: 10)
                     
                     if let focusedSnap = focusedPackSnap {
                         self.packBottomDockBar(
@@ -2817,6 +2995,7 @@ struct AIBotsSettingsView: View {
                 Text("\(activeIndex + 1)/\(total)")
                     .font(.system(size: 11, weight: .medium, design: .monospaced).monospacedDigit())
                     .foregroundStyle(.secondary)
+                    .contentTransition(.numericText())
                     .frame(minWidth: 34)
                 
                 Button {

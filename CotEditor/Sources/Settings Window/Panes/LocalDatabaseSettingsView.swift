@@ -22,8 +22,9 @@
 import AppKit
 import SwiftUI
 
-/// Visual local SQLite vault explorer for Settings: storage footprint, portable migration controls,
-/// AI token analytics, interactive table schema/content browser, and storage health metrics.
+/// Visual Personal Knowledge Vault explorer for Settings: spatial storage ring & segmented bar,
+/// clickable human-readable content cards (zero SQLite table/key jargon), AI token analytics,
+/// and overflow-safe local file location controls.
 struct LocalDatabaseSettingsView: View {
     
     let onExportDatabase: () -> Void
@@ -34,11 +35,12 @@ struct LocalDatabaseSettingsView: View {
     @State private var database = CotLocalDatabase.shared
     @State private var studioPalette = StudioPaletteManager.shared
     @State private var snapshot: DatabaseInspectionSnapshot?
-    @State private var selectedTable: DatabaseTableSummary?
-    @State private var tablePreview: DatabaseTablePreview?
-    @State private var tableFilterOnlyPopulated = false
+    @State private var activeSection: DatabaseVaultSectionKind?
+    @State private var sectionItems: [DatabaseVaultContentItem] = []
+    @State private var highlightedCategory: DatabaseCategoryKind?
     @State private var tokenTab: TokenViewTab = .overview
     @State private var compactStatusText: String?
+    @State private var didCopyPath = false
     
     fileprivate enum TokenViewTab: String, CaseIterable, Identifiable {
         case overview
@@ -60,36 +62,46 @@ struct LocalDatabaseSettingsView: View {
     
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            if let table = self.selectedTable {
-                DatabaseTableDetailView(
-                    table: table,
-                    preview: self.tablePreview,
+        VStack(alignment: .leading, spacing: 16) {
+            if let section = self.activeSection {
+                DatabaseVaultDetailView(
+                    section: section,
+                    items: self.sectionItems,
                     isDark: self.isDark,
-                    accent: self.accent,
+                    onSwitchSection: { next in
+                        self.openSection(next)
+                    },
                     onBack: {
                         withAnimation(.easeInOut(duration: 0.18)) {
-                            self.selectedTable = nil
-                            self.tablePreview = nil
+                            self.activeSection = nil
+                            self.sectionItems = []
                         }
                     }
                 )
                 .transition(.opacity.combined(with: .move(edge: .trailing)))
             } else if let snapshot = self.snapshot {
-                DatabaseStorageOverviewCard(
+                DatabaseVaultHeroCard(
                     snapshot: snapshot,
+                    highlightedCategory: self.$highlightedCategory,
                     isDark: self.isDark,
-                    accent: self.accent,
                     compactStatusText: self.compactStatusText,
+                    didCopyPath: self.didCopyPath,
+                    onCopyPath: { self.copyDatabasePath(snapshot.filePath) },
                     onRevealInFinder: { self.revealDatabaseInFinder() },
                     onExport: self.onExportDatabase,
                     onImport: self.onImportDatabase,
                     onCompact: { self.runCompact() }
                 )
                 
-                DatabaseAssetPulseCard(
+                DatabaseVaultContentsBento(
                     assets: snapshot.assets,
-                    isDark: self.isDark
+                    tokenSummary: snapshot.tokenSummary,
+                    highlightedCategory: self.highlightedCategory,
+                    isDark: self.isDark,
+                    accent: self.accent,
+                    onOpenSection: { kind in
+                        self.openSection(kind)
+                    }
                 )
                 
                 DatabaseTokenAnalyticsCard(
@@ -98,28 +110,9 @@ struct LocalDatabaseSettingsView: View {
                     isDark: self.isDark,
                     accent: self.accent
                 )
-                
-                DatabaseTableExplorerCard(
-                    tables: snapshot.tables,
-                    onlyPopulated: self.$tableFilterOnlyPopulated,
-                    isDark: self.isDark,
-                    onSelectTable: { table in
-                        let preview = self.database.inspectTablePreview(tableName: table.name, limit: 30)
-                        withAnimation(.easeInOut(duration: 0.18)) {
-                            self.tablePreview = preview
-                            self.selectedTable = table
-                        }
-                    }
-                )
-                
-                DatabaseTechnicalMetaCard(
-                    snapshot: snapshot,
-                    isDark: self.isDark,
-                    onRevealInFinder: { self.revealDatabaseInFinder() },
-                    onRefresh: { self.reloadSnapshot() }
-                )
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .task(id: self.refreshRevision) {
             self.reloadSnapshot()
         }
@@ -131,8 +124,34 @@ struct LocalDatabaseSettingsView: View {
     }
     
     
+    private func openSection(_ kind: DatabaseVaultSectionKind) {
+        let items = self.database.inspectVaultItems(for: kind, limit: 40)
+        withAnimation(.easeInOut(duration: 0.18)) {
+            self.sectionItems = items
+            self.activeSection = kind
+        }
+    }
+    
+    
     private func revealDatabaseInFinder() {
         NSWorkspace.shared.activateFileViewerSelecting([self.database.databaseURL])
+    }
+    
+    
+    private func copyDatabasePath(_ path: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(path, forType: .string)
+        withAnimation(.easeOut(duration: 0.15)) {
+            self.didCopyPath = true
+        }
+        Task {
+            try? await Task.sleep(for: .seconds(1.8))
+            await MainActor.run {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    self.didCopyPath = false
+                }
+            }
+        }
     }
     
     
@@ -204,11 +223,11 @@ private enum DatabaseFormatters {
             case .documents:
                 isDark ? Color(red: 0.36, green: 0.64, blue: 0.96) : Color(red: 0.18, green: 0.49, blue: 0.92)
             case .aiRecords:
-                isDark ? Color(red: 0.65, green: 0.52, blue: 0.96) : Color(red: 0.48, green: 0.36, blue: 0.84)
+                isDark ? Color(red: 0.64, green: 0.50, blue: 0.95) : Color(red: 0.48, green: 0.36, blue: 0.84)
             case .memory:
-                isDark ? Color(red: 0.32, green: 0.78, blue: 0.60) : Color(red: 0.18, green: 0.64, blue: 0.47)
+                isDark ? Color(red: 0.30, green: 0.78, blue: 0.58) : Color(red: 0.16, green: 0.62, blue: 0.44)
             case .feedsAndBoards:
-                isDark ? Color(red: 0.92, green: 0.66, blue: 0.34) : Color(red: 0.85, green: 0.54, blue: 0.16)
+                isDark ? Color(red: 0.92, green: 0.66, blue: 0.34) : Color(red: 0.84, green: 0.54, blue: 0.16)
             case .systemConfig:
                 isDark ? Color(red: 0.56, green: 0.58, blue: 0.64) : Color(red: 0.52, green: 0.54, blue: 0.60)
         }
@@ -226,7 +245,7 @@ private struct DatabaseCardContainer<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if self.title != nil || self.trailingTitle != nil {
-                HStack {
+                HStack(alignment: .firstTextBaseline) {
                     if let title = self.title {
                         Text(title)
                             .font(.system(size: 12, weight: .semibold))
@@ -264,57 +283,103 @@ private struct DatabaseCardContainer<Content: View>: View {
 }
 
 
-// MARK: - 1. Storage Bar & Portable Migration Card
+// MARK: - 1. Spatial Vault Storage Hero Card
 
-private struct DatabaseStorageOverviewCard: View {
+private struct DatabaseVaultHeroCard: View {
     
     let snapshot: DatabaseInspectionSnapshot
+    @Binding var highlightedCategory: DatabaseCategoryKind?
     let isDark: Bool
-    let accent: Color
     let compactStatusText: String?
+    let didCopyPath: Bool
+    let onCopyPath: () -> Void
     let onRevealInFinder: () -> Void
     let onExport: () -> Void
     let onImport: () -> Void
     let onCompact: () -> Void
     
     var body: some View {
-        let totalEstimated = max(1, self.snapshot.categories.reduce(Int64(0)) { $0 + $1.bytes })
+        let totalEstimated = max(Int64(1), self.snapshot.categories.reduce(Int64(0)) { $0 + $1.bytes })
+        let displayPath = CotLocalDatabase.abbreviatedDisplayPath(self.snapshot.filePath)
         
         DatabaseCardContainer(
-            title: AppLanguage.text("本地存储", en: "Local Storage"),
-            trailingTitle: "\(self.snapshot.tables.count) \(AppLanguage.text("张表", en: "tables")) · \(self.snapshot.totalRowCount) \(AppLanguage.text("条记录", en: "rows"))",
+            title: AppLanguage.text("本地数据金库", en: "Local Vault"),
+            trailingTitle: "\(self.snapshot.totalRowCount.formatted()) \(AppLanguage.text("条数据", en: "items"))",
             isDark: self.isDark
         ) {
             VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text(DatabaseFormatters.bytes(self.snapshot.totalBytes))
-                        .font(.system(size: 24, weight: .semibold).monospacedDigit())
-                        .foregroundStyle(.primary)
+                // Top spatial split: radial storage ring + aligned category breakdown
+                HStack(alignment: .center, spacing: 16) {
+                    DatabaseStorageRingView(
+                        categories: self.snapshot.categories,
+                        totalBytes: self.snapshot.totalBytes,
+                        highlightedCategory: self.highlightedCategory,
+                        isDark: self.isDark
+                    )
+                    .frame(width: 92, height: 92)
                     
-                    Text(self.snapshot.fileName)
-                        .font(.system(size: 11.5, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 7)
-                        .frame(height: 20)
-                        .background(
-                            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .fill(self.isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.04))
-                        )
-                    
-                    Spacer(minLength: 8)
-                    
-                    if let compactStatusText = self.compactStatusText {
-                        Text(compactStatusText)
-                            .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .transition(.opacity)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(DatabaseFormatters.bytes(self.snapshot.totalBytes))
+                                .font(.system(size: 22, weight: .bold, design: .rounded).monospacedDigit())
+                                .foregroundStyle(.primary)
+                            
+                            Spacer(minLength: 4)
+                            
+                            if let compactStatusText = self.compactStatusText {
+                                Text(compactStatusText)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                    .transition(.opacity)
+                            }
+                        }
+                        
+                        // Perfectly aligned category legend rows (zero truncation, zero orphan wrap)
+                        VStack(spacing: 4.5) {
+                            ForEach(self.snapshot.categories) { category in
+                                let pct = Int((Double(category.bytes) / Double(totalEstimated) * 100).rounded())
+                                let isActive = (self.highlightedCategory == category.kind)
+                                HStack(spacing: 7) {
+                                    Circle()
+                                        .fill(DatabaseFormatters.categoryColor(category.kind, isDark: self.isDark))
+                                        .frame(width: 7, height: 7)
+                                    
+                                    Text(category.kind.displayName)
+                                        .font(.system(size: 11.5, weight: isActive ? .semibold : .regular))
+                                        .foregroundStyle(isActive ? .primary : .secondary)
+                                        .lineLimit(1)
+                                    
+                                    Spacer(minLength: 6)
+                                    
+                                    Text(DatabaseFormatters.bytes(category.bytes))
+                                        .font(.system(size: 11, weight: .medium, design: .monospaced).monospacedDigit())
+                                        .foregroundStyle(.primary.opacity(0.84))
+                                        .frame(width: 60, alignment: .trailing)
+                                    
+                                    Text("\(pct)%")
+                                        .font(.system(size: 10.5, design: .monospaced).monospacedDigit())
+                                        .foregroundStyle(.secondary)
+                                        .frame(width: 32, alignment: .trailing)
+                                }
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                        .fill(isActive ? (self.isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.035)) : Color.clear)
+                                )
+                                .onHover { hovering in
+                                    self.highlightedCategory = hovering ? category.kind : (self.highlightedCategory == category.kind ? nil : self.highlightedCategory)
+                                }
+                            }
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 
-                // Apple Storage-style segmented bar
+                // Proportional segmented storage strip
                 GeometryReader { geo in
                     let nonZero = self.snapshot.categories.filter { $0.bytes > 0 }
-                    let spacing: CGFloat = nonZero.count > 1 ? 2 : 0
+                    let spacing: CGFloat = nonZero.count > 1 ? 2.5 : 0
                     let usableWidth = max(0, geo.size.width - spacing * CGFloat(max(0, nonZero.count - 1)))
                     
                     HStack(spacing: spacing) {
@@ -324,44 +389,64 @@ private struct DatabaseStorageOverviewCard: View {
                         } else {
                             ForEach(nonZero) { category in
                                 let fraction = CGFloat(category.bytes) / CGFloat(totalEstimated)
-                                RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                    .fill(DatabaseFormatters.categoryColor(category.kind, isDark: self.isDark))
-                                    .frame(width: max(6, usableWidth * fraction))
+                                let dimmed = (self.highlightedCategory != nil && self.highlightedCategory != category.kind)
+                                RoundedRectangle(cornerRadius: 3.5, style: .continuous)
+                                    .fill(DatabaseFormatters.categoryColor(category.kind, isDark: self.isDark).opacity(dimmed ? 0.30 : 0.92))
+                                    .frame(width: max(8, usableWidth * fraction))
+                                    .onHover { hovering in
+                                        self.highlightedCategory = hovering ? category.kind : (self.highlightedCategory == category.kind ? nil : self.highlightedCategory)
+                                    }
                             }
                         }
                     }
                 }
-                .frame(height: 10)
-                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .frame(height: 8)
+                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
                 
-                // Category legend row
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 110), spacing: 8)],
-                    alignment: .leading,
-                    spacing: 6
-                ) {
-                    ForEach(self.snapshot.categories) { category in
-                        HStack(spacing: 5) {
-                            Circle()
-                                .fill(DatabaseFormatters.categoryColor(category.kind, isDark: self.isDark))
-                                .frame(width: 7, height: 7)
-                            Text(category.kind.displayName)
-                                .font(.system(size: 11.5))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                            Text(DatabaseFormatters.bytes(category.bytes))
-                                .font(.system(size: 11, weight: .medium).monospacedDigit())
-                                .foregroundStyle(.primary.opacity(0.82))
-                                .lineLimit(1)
-                        }
+                // Overflow-safe file location strip
+                HStack(spacing: 8) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    
+                    Text(displayPath)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                        .help(self.snapshot.filePath)
+                    
+                    Button(action: self.onCopyPath) {
+                        Image(systemName: self.didCopyPath ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 22, height: 22)
+                            .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .pointerStyle(.link)
+                    .help(AppLanguage.text("复制路径", en: "Copy Path"))
+                    
+                    Button(AppLanguage.text("在访达中显示", en: "Reveal")) {
+                        self.onRevealInFinder()
+                    }
+                    .controlSize(.small)
+                    .fixedSize()
                 }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(self.isDark ? Color.white.opacity(0.035) : Color.black.opacity(0.025))
+                )
                 
                 Rectangle()
                     .fill(self.isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.06))
                     .frame(height: 0.5)
                 
-                // Migration & maintenance action strip
+                // Clean aligned action strip
                 HStack(spacing: 8) {
                     Button(AppLanguage.text("导出迁移文件", en: "Export")) {
                         self.onExport()
@@ -373,15 +458,10 @@ private struct DatabaseStorageOverviewCard: View {
                     }
                     .controlSize(.small)
                     
-                    Button(AppLanguage.text("压缩空间", en: "Compact")) {
-                        self.onCompact()
-                    }
-                    .controlSize(.small)
-                    
                     Spacer()
                     
-                    Button(AppLanguage.text("在访达中显示", en: "Reveal")) {
-                        self.onRevealInFinder()
+                    Button(AppLanguage.text("压缩整理", en: "Compact")) {
+                        self.onCompact()
                     }
                     .controlSize(.small)
                 }
@@ -392,94 +472,593 @@ private struct DatabaseStorageOverviewCard: View {
 }
 
 
-// MARK: - 2. Local Vault Inventory Grid
-
-private struct DatabaseAssetPulseCard: View {
+private struct DatabaseStorageRingView: View {
     
-    let assets: DatabaseAssetCounts
+    let categories: [DatabaseStorageCategory]
+    let totalBytes: Int64
+    let highlightedCategory: DatabaseCategoryKind?
     let isDark: Bool
     
     var body: some View {
-        let items: [(label: String, value: String, detail: String)] = [
-            (
-                AppLanguage.text("文档", en: "Docs"),
-                "\(self.assets.activeDocuments)",
-                "\(DatabaseFormatters.compactCount(self.assets.totalDocumentChars)) \(AppLanguage.text("字", en: "ch"))"
-            ),
-            (
-                AppLanguage.text("AI 对话", en: "Chats"),
-                "\(self.assets.totalMessages)",
-                "\(self.assets.butlerSessions) \(AppLanguage.text("会话", en: "sess"))"
-            ),
-            (
-                AppLanguage.text("长期记忆", en: "Memory"),
-                "\(self.assets.kycMemories)",
-                "\(self.assets.memoryJournals) \(AppLanguage.text("日志", en: "logs"))"
-            ),
-            (
-                AppLanguage.text("写作天数", en: "Writing"),
-                "\(self.assets.writingDays)",
-                "\(DatabaseFormatters.compactCount(self.assets.totalTypedChars)) \(AppLanguage.text("字", en: "ch"))"
-            ),
-            (
-                AppLanguage.text("待办", en: "Tasks"),
-                "\(self.assets.remindersOpen)",
-                "/ \(self.assets.remindersTotal)"
-            ),
-            (
-                AppLanguage.text("周报", en: "Reports"),
-                "\(self.assets.weeklyReports)",
-                AppLanguage.text("归档", en: "saved")
-            ),
-            (
-                AppLanguage.text("订阅", en: "Feeds"),
-                "\(self.assets.totalSubscriptions)",
-                "\(self.assets.watchlistStocks) \(AppLanguage.text("股", en: "stk")) · \(self.assets.podcasts) \(AppLanguage.text("播客", en: "pod"))"
-            ),
-            (
-                AppLanguage.text("配置项", en: "Configs"),
-                "\(self.assets.configEntries)",
-                "SQLite"
-            ),
-        ]
+        let total = max(1.0, Double(self.categories.reduce(Int64(0)) { $0 + $1.bytes }))
+        let nonZero = self.categories.filter { $0.bytes > 0 }
         
-        DatabaseCardContainer(
-            title: AppLanguage.text("数据资产概览", en: "Stored Assets"),
-            isDark: self.isDark
-        ) {
-            LazyVGrid(
-                columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4),
-                spacing: 8
-            ) {
-                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(item.label)
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(.secondary)
-                        Text(item.value)
-                            .font(.system(size: 16, weight: .semibold).monospacedDigit())
-                            .foregroundStyle(.primary)
-                        Text(item.detail)
-                            .font(.system(size: 10.5).monospacedDigit())
-                            .foregroundStyle(.secondary.opacity(0.85))
-                            .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(self.isDark ? Color.white.opacity(0.035) : Color.black.opacity(0.022))
+        ZStack {
+            Canvas { context, size in
+                let center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
+                let radius = min(size.width, size.height) * 0.5 - 7
+                let lineW: CGFloat = 10
+                
+                // Base track
+                let trackRect = CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
+                context.stroke(
+                    Circle().path(in: trackRect),
+                    with: .color(self.isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.055)),
+                    lineWidth: lineW
+                )
+                
+                var startDeg = -90.0
+                let gapDeg = nonZero.count > 1 ? 3.5 : 0.0
+                for cat in nonZero {
+                    let span = max(4.0, (Double(cat.bytes) / total) * 360.0)
+                    let segStart = startDeg + gapDeg * 0.5
+                    let segEnd = max(segStart + 2.0, startDeg + span - gapDeg * 0.5)
+                    let isActive = (self.highlightedCategory == cat.kind)
+                    let dimmed = (self.highlightedCategory != nil && !isActive)
+                    
+                    var arc = Path()
+                    arc.addArc(
+                        center: center,
+                        radius: radius,
+                        startAngle: .degrees(segStart),
+                        endAngle: .degrees(segEnd),
+                        clockwise: false
                     )
+                    context.stroke(
+                        arc,
+                        with: .color(DatabaseFormatters.categoryColor(cat.kind, isDark: self.isDark).opacity(dimmed ? 0.28 : 0.94)),
+                        style: StrokeStyle(lineWidth: isActive ? lineW + 2.0 : lineW, lineCap: .round)
+                    )
+                    startDeg += span
                 }
             }
-            .padding(12)
+            
+            VStack(spacing: 1) {
+                Text(AppLanguage.text("占用", en: "Used"))
+                    .font(.system(size: 9.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Text(DatabaseFormatters.bytes(self.totalBytes))
+                    .font(.system(size: 11.5, weight: .semibold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+            .frame(width: 58)
         }
     }
 }
 
 
-// MARK: - 3. AI Token Analytics Card
+// MARK: - 2. Imaginative Asymmetric Vault Contents Bento ("里面有什么")
+
+private struct DatabaseVaultContentsBento: View {
+    
+    let assets: DatabaseAssetCounts
+    let tokenSummary: DatabaseAITokenSummary
+    let highlightedCategory: DatabaseCategoryKind?
+    let isDark: Bool
+    let accent: Color
+    let onOpenSection: (DatabaseVaultSectionKind) -> Void
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(AppLanguage.text("数据内容", en: "Vault Contents"))
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4)
+            
+            // Row 1: Two visual hero content cards (Documents/Writing & Memories/Tasks)
+            HStack(spacing: 10) {
+                VaultDocumentsHeroTile(
+                    assets: self.assets,
+                    isHighlighted: self.highlightedCategory == .documents,
+                    isDark: self.isDark,
+                    onTap: { self.onOpenSection(.documents) }
+                )
+                
+                VaultMemoryAndTasksHeroTile(
+                    assets: self.assets,
+                    isHighlighted: self.highlightedCategory == .memory,
+                    isDark: self.isDark,
+                    onOpenMemories: { self.onOpenSection(.memories) },
+                    onOpenReminders: { self.onOpenSection(.reminders) }
+                )
+            }
+            
+            // Row 2: Three balanced interactive category cards
+            HStack(spacing: 10) {
+                VaultCompactFeatureTile(
+                    icon: "bubble.left.and.bubble.right",
+                    title: AppLanguage.text("AI 对话", en: "AI Chats"),
+                    primaryValue: "\(self.assets.totalMessages)",
+                    unit: AppLanguage.text("条", en: "msgs"),
+                    meta: "\(self.assets.butlerSessions) \(AppLanguage.text("个会话", en: "sessions"))",
+                    tint: DatabaseFormatters.categoryColor(.aiRecords, isDark: self.isDark),
+                    isHighlighted: self.highlightedCategory == .aiRecords,
+                    isDark: self.isDark,
+                    onTap: { self.onOpenSection(.conversations) }
+                )
+                
+                VaultCompactFeatureTile(
+                    icon: "doc.text",
+                    title: AppLanguage.text("周报归档", en: "Reports"),
+                    primaryValue: "\(self.assets.weeklyReports)",
+                    unit: AppLanguage.text("份", en: "saved"),
+                    meta: "\(self.assets.writingDays) \(AppLanguage.text("活跃天", en: "days"))",
+                    tint: DatabaseFormatters.categoryColor(.documents, isDark: self.isDark),
+                    isHighlighted: self.highlightedCategory == .documents,
+                    isDark: self.isDark,
+                    onTap: { self.onOpenSection(.weeklyReports) }
+                )
+                
+                VaultCompactFeatureTile(
+                    icon: "bookmark",
+                    title: AppLanguage.text("订阅关注", en: "Feeds"),
+                    primaryValue: "\(self.assets.totalSubscriptions)",
+                    unit: AppLanguage.text("项", en: "items"),
+                    meta: "\(self.assets.watchlistStocks) \(AppLanguage.text("股", en: "stk")) · \(self.assets.podcasts) \(AppLanguage.text("播客", en: "pod"))",
+                    tint: DatabaseFormatters.categoryColor(.feedsAndBoards, isDark: self.isDark),
+                    isHighlighted: self.highlightedCategory == .feedsAndBoards,
+                    isDark: self.isDark,
+                    onTap: { self.onOpenSection(.subscriptions) }
+                )
+            }
+        }
+    }
+}
+
+
+private struct VaultDocumentsHeroTile: View {
+    
+    let assets: DatabaseAssetCounts
+    let isHighlighted: Bool
+    let isDark: Bool
+    let onTap: () -> Void
+    
+    @State private var isHovered = false
+    
+    var body: some View {
+        let tint = DatabaseFormatters.categoryColor(.documents, isDark: self.isDark)
+        let totalWritten = max(1, self.assets.totalTypedChars + self.assets.totalAICompletedChars)
+        let typedFrac = CGFloat(self.assets.totalTypedChars) / CGFloat(totalWritten)
+        let activeBorder = self.isHovered || self.isHighlighted
+        let cardFill: Color = if self.isDark {
+            Color.white.opacity(self.isHovered ? 0.075 : 0.055)
+        } else {
+            self.isHovered ? Color.black.opacity(0.015) : Color.white
+        }
+        let borderColor: Color = if activeBorder {
+            self.isDark ? Color.white.opacity(0.18) : Color.black.opacity(0.14)
+        } else {
+            self.isDark ? Color.white.opacity(0.075) : Color.black.opacity(0.06)
+        }
+        let borderWidth: CGFloat = activeBorder ? 0.9 : 0.5
+        
+        Button(action: self.onTap) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .center, spacing: 6) {
+                    Image(systemName: "doc.richtext")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(tint)
+                    Text(AppLanguage.text("创作文档", en: "Documents"))
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary.opacity(self.isHovered ? 0.9 : 0.45))
+                }
+                
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text("\(self.assets.activeDocuments)")
+                        .font(.system(size: 24, weight: .bold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.primary)
+                    Text(AppLanguage.text("篇", en: "docs"))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(DatabaseFormatters.compactCount(self.assets.totalDocumentChars)) \(AppLanguage.text("字", en: "ch"))")
+                        .font(.system(size: 11.5, weight: .medium, design: .monospaced).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                
+                VStack(alignment: .leading, spacing: 4) {
+                    GeometryReader { geo in
+                        let w = max(24, geo.size.width)
+                        let typedW = max(6, w * min(1, max(0.08, typedFrac)))
+                        HStack(spacing: 2) {
+                            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                                .fill(tint.opacity(0.85))
+                                .frame(width: typedW)
+                            RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                                .fill(DatabaseFormatters.categoryColor(.memory, isDark: self.isDark).opacity(0.75))
+                                .frame(maxWidth: .infinity)
+                        }
+                    }
+                    .frame(height: 5)
+                    
+                    HStack {
+                        Text("\(AppLanguage.text("累计写作", en: "Typed")) \(DatabaseFormatters.compactCount(self.assets.totalTypedChars))")
+                            .font(.system(size: 10.5).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("\(self.assets.writingDays) \(AppLanguage.text("天", en: "d"))")
+                            .font(.system(size: 10.5).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .padding(13)
+            .frame(maxWidth: .infinity, minHeight: 114, alignment: .topLeading)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(cardFill))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(borderColor, lineWidth: borderWidth))
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .onHover { self.isHovered = $0 }
+    }
+}
+
+
+private struct VaultMemoryAndTasksHeroTile: View {
+    
+    let assets: DatabaseAssetCounts
+    let isHighlighted: Bool
+    let isDark: Bool
+    let onOpenMemories: () -> Void
+    let onOpenReminders: () -> Void
+    
+    @State private var isMemoryHovered = false
+    @State private var isTaskHovered = false
+    
+    var body: some View {
+        let memTint = DatabaseFormatters.categoryColor(.memory, isDark: self.isDark)
+        let taskTint = DatabaseFormatters.categoryColor(.feedsAndBoards, isDark: self.isDark)
+        let completedTasks = max(0, self.assets.remindersTotal - self.assets.remindersOpen)
+        let taskProgress: Double = self.assets.remindersTotal > 0
+            ? Double(completedTasks) / Double(self.assets.remindersTotal)
+            : 1.0
+        let activeBorder = self.isMemoryHovered || self.isTaskHovered || self.isHighlighted
+        let cardFill: Color = self.isDark ? Color.white.opacity(0.055) : Color.white
+        let borderColor: Color = if activeBorder {
+            self.isDark ? Color.white.opacity(0.18) : Color.black.opacity(0.14)
+        } else {
+            self.isDark ? Color.white.opacity(0.075) : Color.black.opacity(0.06)
+        }
+        let borderWidth: CGFloat = activeBorder ? 0.9 : 0.5
+        let hoverBg: Color = self.isDark ? Color.white.opacity(0.03) : Color.black.opacity(0.02)
+        
+        HStack(spacing: 0) {
+            self.memoryPane(tint: memTint, hoverBg: hoverBg)
+            
+            Rectangle()
+                .fill(self.isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.06))
+                .frame(width: 0.6)
+                .padding(.vertical, 12)
+            
+            self.taskPane(tint: taskTint, completedTasks: completedTasks, taskProgress: taskProgress, hoverBg: hoverBg)
+        }
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(cardFill))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(borderColor, lineWidth: borderWidth))
+    }
+    
+    
+    private func memoryPane(tint: Color, hoverBg: Color) -> some View {
+        Button(action: self.onOpenMemories) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 5) {
+                    Circle().fill(tint).frame(width: 6.5, height: 6.5)
+                    Text(AppLanguage.text("长期记忆", en: "Memory"))
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(.secondary.opacity(self.isMemoryHovered ? 0.9 : 0.4))
+                }
+                
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Text("\(self.assets.kycMemories)")
+                        .font(.system(size: 24, weight: .bold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.primary)
+                    Text(AppLanguage.text("条", en: ""))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                
+                Spacer(minLength: 0)
+                
+                Text("\(self.assets.memoryJournals) \(AppLanguage.text("条演变日志", en: "logs"))")
+                    .font(.system(size: 10.5).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(13)
+            .frame(maxWidth: .infinity, minHeight: 114, alignment: .topLeading)
+            .background(self.isMemoryHovered ? hoverBg : Color.clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .onHover { self.isMemoryHovered = $0 }
+    }
+    
+    
+    private func taskPane(tint: Color, completedTasks: Int, taskProgress: Double, hoverBg: Color) -> some View {
+        let trackColor: Color = self.isDark ? Color.white.opacity(0.09) : Color.black.opacity(0.07)
+        return Button(action: self.onOpenReminders) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 5) {
+                    Circle().fill(tint).frame(width: 6.5, height: 6.5)
+                    Text(AppLanguage.text("待办", en: "Tasks"))
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(.secondary.opacity(self.isTaskHovered ? 0.9 : 0.4))
+                }
+                
+                HStack(alignment: .center, spacing: 10) {
+                    HStack(alignment: .firstTextBaseline, spacing: 2.5) {
+                        Text("\(self.assets.remindersOpen)")
+                            .font(.system(size: 24, weight: .bold, design: .rounded).monospacedDigit())
+                            .foregroundStyle(.primary)
+                        Text(AppLanguage.text("项", en: ""))
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    
+                    Spacer(minLength: 0)
+                    
+                    ZStack {
+                        Circle()
+                            .stroke(trackColor, lineWidth: 3.5)
+                        Circle()
+                            .trim(from: 0, to: CGFloat(min(1, max(0.04, taskProgress))))
+                            .stroke(tint, style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                    }
+                    .frame(width: 24, height: 24)
+                }
+                
+                Spacer(minLength: 0)
+                
+                Text("\(AppLanguage.text("已完成", en: "Done")) \(completedTasks)/\(self.assets.remindersTotal)")
+                    .font(.system(size: 10.5).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(13)
+            .frame(maxWidth: .infinity, minHeight: 114, alignment: .topLeading)
+            .background(self.isTaskHovered ? hoverBg : Color.clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .onHover { self.isTaskHovered = $0 }
+    }
+}
+
+
+private struct VaultCompactFeatureTile: View {
+    
+    let icon: String
+    let title: String
+    let primaryValue: String
+    let unit: String
+    let meta: String
+    let tint: Color
+    let isHighlighted: Bool
+    let isDark: Bool
+    let onTap: () -> Void
+    
+    @State private var isHovered = false
+    
+    var body: some View {
+        let activeBorder = self.isHovered || self.isHighlighted
+        let cardFill: Color = if self.isDark {
+            Color.white.opacity(self.isHovered ? 0.075 : 0.055)
+        } else {
+            self.isHovered ? Color.black.opacity(0.015) : Color.white
+        }
+        let borderColor: Color = if activeBorder {
+            self.isDark ? Color.white.opacity(0.18) : Color.black.opacity(0.14)
+        } else {
+            self.isDark ? Color.white.opacity(0.075) : Color.black.opacity(0.06)
+        }
+        let borderWidth: CGFloat = activeBorder ? 0.9 : 0.5
+        
+        Button(action: self.onTap) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 5) {
+                    Image(systemName: self.icon)
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .foregroundStyle(self.tint)
+                    Text(self.title)
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 2)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(.secondary.opacity(self.isHovered ? 0.88 : 0.35))
+                }
+                
+                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                    Text(self.primaryValue)
+                        .font(.system(size: 18, weight: .bold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.primary)
+                    Text(self.unit)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                
+                Text(self.meta)
+                    .font(.system(size: 10.5).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(11)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(cardFill))
+            .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(borderColor, lineWidth: borderWidth))
+            .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .pointerStyle(.link)
+        .onHover { self.isHovered = $0 }
+    }
+}
+
+
+// MARK: - 3. Human-Readable Vault Content Browser
+
+private struct DatabaseVaultDetailView: View {
+    
+    let section: DatabaseVaultSectionKind
+    let items: [DatabaseVaultContentItem]
+    let isDark: Bool
+    let onSwitchSection: (DatabaseVaultSectionKind) -> Void
+    let onBack: () -> Void
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Button(action: self.onBack) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 10.5, weight: .semibold))
+                        Text(AppLanguage.text("返回", en: "Back"))
+                            .font(.system(size: 12.5, weight: .medium))
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .frame(height: 26)
+                    .background(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(self.isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.045))
+                    )
+                }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
+                
+                Text(self.section.title)
+                    .font(.system(size: 14, weight: .semibold))
+                
+                Spacer()
+                
+                Text("\(self.items.count) \(AppLanguage.text("项", en: "items"))")
+                    .font(.system(size: 11.5).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            
+            // Quick section switcher pills
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(DatabaseVaultSectionKind.allCases) { kind in
+                        let selected = (kind == self.section)
+                        Button {
+                            self.onSwitchSection(kind)
+                        } label: {
+                            Text(kind.title)
+                                .font(.system(size: 11.5, weight: selected ? .semibold : .regular))
+                                .foregroundStyle(selected ? .primary : .secondary)
+                                .padding(.horizontal, 10)
+                                .frame(height: 25)
+                                .background(
+                                    Capsule(style: .continuous)
+                                        .fill(selected
+                                              ? (self.isDark ? Color.white.opacity(0.14) : Color.black.opacity(0.08))
+                                              : (self.isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.025)))
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .pointerStyle(.link)
+                    }
+                }
+            }
+            
+            DatabaseCardContainer(title: nil, isDark: self.isDark) {
+                if self.items.isEmpty {
+                    HStack {
+                        Text(AppLanguage.text("暂无记录", en: "No items yet"))
+                            .font(.system(size: 12.5))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .padding(16)
+                } else {
+                    ForEach(Array(self.items.enumerated()), id: \.element.id) { idx, item in
+                        if idx > 0 {
+                            Rectangle()
+                                .fill(self.isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.05))
+                                .frame(height: 0.5)
+                                .padding(.leading, 14)
+                        }
+                        
+                        HStack(alignment: .center, spacing: 10) {
+                            Circle()
+                                .fill(DatabaseFormatters.categoryColor(self.section.categoryKind, isDark: self.isDark))
+                                .frame(width: 6, height: 6)
+                            
+                            Text(item.title)
+                                .font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                            
+                            if let badge = item.badge, !badge.isEmpty {
+                                Text(badge)
+                                    .font(.system(size: 10.5, weight: .medium))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 7)
+                                    .frame(height: 20)
+                                    .background(
+                                        Capsule(style: .continuous)
+                                            .fill(self.isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.045))
+                                    )
+                                    .fixedSize()
+                            }
+                            
+                            if !item.metric.isEmpty {
+                                Text(item.metric)
+                                    .font(.system(size: 11, design: .monospaced).monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize()
+                            }
+                            
+                            if let detail = item.detail, !detail.isEmpty {
+                                Text(detail)
+                                    .font(.system(size: 10.5, design: .monospaced).monospacedDigit())
+                                    .foregroundStyle(.secondary.opacity(0.8))
+                                    .frame(width: 72, alignment: .trailing)
+                            }
+                        }
+                        .padding(.horizontal, 14)
+                        .frame(height: 36)
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+// MARK: - 4. AI Token Analytics Card
 
 private struct DatabaseTokenAnalyticsCard: View {
     
@@ -530,7 +1109,6 @@ private struct DatabaseTokenAnalyticsCard: View {
     
     private var overviewBody: some View {
         VStack(alignment: .leading, spacing: 14) {
-            // Top 4 KPI metrics
             HStack(spacing: 8) {
                 self.kpiTile(
                     label: AppLanguage.text("总 Tokens", en: "Total"),
@@ -550,13 +1128,11 @@ private struct DatabaseTokenAnalyticsCard: View {
                 )
             }
             
-            // 14-day token sparkbar trend
             if !self.summary.dailyTrend.isEmpty {
                 self.dailyTrendStrip
             }
             
-            // Model & Feature breakdowns side-by-side
-            HStack(alignment: .top, spacing: 14) {
+            HStack(alignment: .top, spacing: 16) {
                 if !self.summary.byModel.isEmpty {
                     VStack(alignment: .leading, spacing: 7) {
                         Text(AppLanguage.text("按模型", en: "By Model"))
@@ -616,13 +1192,11 @@ private struct DatabaseTokenAnalyticsCard: View {
             HStack(alignment: .bottom, spacing: 4) {
                 ForEach(self.summary.dailyTrend) { point in
                     let h = max(4, CGFloat(point.totalTokens) / CGFloat(maxTokens) * 44)
-                    VStack(spacing: 3) {
-                        RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .fill(self.accent.opacity(0.75))
-                            .frame(maxWidth: .infinity)
-                            .frame(height: h)
-                    }
-                    .help("\(point.dateKey): \(DatabaseFormatters.compactCount(point.totalTokens)) tokens (\(point.requests))")
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(self.accent.opacity(0.78))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: h)
+                        .help("\(point.dateKey): \(DatabaseFormatters.compactCount(point.totalTokens)) tokens (\(point.requests))")
                 }
             }
             .frame(height: 48, alignment: .bottom)
@@ -737,337 +1311,11 @@ private struct DatabaseTokenAnalyticsCard: View {
                     RoundedRectangle(cornerRadius: 2.5, style: .continuous)
                         .fill(self.isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.055))
                     RoundedRectangle(cornerRadius: 2.5, style: .continuous)
-                        .fill(tint.opacity(0.75))
+                        .fill(tint.opacity(0.78))
                         .frame(width: max(4, geo.size.width * min(1, max(0, ratio))))
                 }
             }
             .frame(height: 4.5)
         }
-    }
-}
-
-
-// MARK: - 4. Interactive SQLite Table Explorer Card
-
-private struct DatabaseTableExplorerCard: View {
-    
-    let tables: [DatabaseTableSummary]
-    @Binding var onlyPopulated: Bool
-    let isDark: Bool
-    let onSelectTable: (DatabaseTableSummary) -> Void
-    
-    private var visibleTables: [DatabaseTableSummary] {
-        self.onlyPopulated ? self.tables.filter { $0.rowCount > 0 } : self.tables
-    }
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(AppLanguage.text("数据表清单", en: "SQLite Tables"))
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button {
-                    self.onlyPopulated.toggle()
-                } label: {
-                    Text(self.onlyPopulated
-                         ? AppLanguage.text("仅看非空", en: "Non-Empty")
-                         : AppLanguage.text("全部 \(self.tables.count) 表", en: "All \(self.tables.count)"))
-                        .font(.system(size: 11, weight: .medium).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 8)
-                        .frame(height: 20)
-                        .background(
-                            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .fill(self.isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.04))
-                        )
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-            }
-            .padding(.horizontal, 4)
-            
-            DatabaseCardContainer(title: nil, isDark: self.isDark) {
-                ForEach(Array(self.visibleTables.enumerated()), id: \.element.id) { idx, table in
-                    if idx > 0 {
-                        Rectangle()
-                            .fill(self.isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.06))
-                            .frame(height: 0.5)
-                            .padding(.leading, 14)
-                    }
-                    DatabaseTableRowView(
-                        table: table,
-                        isDark: self.isDark,
-                        onSelect: { self.onSelectTable(table) }
-                    )
-                }
-            }
-        }
-    }
-}
-
-
-private struct DatabaseTableRowView: View {
-    
-    let table: DatabaseTableSummary
-    let isDark: Bool
-    let onSelect: () -> Void
-    
-    @State private var isHovered = false
-    
-    var body: some View {
-        Button(action: self.onSelect) {
-            HStack(spacing: 10) {
-                Circle()
-                    .fill(DatabaseFormatters.categoryColor(self.table.category, isDark: self.isDark))
-                    .frame(width: 7, height: 7)
-                
-                Text(self.table.displayName)
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                
-                Text(self.table.name)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                
-                Spacer(minLength: 8)
-                
-                Text("\(self.table.columns.count) \(AppLanguage.text("列", en: "col"))")
-                    .font(.system(size: 11).monospacedDigit())
-                    .foregroundStyle(.secondary.opacity(0.8))
-                    .frame(width: 38, alignment: .trailing)
-                
-                Text("\(self.table.rowCount) \(AppLanguage.text("行", en: "rows"))")
-                    .font(.system(size: 11.5, weight: self.table.rowCount > 0 ? .medium : .regular).monospacedDigit())
-                    .foregroundStyle(self.table.rowCount > 0 ? .primary : .secondary)
-                    .frame(width: 58, alignment: .trailing)
-                
-                Text(DatabaseFormatters.bytes(self.table.estimatedBytes))
-                    .font(.system(size: 11, design: .monospaced).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .frame(width: 62, alignment: .trailing)
-                
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary.opacity(0.6))
-            }
-            .padding(.horizontal, 14)
-            .frame(height: 36)
-            .background(
-                self.isHovered
-                    ? (self.isDark ? Color.white.opacity(0.04) : Color.black.opacity(0.025))
-                    : Color.clear
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .pointerStyle(.link)
-        .onHover { hovering in
-            self.isHovered = hovering
-        }
-    }
-}
-
-
-// MARK: - 5. Inline Table Schema & Live Content Viewer
-
-private struct DatabaseTableDetailView: View {
-    
-    let table: DatabaseTableSummary
-    let preview: DatabaseTablePreview?
-    let isDark: Bool
-    let accent: Color
-    let onBack: () -> Void
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
-                Button(action: self.onBack) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 10.5, weight: .semibold))
-                        Text(AppLanguage.text("返回", en: "Back"))
-                            .font(.system(size: 12.5, weight: .medium))
-                    }
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 10)
-                    .frame(height: 26)
-                    .background(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(self.isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.045))
-                    )
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                
-                Text(self.table.displayName)
-                    .font(.system(size: 14, weight: .semibold))
-                
-                Text(self.table.name)
-                    .font(.system(size: 11.5, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                
-                Spacer()
-                
-                Text("\(self.table.rowCount) \(AppLanguage.text("行", en: "rows")) · \(self.table.columns.count) \(AppLanguage.text("列", en: "cols")) · \(self.table.indexCount) \(AppLanguage.text("索引", en: "idx"))")
-                    .font(.system(size: 11.5).monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            
-            // Column schema chips
-            DatabaseCardContainer(title: AppLanguage.text("表结构", en: "Schema"), isDark: self.isDark) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(self.table.columns) { col in
-                            HStack(spacing: 4) {
-                                if col.isPrimaryKey {
-                                    Text("PK")
-                                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                                        .foregroundStyle(self.accent)
-                                }
-                                Text(col.name)
-                                    .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                                    .foregroundStyle(.primary)
-                                Text(col.dataType)
-                                    .font(.system(size: 10, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                            }
-                            .padding(.horizontal, 8)
-                            .frame(height: 24)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(self.isDark ? Color.white.opacity(0.05) : Color.black.opacity(0.032))
-                            )
-                        }
-                    }
-                    .padding(12)
-                }
-            }
-            
-            // Live row preview
-            DatabaseCardContainer(
-                title: AppLanguage.text("近期内容", en: "Recent Rows"),
-                trailingTitle: self.preview.map { "\($0.rows.count) / \($0.totalRowCount)" },
-                isDark: self.isDark
-            ) {
-                if let preview = self.preview, !preview.rows.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: true) {
-                        VStack(alignment: .leading, spacing: 0) {
-                            // Header row
-                            HStack(spacing: 12) {
-                                ForEach(preview.columns, id: \.self) { colName in
-                                    Text(colName)
-                                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                        .frame(width: 120, alignment: .leading)
-                                }
-                            }
-                            .padding(.horizontal, 12)
-                            .frame(height: 30)
-                            .background(self.isDark ? Color.white.opacity(0.03) : Color.black.opacity(0.02))
-                            
-                            ForEach(Array(preview.rows.enumerated()), id: \.offset) { _, row in
-                                Rectangle()
-                                    .fill(self.isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.05))
-                                    .frame(height: 0.5)
-                                HStack(spacing: 12) {
-                                    ForEach(Array(row.enumerated()), id: \.offset) { _, cell in
-                                        Text(cell)
-                                            .font(.system(size: 11.5, design: .monospaced))
-                                            .foregroundStyle(.primary.opacity(0.88))
-                                            .lineLimit(1)
-                                            .truncationMode(.tail)
-                                            .frame(width: 120, alignment: .leading)
-                                            .textSelection(.enabled)
-                                    }
-                                }
-                                .padding(.horizontal, 12)
-                                .frame(height: 30)
-                            }
-                        }
-                    }
-                } else {
-                    HStack {
-                        Text(AppLanguage.text("当前表为空", en: "Empty table"))
-                            .font(.system(size: 12.5))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                    }
-                    .padding(14)
-                }
-            }
-        }
-    }
-}
-
-
-// MARK: - 6. Storage Engine Metadata Card
-
-private struct DatabaseTechnicalMetaCard: View {
-    
-    let snapshot: DatabaseInspectionSnapshot
-    let isDark: Bool
-    let onRevealInFinder: () -> Void
-    let onRefresh: () -> Void
-    
-    var body: some View {
-        DatabaseCardContainer(
-            title: AppLanguage.text("引擎信息", en: "Engine"),
-            isDark: self.isDark
-        ) {
-            self.metaRow(
-                label: AppLanguage.text("文件位置", en: "Location"),
-                value: self.snapshot.filePath,
-                monospaced: true
-            )
-            self.divider
-            self.metaRow(
-                label: AppLanguage.text("SQLite 引擎", en: "SQLite"),
-                value: "v\(self.snapshot.sqliteVersion) · \(self.snapshot.journalMode)",
-                monospaced: true
-            )
-            self.divider
-            self.metaRow(
-                label: AppLanguage.text("主文件 / WAL", en: "Main / WAL"),
-                value: "\(DatabaseFormatters.bytes(self.snapshot.mainFileBytes)) / \(DatabaseFormatters.bytes(self.snapshot.walBytes))",
-                monospaced: true
-            )
-            self.divider
-            self.metaRow(
-                label: AppLanguage.text("页结构 / 可回收", en: "Pages / Free"),
-                value: "\(self.snapshot.pageCount) × \(DatabaseFormatters.bytes(Int64(self.snapshot.pageSize))) · \(DatabaseFormatters.bytes(self.snapshot.reclaimableBytes))",
-                monospaced: true
-            )
-        }
-    }
-    
-    
-    private var divider: some View {
-        Rectangle()
-            .fill(self.isDark ? Color.white.opacity(0.07) : Color.black.opacity(0.06))
-            .frame(height: 0.5)
-            .padding(.leading, 14)
-    }
-    
-    
-    private func metaRow(label: String, value: String, monospaced: Bool) -> some View {
-        HStack(spacing: 12) {
-            Text(label)
-                .font(.system(size: 12.5))
-                .foregroundStyle(.primary)
-            Spacer(minLength: 12)
-            Text(value)
-                .font(monospaced ? .system(size: 11.5, design: .monospaced).monospacedDigit() : .system(size: 12.5))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-        }
-        .padding(.horizontal, 14)
-        .frame(height: 36)
     }
 }

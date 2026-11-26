@@ -259,7 +259,7 @@ struct Round43VimMaterialProactiveDashboardTests {
         #expect(laptop.row2Height <= 238)
         #expect(laptop.totalContentHeight <= 700)
         
-        // Tall display (1440×900) avoids giant top/bottom dead margins and keeps Row 2 compact & void-free
+        // Tall display (1440×900) fills viewport cleanly to bottom margin with zero cavernous bottom void
         let desktop = DashboardViewportLayout.resolve(
             viewportSize: CGSize(width: 1440, height: 900),
             isEmbeddedInSettings: false,
@@ -267,8 +267,9 @@ struct Round43VimMaterialProactiveDashboardTests {
         )
         #expect(desktop.needsVerticalScroll == false)
         #expect(desktop.outerPadV <= 10)
-        #expect(desktop.row2Height <= 238)
-        #expect(desktop.row1Height >= 320)
+        #expect(desktop.row2Height >= 260 && desktop.row2Height <= 324)
+        #expect(desktop.row1Height >= 360)
+        #expect(desktop.totalContentHeight >= 880 && desktop.totalContentHeight <= 900)
         
         // Verify Apple HIG concentric corner radius law (`innerRadius + inset == outerRadius`)
         #expect(DashboardCornerMetrics.innerCardRadius(compact: false) + DashboardCornerMetrics.unifiedInset(compact: false) == DashboardCornerMetrics.unifiedOuterRadius(compact: false))
@@ -1895,6 +1896,14 @@ struct Round43VimMaterialProactiveDashboardTests {
         #expect(SidebarSettingsItem.allCases.contains(.database))
         #expect(!SidebarSettingsItem.database.title.contains("与"))
         #expect(NSImage(systemSymbolName: SidebarSettingsItem.database.symbolName, accessibilityDescription: nil) != nil)
+        
+        // Human-readable vault browser & tilde-abbreviated path prevent path overflow and hide SQLite jargon
+        let vaultDocs = db.inspectVaultItems(for: .documents, limit: 10)
+        #expect(vaultDocs.count == 1)
+        #expect(vaultDocs[0].title == "数据库架构设计")
+        #expect(vaultDocs[0].badge == "架构")
+        let homeSample = NSHomeDirectory() + "/Library/Application Support/CotEditor/cot_user_data.sqlite3"
+        #expect(CotLocalDatabase.abbreviatedDisplayPath(homeSample).hasPrefix("~/"))
         
         let host = NSHostingView(rootView: LocalDatabaseSettingsView(onExportDatabase: {}, onImportDatabase: {}))
         host.frame = NSRect(x: 0, y: 0, width: 575, height: 520)

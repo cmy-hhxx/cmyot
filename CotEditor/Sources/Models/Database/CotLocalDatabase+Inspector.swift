@@ -36,11 +36,11 @@ nonisolated enum DatabaseCategoryKind: String, CaseIterable, Identifiable, Senda
     
     var displayName: String {
         switch self {
-            case .documents: AppLanguage.text("文档与周报", en: "Documents")
-            case .aiRecords: AppLanguage.text("AI 会话与 Token", en: "AI & Tokens")
+            case .documents: AppLanguage.text("文档周报", en: "Documents")
+            case .aiRecords: AppLanguage.text("AI 记录", en: "AI Records")
             case .memory: AppLanguage.text("长期记忆", en: "Memory")
-            case .feedsAndBoards: AppLanguage.text("订阅与统计", en: "Feeds & Stats")
-            case .systemConfig: AppLanguage.text("配置与状态", en: "System")
+            case .feedsAndBoards: AppLanguage.text("订阅统计", en: "Feeds")
+            case .systemConfig: AppLanguage.text("偏好配置", en: "Settings")
         }
     }
     
@@ -837,5 +837,272 @@ extension CotLocalDatabase {
         if lower.contains("memory") || lower.contains("kyc") { return AppLanguage.text("记忆提炼", en: "Memory") }
         if lower.contains("chart") { return AppLanguage.text("图表生成", en: "Chart") }
         return raw.isEmpty ? AppLanguage.text("其他", en: "Other") : raw
+    }
+}
+
+
+// MARK: - Human-Readable Vault Browser Models & Queries
+
+nonisolated enum DatabaseVaultSectionKind: String, CaseIterable, Identifiable, Sendable {
+    
+    case documents
+    case weeklyReports
+    case memories
+    case reminders
+    case conversations
+    case subscriptions
+    
+    var id: String { self.rawValue }
+    
+    var title: String {
+        switch self {
+            case .documents: AppLanguage.text("本地文档", en: "Documents")
+            case .weeklyReports: AppLanguage.text("周报归档", en: "Weekly Reports")
+            case .memories: AppLanguage.text("长期记忆", en: "Memories")
+            case .reminders: AppLanguage.text("待办事项", en: "Tasks")
+            case .conversations: AppLanguage.text("AI 对话", en: "AI Chats")
+            case .subscriptions: AppLanguage.text("订阅与关注", en: "Subscriptions")
+        }
+    }
+    
+    var categoryKind: DatabaseCategoryKind {
+        switch self {
+            case .documents, .weeklyReports: .documents
+            case .memories: .memory
+            case .reminders, .subscriptions: .feedsAndBoards
+            case .conversations: .aiRecords
+        }
+    }
+}
+
+
+nonisolated struct DatabaseVaultContentItem: Identifiable, Equatable, Sendable {
+    
+    let id: String
+    let title: String
+    let badge: String?
+    let metric: String
+    let detail: String?
+}
+
+
+extension CotLocalDatabase {
+    
+    /// Formats a file path with `~` home abbreviation so settings UI never overflows on long user paths.
+    nonisolated static func abbreviatedDisplayPath(_ fullPath: String) -> String {
+        (fullPath as NSString).abbreviatingWithTildeInPath
+    }
+    
+    
+    /// Returns clean, user-readable items for a vault category (never exposing raw SQLite table/key names).
+    func inspectVaultItems(for kind: DatabaseVaultSectionKind, limit: Int = 30) -> [DatabaseVaultContentItem] {
+        guard let db = self.db else { return [] }
+        let clampedLimit = max(1, min(80, limit))
+        
+        switch kind {
+            case .documents:
+                return self.queryVaultDocuments(db: db, limit: clampedLimit)
+            case .weeklyReports:
+                return self.queryVaultWeeklyReports(db: db, limit: clampedLimit)
+            case .memories:
+                return self.queryVaultMemories(db: db, limit: clampedLimit)
+            case .reminders:
+                return self.queryVaultReminders(db: db, limit: clampedLimit)
+            case .conversations:
+                return self.queryVaultConversations(db: db, limit: clampedLimit)
+            case .subscriptions:
+                return self.queryVaultSubscriptions(db: db, limit: clampedLimit)
+        }
+    }
+    
+    
+    private func queryVaultDocuments(db: OpaquePointer, limit: Int) -> [DatabaseVaultContentItem] {
+        var items: [DatabaseVaultContentItem] = []
+        let sql = """
+        SELECT id, title, group_name, LENGTH(content), updated_at
+        FROM documents
+        WHERE deleted_at IS NULL
+        ORDER BY updated_at DESC
+        LIMIT \(limit);
+        """
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let id = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? UUID().uuidString
+                let rawTitle = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
+                let group = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? ""
+                let chars = Int(sqlite3_column_int64(stmt, 3))
+                let ts = sqlite3_column_double(stmt, 4)
+                let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? AppLanguage.text("未命名文档", en: "Untitled")
+                    : rawTitle
+                items.append(DatabaseVaultContentItem(
+                    id: id,
+                    title: title,
+                    badge: group.isEmpty ? nil : group,
+                    metric: "\(chars.formatted()) \(AppLanguage.text("字", en: "ch"))",
+                    detail: ts > 1_500_000_000 ? Self.previewDateFormatter.string(from: Date(timeIntervalSince1970: ts)) : nil
+                ))
+            }
+        }
+        sqlite3_finalize(stmt)
+        return items
+    }
+    
+    
+    private func queryVaultWeeklyReports(db: OpaquePointer, limit: Int) -> [DatabaseVaultContentItem] {
+        var items: [DatabaseVaultContentItem] = []
+        let sql = """
+        SELECT id, title, period_label, LENGTH(content), updated_at
+        FROM weekly_reports
+        ORDER BY updated_at DESC
+        LIMIT \(limit);
+        """
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let id = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? UUID().uuidString
+                let title = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? AppLanguage.text("周报", en: "Report")
+                let period = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? ""
+                let chars = Int(sqlite3_column_int64(stmt, 3))
+                let ts = sqlite3_column_double(stmt, 4)
+                items.append(DatabaseVaultContentItem(
+                    id: id,
+                    title: title.isEmpty ? (period.isEmpty ? AppLanguage.text("周报", en: "Report") : period) : title,
+                    badge: period.isEmpty ? nil : period,
+                    metric: "\(chars.formatted()) \(AppLanguage.text("字", en: "ch"))",
+                    detail: ts > 1_500_000_000 ? Self.previewDateFormatter.string(from: Date(timeIntervalSince1970: ts)) : nil
+                ))
+            }
+        }
+        sqlite3_finalize(stmt)
+        return items
+    }
+    
+    
+    private func queryVaultMemories(db: OpaquePointer, limit: Int) -> [DatabaseVaultContentItem] {
+        var items: [DatabaseVaultContentItem] = []
+        let sql = """
+        SELECT id, content, category, updated_at
+        FROM user_kyc_memories
+        WHERE is_archived = 0
+        ORDER BY updated_at DESC
+        LIMIT \(limit);
+        """
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let id = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? UUID().uuidString
+                let content = (sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? "")
+                    .replacingOccurrences(of: "\n", with: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let cat = sqlite3_column_text(stmt, 2).map { String(cString: $0) } ?? ""
+                let ts = sqlite3_column_double(stmt, 3)
+                guard !content.isEmpty else { continue }
+                items.append(DatabaseVaultContentItem(
+                    id: id,
+                    title: content,
+                    badge: cat.isEmpty ? nil : cat,
+                    metric: ts > 1_500_000_000 ? Self.previewDateFormatter.string(from: Date(timeIntervalSince1970: ts)) : "",
+                    detail: nil
+                ))
+            }
+        }
+        sqlite3_finalize(stmt)
+        return items
+    }
+    
+    
+    private func queryVaultReminders(db: OpaquePointer, limit: Int) -> [DatabaseVaultContentItem] {
+        var items: [DatabaseVaultContentItem] = []
+        let sql = """
+        SELECT id, title, is_completed, updated_at
+        FROM user_reminders
+        ORDER BY is_completed ASC, updated_at DESC
+        LIMIT \(limit);
+        """
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let id = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? UUID().uuidString
+                let title = (sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let done = sqlite3_column_int(stmt, 2) != 0
+                let ts = sqlite3_column_double(stmt, 3)
+                guard !title.isEmpty else { continue }
+                items.append(DatabaseVaultContentItem(
+                    id: id,
+                    title: title,
+                    badge: done ? AppLanguage.text("已完成", en: "Done") : AppLanguage.text("待办", en: "Open"),
+                    metric: ts > 1_500_000_000 ? Self.previewDateFormatter.string(from: Date(timeIntervalSince1970: ts)) : "",
+                    detail: nil
+                ))
+            }
+        }
+        sqlite3_finalize(stmt)
+        return items
+    }
+    
+    
+    private func queryVaultConversations(db: OpaquePointer, limit: Int) -> [DatabaseVaultContentItem] {
+        var items: [DatabaseVaultContentItem] = []
+        let sessionSQL = """
+        SELECT s.id, s.title, COUNT(m.id), s.updated_at
+        FROM butler_sessions s
+        LEFT JOIN butler_messages m ON m.session_id = s.id
+        GROUP BY s.id
+        ORDER BY s.updated_at DESC
+        LIMIT \(limit);
+        """
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sessionSQL, -1, &stmt, nil) == SQLITE_OK {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let id = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? UUID().uuidString
+                let title = (sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let msgCount = Int(sqlite3_column_int64(stmt, 2))
+                let ts = sqlite3_column_double(stmt, 3)
+                items.append(DatabaseVaultContentItem(
+                    id: "sess:\(id)",
+                    title: title.isEmpty ? AppLanguage.text("总管对话", en: "Butler Session") : title,
+                    badge: AppLanguage.text("总管", en: "Butler"),
+                    metric: "\(msgCount) \(AppLanguage.text("条", en: "msgs"))",
+                    detail: ts > 1_500_000_000 ? Self.previewDateFormatter.string(from: Date(timeIntervalSince1970: ts)) : nil
+                ))
+            }
+        }
+        sqlite3_finalize(stmt)
+        return items
+    }
+    
+    
+    private func queryVaultSubscriptions(db: OpaquePointer, limit: Int) -> [DatabaseVaultContentItem] {
+        var items: [DatabaseVaultContentItem] = []
+        let queries: [(sql: String, badge: String)] = [
+            ("SELECT symbol, name FROM user_watchlist_stocks ORDER BY sort_order ASC LIMIT 20;", AppLanguage.text("自选股", en: "Stock")),
+            ("SELECT id, title FROM user_podcasts ORDER BY updated_at DESC LIMIT 20;", AppLanguage.text("播客", en: "Podcast")),
+            ("SELECT id, title FROM user_followed_feeds ORDER BY updated_at DESC LIMIT 20;", AppLanguage.text("资讯", en: "Feed")),
+            ("SELECT id, name FROM user_followed_creators ORDER BY updated_at DESC LIMIT 20;", AppLanguage.text("创作者", en: "Creator")),
+        ]
+        for query in queries {
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, query.sql, -1, &stmt, nil) == SQLITE_OK {
+                while sqlite3_step(stmt) == SQLITE_ROW && items.count < limit {
+                    let first = sqlite3_column_text(stmt, 0).map { String(cString: $0) } ?? ""
+                    let second = sqlite3_column_text(stmt, 1).map { String(cString: $0) } ?? ""
+                    let display = second.isEmpty ? first : (query.badge == AppLanguage.text("自选股", en: "Stock") ? "\(second) (\(first))" : second)
+                    guard !display.isEmpty else { continue }
+                    items.append(DatabaseVaultContentItem(
+                        id: "\(query.badge):\(first):\(items.count)",
+                        title: display,
+                        badge: query.badge,
+                        metric: "",
+                        detail: nil
+                    ))
+                }
+            }
+            sqlite3_finalize(stmt)
+        }
+        return items
     }
 }

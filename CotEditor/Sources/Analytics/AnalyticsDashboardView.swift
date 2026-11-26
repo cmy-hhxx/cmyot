@@ -900,10 +900,10 @@ struct DashPalette: Sendable, Equatable {
                 emptyDot: empty,
                 positivePillBg: accent.opacity(0.16),
                 neutralPillBg: Color.white.opacity(0.07),
-                heat1: Color(red: 0.133, green: 0.192, blue: 0.325), // #223153
-                heat2: Color(red: 0.173, green: 0.278, blue: 0.514), // #2C4783
-                heat3: Color(red: 0.231, green: 0.388, blue: 0.745), // #3B63BE
-                heat4: Color(red: 0.345, green: 0.522, blue: 1.000)  // #5885FF
+                heat1: Color(red: 0.094, green: 0.255, blue: 0.196), // #184132
+                heat2: Color(red: 0.125, green: 0.447, blue: 0.325), // #207253
+                heat3: Color(red: 0.196, green: 0.682, blue: 0.490), // #32AE7D
+                heat4: Color(red: 0.431, green: 0.906, blue: 0.714)  // #6EE7B6
             )
         } else {
             let canvas = Color(hexString: "#F4F5F7")
@@ -915,7 +915,7 @@ struct DashPalette: Sendable, Equatable {
             let accentText = Color(hexString: "#1D67DB")
             let secondaryAcc = Color(red: 0.431, green: 0.576, blue: 0.961) // #6E93F5
             let paleAcc = Color(red: 0.871, green: 0.906, blue: 0.992)      // #DEE7FD
-            let empty = Color(red: 0.922, green: 0.933, blue: 0.953)        // #EBEEF3
+            let empty = Color(red: 0.914, green: 0.929, blue: 0.949)        // #E9EDF2
             
             return StudioColorTokens(
                 isDark: false,
@@ -939,10 +939,10 @@ struct DashPalette: Sendable, Equatable {
                 emptyDot: empty,
                 positivePillBg: accent.opacity(0.09),
                 neutralPillBg: Color(red: 0.08, green: 0.10, blue: 0.14).opacity(0.05),
-                heat1: Color(red: 0.831, green: 0.878, blue: 0.988), // #D4E0FC
-                heat2: Color(red: 0.608, green: 0.718, blue: 0.980), // #9BB7FA
-                heat3: Color(red: 0.345, green: 0.518, blue: 0.957), // #5884F4
-                heat4: Color(red: 0.137, green: 0.314, blue: 0.851)  // #2350D9
+                heat1: Color(red: 0.690, green: 0.890, blue: 0.788), // #B0E3C9
+                heat2: Color(red: 0.365, green: 0.753, blue: 0.573), // #5DC092
+                heat3: Color(red: 0.137, green: 0.569, blue: 0.396), // #239165
+                heat4: Color(red: 0.059, green: 0.337, blue: 0.243)  // #0F563E
             )
         }
     }
@@ -1136,21 +1136,21 @@ nonisolated struct DashboardViewportLayout: Equatable, Sendable {
         let minHero: CGFloat = isEmbeddedInSettings ? (hasHeroPhoto ? 102 : 90) : (hasHeroPhoto ? 110 : 96)
         let maxHero: CGFloat = isEmbeddedInSettings ? (hasHeroPhoto ? 124 : 108) : (hasHeroPhoto ? 144 : 122)
         let minRow1: CGFloat = isEmbeddedInSettings ? 196 : 216
-        let maxRow1: CGFloat = isEmbeddedInSettings ? 290 : 390
-        let minRow2: CGFloat = isEmbeddedInSettings ? 168 : 186
-        let maxRow2: CGFloat = isEmbeddedInSettings ? 214 : 238
+        let maxRow1: CGFloat = isEmbeddedInSettings ? 310 : 456
+        let minRow2: CGFloat = isEmbeddedInSettings ? 168 : 196
+        let maxRow2: CGFloat = isEmbeddedInSettings ? 236 : 324
         
         let chromeV = outerPadV * 2 + vSpacing + unifiedInnerGap + unifiedBottomPad
         let minTotal = chromeV + minHero + minRow1 + minRow2
         let needsScroll = vpH < minTotal
         let usableH = max(minHero + minRow1 + minRow2, vpH - chromeV)
         
-        let heroWeight: CGFloat = hasHeroPhoto ? 0.175 : 0.145
+        let heroWeight: CGFloat = hasHeroPhoto ? 0.168 : 0.140
         let heroH = min(maxHero, max(minHero, floor(usableH * heroWeight)))
         
         let remainingAfterHero = usableH - heroH
-        // Keep Row 2 crisp and void-free while giving data-dense Row 1 (Heatmap + Curves + Quads) generous breathing room.
-        let desiredRow2 = min(maxRow2, max(minRow2, floor(remainingAfterHero * 0.37)))
+        // Fill viewport down to bottom margin cleanly (~60% Row 1 telemetry, ~40% Row 2 editorial + NEWS).
+        let desiredRow2 = min(maxRow2, max(minRow2, floor(remainingAfterHero * 0.40)))
         let row1H = min(maxRow1, max(minRow1, floor(remainingAfterHero - desiredRow2)))
         let row2H = min(maxRow2, max(minRow2, floor(remainingAfterHero - row1H)))
         
@@ -1164,8 +1164,8 @@ nonisolated struct DashboardViewportLayout: Equatable, Sendable {
             heroHeight: heroH,
             row1Height: row1H,
             row2Height: row2H,
-            leftColumnRatio: isEmbeddedInSettings ? 0.51 : 0.545,
-            maxContentWidth: isEmbeddedInSettings ? 1160 : 1440,
+            leftColumnRatio: isEmbeddedInSettings ? 0.51 : 0.535,
+            maxContentWidth: isEmbeddedInSettings ? 1160 : 1480,
             isTight: isTight,
             needsVerticalScroll: needsScroll
         )
@@ -1466,7 +1466,7 @@ struct AnalyticsDashboardView: View {
     }
     
     
-    // MARK: Row 2 — Balanced Editorial + NEWS Strip (30.5% 干了啥 / 30.5% 要干啥 / 39% NEWS)
+    // MARK: Row 2 — Balanced Editorial + Magazine NEWS Strip (29% 干了啥 / 29% 要干啥 / 42% NEWS)
     
     private func row2Section(_ snapshot: DashboardSnapshot, layout: DashboardViewportLayout) -> some View {
         let height = layout.row2Height
@@ -1475,9 +1475,9 @@ struct AnalyticsDashboardView: View {
         return GeometryReader { proxy in
             let usableW = max(360, proxy.size.width - spacing * 2)
             let useAsymmetric = (!self.isEmbeddedInSettings && usableW >= 720)
-            let newsW = useAsymmetric ? floor(usableW * 0.39) : floor(usableW / 3.0)
+            let newsW = useAsymmetric ? floor(usableW * 0.42) : floor(usableW / 3.0)
             let editorialW = max(140, floor((usableW - newsW) * 0.5))
-            let resolvedNewsW = max(160, usableW - editorialW * 2)
+            let resolvedNewsW = max(180, usableW - editorialW * 2)
             
             HStack(alignment: .top, spacing: spacing) {
                 self.doneTodayColumn(points: snapshot.doneTodayPoints, compact: layout.isTight, cornerRadius: row2Radius)
@@ -1518,8 +1518,7 @@ struct AnalyticsDashboardView: View {
             predictions: predictions,
             compact: compact,
             cornerRadius: cornerRadius,
-            palette: self.palette,
-            onOpenDocument: self.onOpenDocument
+            palette: self.palette
         )
     }
     
@@ -1699,14 +1698,13 @@ private struct DoneTodayEditorialCard: View {
 }
 
 
-/// Clean Swiss-grid editorial "要干啥" card aligned 1:1 with "干了啥" with clickable source-doc links.
+/// Clean Swiss-grid editorial "要干啥" card aligned 1:1 with "干了啥" (pure focus list without doc jumps).
 private struct NextActionsEditorialCard: View {
     
     let predictions: [DocumentActionPrediction]
     let compact: Bool
     var cornerRadius: CGFloat = 18
     let palette: DashPalette
-    var onOpenDocument: ((StoredDocumentRecord) -> Void)? = nil
     
     @State private var hoveredID: String?
     
@@ -1716,7 +1714,7 @@ private struct NextActionsEditorialCard: View {
         let outerV: CGFloat = self.compact ? 10 : 12
         let scrollOuterH: CGFloat = self.compact ? 6 : 8
         let rowInsetH: CGFloat = outerH - scrollOuterH
-        let rowPadV: CGFloat = self.compact ? 6.5 : (self.predictions.count <= 4 ? 8 : 6.5)
+        let rowPadV: CGFloat = self.compact ? 6.5 : (self.predictions.count <= 4 ? 9 : 7)
         
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: 6) {
@@ -1758,17 +1756,15 @@ private struct NextActionsEditorialCard: View {
                                     .padding(.leading, rowInsetH + 27)
                                     .padding(.trailing, rowInsetH)
                             }
-                            let sourceLabel = self.resolvedSubtitle(for: pred)
-                            let linkedDoc = self.resolveDocument(for: pred)
-                            let row = EditorialLedgerRow(
+                            EditorialLedgerRow(
                                 index: idx,
                                 text: pred.action,
-                                subtitle: sourceLabel,
+                                subtitle: nil,
                                 isEmphasized: idx == 0,
                                 isHovered: self.hoveredID == pred.id,
                                 fontSize: 12.8,
-                                fontWeight: .medium,
-                                lineSpacing: 2.5,
+                                fontWeight: .regular,
+                                lineSpacing: 3.5,
                                 horizontalInset: rowInsetH,
                                 verticalPad: rowPadV,
                                 palette: self.palette
@@ -1778,17 +1774,6 @@ private struct NextActionsEditorialCard: View {
                                 } else if self.hoveredID == pred.id {
                                     self.hoveredID = nil
                                 }
-                            }
-                            if let linkedDoc, let onOpenDocument = self.onOpenDocument {
-                                Button {
-                                    onOpenDocument(linkedDoc)
-                                } label: {
-                                    row
-                                }
-                                .buttonStyle(.plain)
-                                .pointerStyle(.link)
-                            } else {
-                                row
                             }
                         }
                     }
@@ -1800,24 +1785,6 @@ private struct NextActionsEditorialCard: View {
         .padding(.vertical, outerV)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .dashboardCardSurface(palette: self.palette, cornerRadius: self.cornerRadius, showsShadow: false)
-    }
-    
-    
-    private func resolvedSubtitle(for pred: DocumentActionPrediction) -> String? {
-        let title = pred.sourceDocumentTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty,
-              !GeneratedDocumentName.isGeneratedName(title),
-              !pred.action.localizedCaseInsensitiveContains(title)
-        else { return nil }
-        return title
-    }
-    
-    
-    private func resolveDocument(for pred: DocumentActionPrediction) -> StoredDocumentRecord? {
-        guard let targetID = pred.sourceDocumentID, !targetID.isEmpty else { return nil }
-        return CotLocalDatabase.shared.documents.first {
-            $0.id == targetID || $0.filePath == targetID
-        }
     }
 }
 
@@ -1909,27 +1876,31 @@ private struct DashboardNewsColumnCard: View {
             .frame(height: 22)
             
             GeometryReader { geo in
-                let colCount = (!self.compact && geo.size.width >= 200) ? 2 : 1
-                let rowCount = geo.size.height >= 150 ? 2 : 1
-                let slotCount = colCount * rowCount
-                let gridGap: CGFloat = 8
-                let slotH: CGFloat = max(72, floor((geo.size.height - CGFloat(max(0, rowCount - 1)) * gridGap) / CGFloat(rowCount)))
-                let showFooterLine = (slotH >= 114)
-                let textReservedH: CGFloat = showFooterLine ? 54 : 36
-                let coverH: CGFloat = max(40, floor(slotH - textReservedH))
+                let useMagazineSplit = (!self.compact && geo.size.width >= 370 && geo.size.height >= 156)
+                let slotCount = useMagazineSplit ? 4 : 3
                 let activeItems = Array(items.prefix(slotCount))
                 
                 if activeItems.isEmpty {
                     if self.newsService.isLoading {
-                        VStack(spacing: gridGap) {
-                            ForEach(0..<rowCount, id: \.self) { _ in
-                                HStack(spacing: gridGap) {
-                                    ForEach(0..<colCount, id: \.self) { _ in
-                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        if useMagazineSplit {
+                            HStack(spacing: 10) {
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(self.palette.inset)
+                                    .frame(width: floor(geo.size.width * 0.43), height: geo.size.height)
+                                VStack(spacing: 8) {
+                                    ForEach(0..<3, id: \.self) { _ in
+                                        RoundedRectangle(cornerRadius: 9, style: .continuous)
                                             .fill(self.palette.inset)
-                                            .frame(maxWidth: .infinity)
-                                            .frame(height: slotH)
+                                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                                     }
+                                }
+                            }
+                        } else {
+                            VStack(spacing: 8) {
+                                ForEach(0..<3, id: \.self) { _ in
+                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                        .fill(self.palette.inset)
+                                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                                 }
                             }
                         }
@@ -1957,34 +1928,80 @@ private struct DashboardNewsColumnCard: View {
                         .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.99))
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                } else {
-                    VStack(alignment: .leading, spacing: gridGap) {
-                        ForEach(0..<rowCount, id: \.self) { rowIdx in
-                            HStack(alignment: .top, spacing: gridGap) {
-                                ForEach(0..<colCount, id: \.self) { colIdx in
-                                    let itemIdx = rowIdx * colCount + colIdx
-                                    if itemIdx < activeItems.count {
-                                        let item = activeItems[itemIdx]
-                                        NewsMiniVisualCard(
-                                            item: item,
-                                            cover: self.newsService.cachedCoverImage(for: item),
-                                            isRead: self.newsService.isRead(item),
-                                            coverHeight: coverH,
-                                            slotHeight: slotH,
-                                            showPublisherLine: showFooterLine,
-                                            palette: self.palette,
-                                            onAppearLoadCover: {
-                                                self.newsService.requestCoverLoad(for: item)
-                                            }
-                                        ) {
-                                            self.onOpenWorkspace(item.id)
-                                        }
-                                    } else {
-                                        Color.clear
-                                            .frame(maxWidth: .infinity)
-                                            .frame(height: slotH)
+                } else if useMagazineSplit, let leadItem = activeItems.first {
+                    let splitGap: CGFloat = 10
+                    let leadW = max(168, floor((geo.size.width - splitGap) * 0.435))
+                    let listW = max(160, geo.size.width - splitGap - leadW)
+                    let leadCoverH = max(84, min(geo.size.height * 0.56, round(leadW * 0.58)))
+                    let secondaryItems = Array(activeItems.dropFirst().prefix(3))
+                    let rowCount = max(1, secondaryItems.count)
+                    let rowH = max(50, floor((geo.size.height - CGFloat(max(0, rowCount - 1)) * 6) / CGFloat(rowCount)))
+                    
+                    HStack(alignment: .top, spacing: splitGap) {
+                        NewsMiniVisualCard(
+                            item: leadItem,
+                            cover: self.newsService.cachedCoverImage(for: leadItem),
+                            isRead: self.newsService.isRead(leadItem),
+                            coverHeight: leadCoverH,
+                            slotHeight: geo.size.height,
+                            showPublisherLine: true,
+                            palette: self.palette,
+                            onAppearLoadCover: {
+                                self.newsService.requestCoverLoad(for: leadItem)
+                            }
+                        ) {
+                            self.onOpenWorkspace(leadItem.id)
+                        }
+                        .frame(width: leadW, height: geo.size.height)
+                        
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(secondaryItems) { item in
+                                NewsHorizontalRowCard(
+                                    item: item,
+                                    cover: self.newsService.cachedCoverImage(for: item),
+                                    isRead: self.newsService.isRead(item),
+                                    rowHeight: rowH,
+                                    palette: self.palette,
+                                    onAppearLoadCover: {
+                                        self.newsService.requestCoverLoad(for: item)
                                     }
+                                ) {
+                                    self.onOpenWorkspace(item.id)
                                 }
+                            }
+                            if secondaryItems.count < 3 {
+                                Spacer(minLength: 0)
+                            }
+                        }
+                        .frame(width: listW, height: geo.size.height, alignment: .topLeading)
+                    }
+                    .id("dash-news-\(self.newsService.selectedCategory.rawValue)-\(self.newsService.feedRefreshToken)")
+                    .transition(.opacity)
+                    .animation(DashMotion.resolve(DashMotion.quick), value: self.newsService.feedRefreshToken)
+                    .onAppear {
+                        self.newsService.prefetchCovers(for: self.newsService.selectedCategory, limit: slotCount * 2)
+                    }
+                    .onChange(of: self.newsService.selectedCategory) { _, nextCat in
+                        self.newsService.prefetchCovers(for: nextCat, limit: slotCount * 2)
+                    }
+                } else {
+                    let rowItems = Array(activeItems.prefix(3))
+                    let rowCount = max(1, rowItems.count)
+                    let rowH = max(48, floor((geo.size.height - CGFloat(max(0, rowCount - 1)) * 6) / CGFloat(rowCount)))
+                    
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(rowItems) { item in
+                            NewsHorizontalRowCard(
+                                item: item,
+                                cover: self.newsService.cachedCoverImage(for: item),
+                                isRead: self.newsService.isRead(item),
+                                rowHeight: rowH,
+                                palette: self.palette,
+                                onAppearLoadCover: {
+                                    self.newsService.requestCoverLoad(for: item)
+                                }
+                            ) {
+                                self.onOpenWorkspace(item.id)
                             }
                         }
                     }
@@ -2140,6 +2157,127 @@ private struct NewsMiniVisualCard: View {
                     .lineSpacing(1.5)
                     .padding(.horizontal, 7)
                     .padding(.bottom, 6)
+            }
+        }
+    }
+    
+    
+    private static func shortAge(from date: Date) -> String {
+        let sec = max(60, Int(Date().timeIntervalSince(date)))
+        if sec < 3600 { return "\(sec / 60)m" }
+        if sec < 86_400 { return "\(sec / 3600)h" }
+        return "\(sec / 86_400)d"
+    }
+}
+
+
+/// Balanced horizontal news story row preserving natural 16:10 thumbnail proportions alongside crisp editorial copy.
+private struct NewsHorizontalRowCard: View {
+    
+    let item: AIHotNewsItem
+    let cover: NSImage?
+    let isRead: Bool
+    let rowHeight: CGFloat
+    let palette: DashPalette
+    let onAppearLoadCover: () -> Void
+    let onTap: () -> Void
+    
+    @State private var isHovered = false
+    
+    var body: some View {
+        let publisher = self.item.displayPublisherLabel
+        let category = self.item.resolvedCategory
+        let thumbH = max(38, min(58, self.rowHeight - 12))
+        let thumbW = round(thumbH * 1.48)
+        
+        Button(action: self.onTap) {
+            HStack(alignment: .center, spacing: 9) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(self.item.title)
+                        .font(.system(size: 11.8, weight: self.isRead ? .regular : .semibold))
+                        .foregroundStyle(self.isRead ? self.palette.secondaryInk : self.palette.pine)
+                        .lineLimit(2)
+                        .lineSpacing(1.5)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    
+                    HStack(spacing: 5) {
+                        if !self.isRead {
+                            Circle()
+                                .fill(self.palette.accentFill)
+                                .frame(width: 4.5, height: 4.5)
+                        }
+                        Text(category == .xSocial ? "X" : category.badgeLabel)
+                            .font(.system(size: 9.5, weight: .semibold))
+                            .foregroundStyle(self.palette.emerald)
+                        
+                        if !publisher.isEmpty {
+                            Text("· \(publisher)")
+                                .font(.system(size: 9.5))
+                                .foregroundStyle(self.palette.mutedInk)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+                        
+                        Spacer(minLength: 2)
+                        
+                        if let published = self.item.publishedAt {
+                            Text(Self.shortAge(from: published))
+                                .font(.system(size: 9.5, design: .monospaced).monospacedDigit())
+                                .foregroundStyle(self.palette.mutedInk.opacity(0.82))
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                
+                ZStack {
+                    if let cover = self.cover {
+                        Color.clear
+                            .overlay {
+                                Image(nsImage: cover)
+                                    .resizable()
+                                    .interpolation(.medium)
+                                    .scaledToFill()
+                            }
+                            .clipped()
+                    } else {
+                        let tint: Color = switch category {
+                            case .finance: self.palette.statusPositive
+                            case .xSocial: Color(red: 0.212, green: 0.478, blue: 0.612)
+                            case .ai, .all: self.palette.accentFill
+                        }
+                        LinearGradient(
+                            colors: [tint.opacity(self.palette.tokens.isDark ? 0.28 : 0.16), tint.opacity(0.05)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    }
+                }
+                .frame(width: thumbW, height: thumbH)
+                .clipShape(RoundedRectangle(cornerRadius: DashboardCornerMetrics.newsCoverRadius, style: .continuous))
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity)
+            .frame(height: self.rowHeight, alignment: .center)
+            .background(
+                RoundedRectangle(cornerRadius: DashboardCornerMetrics.newsMiniCardRadius, style: .continuous)
+                    .fill(self.isHovered ? self.palette.insetHover : self.palette.inset)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: DashboardCornerMetrics.newsMiniCardRadius, style: .continuous)
+                    .strokeBorder(self.isHovered ? self.palette.hairlineStrong : Color.clear, lineWidth: 0.7)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: DashboardCornerMetrics.newsMiniCardRadius, style: .continuous))
+        }
+        .buttonStyle(DashboardCardButtonStyle(pressedScale: 0.992))
+        .pointerStyle(.link)
+        .onAppear {
+            self.onAppearLoadCover()
+        }
+        .onHover { hovering in
+            if hovering != self.isHovered {
+                self.isHovered = hovering
             }
         }
     }
@@ -3661,35 +3799,53 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
     private func identityLockup(streakDays: Int, overPhoto: Bool) -> some View {
         let tierBadge = self.hasProLicense ? "PRO" : "PASS"
         let subLabel = "#\(String(self.serialCode.prefix(4)))"
-        let primaryInk: Color = overPhoto ? .white : self.palette.pine
-        let secondaryInk: Color = overPhoto ? Color.white.opacity(0.76) : self.palette.mutedInk
-        let textShadow: Color = overPhoto ? Color.black.opacity(0.28) : .clear
+        let nameGradient: LinearGradient = overPhoto
+            ? LinearGradient(
+                colors: [Color.white, Color.white.opacity(0.84)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            : LinearGradient(
+                colors: [self.palette.pine, self.palette.pine.opacity(0.76)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        let secondaryInk: Color = overPhoto ? Color.white.opacity(0.78) : self.palette.mutedInk
+        let textShadow: Color = overPhoto ? Color.black.opacity(0.32) : .clear
         
         return HStack(alignment: .center, spacing: 11) {
             self.authorPortrait(size: self.compact ? 38 : 44)
             
             VStack(alignment: .leading, spacing: 3) {
                 Text(self.profile.displayName)
-                    .font(.system(size: self.compact ? 16 : 18.5, weight: .bold))
-                    .foregroundStyle(primaryInk)
-                    .shadow(color: textShadow, radius: 2.5, y: 1)
+                    .font(.system(size: self.compact ? 16.5 : 19, weight: .bold))
+                    .foregroundStyle(nameGradient)
+                    .shadow(color: textShadow, radius: 3, y: 1)
                     .lineLimit(1)
                     .minimumScaleFactor(0.80)
                 
                 HStack(spacing: 6) {
                     Text(tierBadge)
                         .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                        .tracking(0.6)
                         .foregroundStyle(overPhoto ? .white : self.palette.accentFill)
-                        .padding(.horizontal, 6)
+                        .padding(.horizontal, 6.5)
                         .frame(height: 16)
                         .background(
-                            overPhoto ? Color.white.opacity(0.18) : self.palette.tokens.positivePillBg,
+                            LinearGradient(
+                                colors: overPhoto
+                                    ? [Color.white.opacity(0.28), Color.white.opacity(0.12)]
+                                    : [self.palette.tokens.positivePillBg, self.palette.accentFill.opacity(0.16)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
                             in: Capsule()
                         )
                         .overlay {
-                            if overPhoto {
-                                Capsule().strokeBorder(Color.white.opacity(0.32), lineWidth: 0.6)
-                            }
+                            Capsule().strokeBorder(
+                                overPhoto ? Color.white.opacity(0.38) : self.palette.accentFill.opacity(0.22),
+                                lineWidth: 0.65
+                            )
                         }
                     
                     Text(subLabel)
@@ -3713,11 +3869,21 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
         overPhoto: Bool
     ) -> some View {
         let rhythmBars = Array(self.snapshot.busyness.slices.suffix(6))
-        let primaryInk: Color = overPhoto ? .white : self.palette.pine
-        let labelInk: Color = overPhoto ? Color.white.opacity(0.76) : self.palette.mutedInk
-        let accentInk: Color = overPhoto ? Color(red: 0.62, green: 0.84, blue: 1.0) : self.palette.accentFill
-        let inactiveBar: Color = overPhoto ? Color.white.opacity(0.28) : self.palette.accentFill.opacity(0.22)
-        let textShadow: Color = overPhoto ? Color.black.opacity(0.26) : .clear
+        let heroInkGradient: LinearGradient = overPhoto
+            ? LinearGradient(
+                colors: [Color.white, Color.white.opacity(0.84)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            : LinearGradient(
+                colors: [self.palette.pine, self.palette.pine.opacity(0.78)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        let labelInk: Color = overPhoto ? Color.white.opacity(0.78) : self.palette.mutedInk
+        let accentInk: Color = overPhoto ? Color(red: 0.58, green: 0.94, blue: 0.78) : self.palette.tokens.heat3
+        let inactiveBar: Color = overPhoto ? Color.white.opacity(0.28) : self.palette.tokens.heat3.opacity(0.22)
+        let textShadow: Color = overPhoto ? Color.black.opacity(0.28) : .clear
         
         return HStack(alignment: .center, spacing: 0) {
             self.headerStatBlock(
@@ -3771,17 +3937,25 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(displayMood)
                             .font(.system(size: 19.5, weight: .bold))
-                            .foregroundStyle(primaryInk)
-                            .shadow(color: textShadow, radius: 2.5, y: 1)
+                            .foregroundStyle(heroInkGradient)
+                            .shadow(color: textShadow, radius: 3, y: 1)
                             .lineLimit(1)
                             .minimumScaleFactor(0.75)
                         
                         HStack(alignment: .bottom, spacing: 3) {
-                            ForEach(Array(rhythmBars.enumerated()), id: \.element.id) { _, slice in
+                            ForEach(Array(rhythmBars.enumerated()), id: \.element.id) { idx, slice in
                                 let h = max(5, CGFloat(slice.intensity) * 18)
                                 Capsule(style: .continuous)
                                     .fill(slice.intensity > 0.35 ? accentInk : inactiveBar)
                                     .frame(width: 3, height: h)
+                                    .scaleEffect(
+                                        y: self.hasAppeared || DashMotion.isReducedMotion ? 1.0 : 0.15,
+                                        anchor: .bottom
+                                    )
+                                    .animation(
+                                        DashMotion.resolve(DashMotion.springCard.delay(Double(idx) * 0.035)),
+                                        value: self.hasAppeared
+                                    )
                             }
                         }
                         .frame(height: 18, alignment: .bottom)
@@ -3872,9 +4046,19 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
     
     
     private func headerStatBlock(label: String, value: String, unit: String, overPhoto: Bool) -> some View {
-        let primaryInk: Color = overPhoto ? .white : self.palette.pine
-        let labelInk: Color = overPhoto ? Color.white.opacity(0.76) : self.palette.mutedInk
-        let textShadow: Color = overPhoto ? Color.black.opacity(0.26) : .clear
+        let valueGradient: LinearGradient = overPhoto
+            ? LinearGradient(
+                colors: [Color.white, Color.white.opacity(0.84)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            : LinearGradient(
+                colors: [self.palette.pine, self.palette.pine.opacity(0.78)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        let labelInk: Color = overPhoto ? Color.white.opacity(0.78) : self.palette.mutedInk
+        let textShadow: Color = overPhoto ? Color.black.opacity(0.28) : .clear
         
         return VStack(alignment: .leading, spacing: 3) {
             Text(label)
@@ -3885,9 +4069,9 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
             
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Text(value)
-                    .font(.system(size: self.compact ? 17 : 19.5, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(primaryInk)
-                    .shadow(color: textShadow, radius: 2.5, y: 1)
+                    .font(.system(size: self.compact ? 17.5 : 20, weight: .bold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(valueGradient)
+                    .shadow(color: textShadow, radius: 3, y: 1)
                     .contentTransition(.numericText())
                     .lineLimit(1)
                 Text(unit)
@@ -4294,16 +4478,30 @@ private struct DashboardHeatmapCard: View {
         readout: (label: String, total: Int, typed: Int, ai: Int),
         isInspecting: Bool
     ) -> some View {
+        let countGradient = LinearGradient(
+            colors: isInspecting
+                ? [self.palette.tokens.heat3, self.palette.tokens.heat4]
+                : [self.palette.pine, self.palette.pine.opacity(0.78)],
+            startPoint: .top,
+            endPoint: .bottom
+        )
         HStack(alignment: .center, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(isInspecting ? readout.label : AppLanguage.text("今日码字", en: "Typed Today"))
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(isInspecting ? self.palette.emerald : self.palette.mutedInk)
+                HStack(spacing: 4.5) {
+                    Circle()
+                        .fill(isInspecting ? self.palette.tokens.heat3 : self.palette.tokens.heat2)
+                        .frame(width: 5.5, height: 5.5)
+                    Text(isInspecting ? readout.label : AppLanguage.text("今日码字", en: "Typed Today"))
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(isInspecting ? self.palette.tokens.heat3 : self.palette.mutedInk)
+                }
                 
                 HStack(alignment: .firstTextBaseline, spacing: 3) {
                     Text(readout.total.formatted())
-                        .font(.system(size: self.compact ? 17 : 20, weight: .semibold).monospacedDigit())
-                        .foregroundStyle(isInspecting ? self.palette.emerald : self.palette.pine)
+                        .font(.system(size: self.compact ? 17.5 : 20.5, weight: .bold, design: .rounded).monospacedDigit())
+                        .foregroundStyle(countGradient)
+                        .contentTransition(.numericText())
+                        .animation(DashMotion.resolve(DashMotion.quick), value: readout.total)
                     Text("字")
                         .font(.system(size: 11, weight: .regular))
                         .foregroundStyle(self.palette.mutedInk)
@@ -4313,11 +4511,15 @@ private struct DashboardHeatmapCard: View {
             Spacer(minLength: 4)
             
             if !self.compact {
-                HStack(spacing: 2.5) {
+                HStack(spacing: 3) {
                     ForEach(0..<5, id: \.self) { level in
-                        RoundedRectangle(cornerRadius: 2, style: .continuous)
-                            .fill(self.palette.heat(level))
-                            .frame(width: 8, height: 8)
+                        RoundedRectangle(cornerRadius: 2.2, style: .continuous)
+                            .fill(level == 0 ? (self.overPhoto ? Color.white.opacity(self.palette.tokens.isDark ? 0.12 : 0.62) : self.palette.emptyDot) : self.palette.heat(level))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 2.2, style: .continuous)
+                                    .strokeBorder(self.palette.hairline.opacity(level == 0 ? 0.9 : 0.35), lineWidth: 0.5)
+                            )
+                            .frame(width: 8.5, height: 8.5)
                     }
                 }
                 .padding(.trailing, 4)
@@ -4424,12 +4626,16 @@ private struct DashboardHeatmapCard: View {
                                 for (rowIndex, cell) in week.enumerated() {
                                     guard rowIndex < 7, !cell.isOutOfYear, !cell.isFuture, cell.id == linkedID else { continue }
                                     let rect = layout.cellRect(col: colIndex, row: rowIndex)
+                                    let haloRect = rect.insetBy(dx: -1.4, dy: -1.4)
+                                    let haloPath = RoundedRectangle(cornerRadius: layout.cornerRadius + 1.2, style: .continuous)
+                                        .path(in: haloRect)
                                     let path = RoundedRectangle(cornerRadius: layout.cornerRadius, style: .continuous)
                                         .path(in: rect)
-                                    context.fill(path, with: .color(self.palette.emerald))
+                                    context.fill(haloPath, with: .color(self.palette.tokens.heat3.opacity(0.24)))
+                                    context.fill(path, with: .color(cell.level == 0 ? self.palette.tokens.heat2 : self.palette.heat(cell.level)))
                                     context.stroke(
-                                        path,
-                                        with: .color(self.palette.pine.opacity(0.85)),
+                                        haloPath,
+                                        with: .color(self.palette.tokens.heat4.opacity(0.92)),
                                         lineWidth: 1.35
                                     )
                                     return
@@ -4974,11 +5180,20 @@ private struct HeatmapStaticBaseCanvas: View, Equatable {
         let isDark = self.palette.tokens.isDark
         let emptyCellFill: Color = if self.overPhoto {
             isDark
-                ? Color.white.opacity(0.085)
-                : self.palette.pine.opacity(0.065)
+                ? Color.white.opacity(0.08)
+                : Color.white.opacity(0.56)
         } else {
             self.palette.emptyDot
         }
+        let emptyCellStroke: Color = if self.overPhoto {
+            isDark
+                ? Color.white.opacity(0.07)
+                : self.palette.pine.opacity(0.085)
+        } else {
+            self.palette.hairline.opacity(0.55)
+        }
+        let scopeTint = self.palette.tokens.heat3
+        let todayKey = AnalyticsManager.dateKey()
         let weekCount = self.yearlyHeatmap.weeks.count
         
         Canvas(rendersAsynchronously: true) { context, canvasSize in
@@ -4988,12 +5203,12 @@ private struct HeatmapStaticBaseCanvas: View, Equatable {
             var lastLabelRightX: CGFloat = -100
             for marker in self.yearlyHeatmap.monthLabels where marker.month == 1 || marker.month == 4 || marker.month == 7 || marker.month == 10 {
                 let x = self.layout.gridOriginX + CGFloat(marker.weekIndex) * self.layout.pitch
-                guard x >= lastLabelRightX + 26 else { continue }
+                guard x >= lastLabelRightX + 28 else { continue }
                 lastLabelRightX = x
                 context.draw(
-                    Text("\(marker.month)")
+                    Text("\(marker.month)月")
                         .font(.system(size: 9.5, weight: .medium, design: .rounded).monospacedDigit())
-                        .foregroundStyle(self.palette.pine.opacity(0.46)),
+                        .foregroundStyle(self.palette.pine.opacity(0.54)),
                     at: CGPoint(x: x, y: HeatmapGridLayout.monthLabelBaselineY),
                     anchor: .leading
                 )
@@ -5010,11 +5225,12 @@ private struct HeatmapStaticBaseCanvas: View, Equatable {
             
             if hasScope {
                 let fillOpacity: Double = isDark
-                    ? (self.isDraggingScope ? 0.19 : 0.12)
-                    : (self.isDraggingScope ? 0.13 : 0.075)
-                context.fill(scopePath, with: .color(self.palette.accentFill.opacity(fillOpacity)))
+                    ? (self.isDraggingScope ? 0.22 : 0.14)
+                    : (self.isDraggingScope ? 0.16 : 0.095)
+                context.fill(scopePath, with: .color(scopeTint.opacity(fillOpacity)))
             }
             
+            var todayRect: CGRect?
             for (colIndex, week) in self.yearlyHeatmap.weeks.enumerated() {
                 for (rowIndex, cell) in week.enumerated() {
                     guard rowIndex < 7, !cell.isOutOfYear else { continue }
@@ -5023,24 +5239,58 @@ private struct HeatmapStaticBaseCanvas: View, Equatable {
                         .path(in: rect)
                     if cell.isFuture {
                         // Subtle balanced placeholder slots for upcoming days in the current week
-                        context.fill(path, with: .color(emptyCellFill.opacity(isDark ? 0.24 : 0.34)))
-                        context.stroke(path, with: .color(self.palette.hairline.opacity(0.85)), lineWidth: 0.5)
+                        context.fill(path, with: .color(emptyCellFill.opacity(isDark ? 0.22 : 0.32)))
+                        context.stroke(path, with: .color(self.palette.hairline.opacity(0.65)), lineWidth: 0.45)
+                    } else if cell.level == 0 {
+                        context.fill(path, with: .color(emptyCellFill))
+                        context.stroke(path, with: .color(emptyCellStroke), lineWidth: 0.45)
                     } else {
-                        let fill = (cell.level == 0) ? emptyCellFill : self.palette.heat(cell.level)
-                        context.fill(path, with: .color(fill))
+                        let baseColor = self.palette.heat(cell.level)
+                        context.fill(path, with: .color(baseColor))
+                        // Subtle top-edge gem specular on high-output cells for tactile keycap depth
+                        if cell.level >= 3, rect.width >= 7 {
+                            let glossRect = CGRect(
+                                x: rect.minX + 0.6,
+                                y: rect.minY + 0.6,
+                                width: rect.width - 1.2,
+                                height: max(1.2, rect.height * 0.36)
+                            )
+                            let glossPath = RoundedRectangle(cornerRadius: max(1, self.layout.cornerRadius - 0.5), style: .continuous)
+                                .path(in: glossRect)
+                            context.fill(
+                                glossPath,
+                                with: .linearGradient(
+                                    Gradient(colors: [
+                                        Color.white.opacity(isDark ? 0.22 : 0.28),
+                                        Color.clear,
+                                    ]),
+                                    startPoint: CGPoint(x: glossRect.midX, y: glossRect.minY),
+                                    endPoint: CGPoint(x: glossRect.midX, y: glossRect.maxY)
+                                )
+                            )
+                        }
+                    }
+                    if cell.dateKey == todayKey, !cell.isFuture {
+                        todayRect = rect
                     }
                 }
+            }
+            
+            if let todayRect {
+                let todayPath = RoundedRectangle(cornerRadius: self.layout.cornerRadius, style: .continuous)
+                    .path(in: todayRect.insetBy(dx: 0.3, dy: 0.3))
+                context.stroke(todayPath, with: .color(self.palette.tokens.heat4.opacity(0.88)), lineWidth: 1.15)
             }
             
             // Unbroken rectangular border on top, strictly centered in the gutter with zero cell overlap
             if hasScope {
                 let strokeOpacity: Double = isDark
-                    ? (self.isDraggingScope ? 0.82 : 0.58)
-                    : (self.isDraggingScope ? 0.72 : 0.48)
+                    ? (self.isDraggingScope ? 0.88 : 0.64)
+                    : (self.isDraggingScope ? 0.78 : 0.56)
                 let strokeW = self.layout.scopeStrokeWidth(isDragging: self.isDraggingScope)
                 context.stroke(
                     scopePath,
-                    with: .color(self.palette.accentFill.opacity(strokeOpacity)),
+                    with: .color(scopeTint.opacity(strokeOpacity)),
                     style: StrokeStyle(
                         lineWidth: strokeW,
                         lineCap: .round,
@@ -5348,6 +5598,9 @@ private struct DashboardAIUsageWideCard: View {
         let totals = self.snapshot.ai30Totals
         let todayTotals = self.snapshot.aiTodayTotals
         let displayReqs = todayTotals.requests > 0 ? todayTotals.requests : totals.requests
+        let reqCaption = todayTotals.requests > 0
+            ? AppLanguage.text("今日", en: "Today")
+            : AppLanguage.text("30日", en: "30d")
         let costEstimate = AIModelPricingCatalog.estimateTotalCost(models: self.snapshot.aiModels, fallbackTotals: totals)
         
         let inTok = max(0, totals.inputTokens)
@@ -5355,21 +5608,24 @@ private struct DashboardAIUsageWideCard: View {
         let inFrac: Double = (inTok + outTok) > 0 ? Double(inTok) / Double(inTok + outTok) : 0.62
         let inPct = Int((inFrac * 100).rounded())
         let outPct = max(0, 100 - inPct)
+        let topModels = self.topBreakdownRows
         
         Button(action: self.onTap) {
             GeometryReader { cardGeo in
-                let ringSide = min(88, max(68, floor(cardGeo.size.height - 20)))
-                HStack(spacing: 14) {
+                let ringSide = min(104, max(72, floor(cardGeo.size.height - 26)))
+                let showModelBreakdown = cardGeo.size.height >= 122 && !topModels.isEmpty
+                
+                HStack(spacing: 16) {
                     ZStack {
                         AIUsageSunburstChartView(snapshot: self.snapshot, palette: self.palette, detailed: false)
                             .frame(width: ringSide, height: ringSide)
                         
                         VStack(spacing: 0.5) {
                             Text("\(displayReqs)")
-                                .font(.system(size: ringSide < 78 ? 12 : 13.5, weight: .bold, design: .rounded).monospacedDigit())
+                                .font(.system(size: ringSide < 82 ? 12.5 : 14.5, weight: .bold, design: .rounded).monospacedDigit())
                                 .foregroundStyle(self.palette.pine)
                                 .contentTransition(.numericText())
-                            Text(AppLanguage.text("次", en: "req"))
+                            Text(reqCaption)
                                 .font(.system(size: 9.5, weight: .medium))
                                 .foregroundStyle(self.palette.mutedInk)
                         }
@@ -5377,16 +5633,23 @@ private struct DashboardAIUsageWideCard: View {
                     }
                     .frame(width: ringSide + 2, height: ringSide + 2)
                     
-                    VStack(alignment: .leading, spacing: cardGeo.size.height < 118 ? 8 : 12) {
+                    VStack(alignment: .leading, spacing: showModelBreakdown ? 8 : 10) {
                         HStack(alignment: .top, spacing: 8) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(AppLanguage.text("AI 用量", en: "AI Usage"))
-                                    .font(.system(size: 11.5, weight: .medium))
-                                    .foregroundStyle(self.palette.mutedInk)
+                                HStack(spacing: 6) {
+                                    Text(AppLanguage.text("AI 用量", en: "AI Usage"))
+                                        .font(.system(size: 11.5, weight: .medium))
+                                        .foregroundStyle(self.palette.mutedInk)
+                                    if totals.requests > 0 {
+                                        Text("\(totals.requests) \(AppLanguage.text("次 / 30日", en: "req / 30d"))")
+                                            .font(.system(size: 10, weight: .medium).monospacedDigit())
+                                            .foregroundStyle(self.palette.mutedInk.opacity(0.85))
+                                    }
+                                }
                                 
-                                HStack(alignment: .firstTextBaseline, spacing: 3) {
+                                HStack(alignment: .firstTextBaseline, spacing: 3.5) {
                                     Text(Self.compactTokens(totals.totalTokens))
-                                        .font(.system(size: cardGeo.size.height < 118 ? 18 : 20, weight: .semibold).monospacedDigit())
+                                        .font(.system(size: cardGeo.size.height < 120 ? 18 : 21, weight: .bold, design: .rounded).monospacedDigit())
                                         .foregroundStyle(self.palette.pine)
                                         .contentTransition(.numericText())
                                     Text("tok")
@@ -5399,47 +5662,86 @@ private struct DashboardAIUsageWideCard: View {
                             
                             VStack(alignment: .trailing, spacing: 2) {
                                 Text(costEstimate.formattedRMB)
-                                    .font(.system(size: 13, weight: .semibold, design: .rounded).monospacedDigit())
+                                    .font(.system(size: 13.5, weight: .semibold, design: .rounded).monospacedDigit())
                                     .foregroundStyle(self.palette.pine)
+                                    .contentTransition(.numericText())
                                 Text(costEstimate.formattedUSD)
                                     .font(.system(size: 10.5, weight: .regular, design: .monospaced).monospacedDigit())
                                     .foregroundStyle(self.palette.mutedInk)
                             }
                         }
                         
-                        VStack(spacing: 5) {
+                        if showModelBreakdown {
+                            VStack(spacing: 4.5) {
+                                ForEach(Array(topModels.prefix(cardGeo.size.height >= 165 ? 3 : 2).enumerated()), id: \.offset) { idx, row in
+                                    HStack(spacing: 6) {
+                                        Circle()
+                                            .fill(self.modelSwatchColor(index: idx))
+                                            .frame(width: 5.5, height: 5.5)
+                                        Text(row.name)
+                                            .font(.system(size: 10.5, weight: .medium))
+                                            .foregroundStyle(self.palette.pine.opacity(0.88))
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                            .frame(maxWidth: 116, alignment: .leading)
+                                        GeometryReader { miniGeo in
+                                            ZStack(alignment: .leading) {
+                                                Capsule(style: .continuous)
+                                                    .fill(self.palette.hairline.opacity(0.85))
+                                                Capsule(style: .continuous)
+                                                    .fill(self.modelSwatchColor(index: idx).opacity(0.82))
+                                                    .frame(width: max(4, miniGeo.size.width * CGFloat(min(1, max(0, row.share)))))
+                                            }
+                                        }
+                                        .frame(height: 4)
+                                        Text("\(Int((row.share * 100).rounded()))%")
+                                            .font(.system(size: 10, weight: .medium, design: .monospaced).monospacedDigit())
+                                            .foregroundStyle(self.palette.secondaryInk)
+                                            .frame(width: 28, alignment: .trailing)
+                                    }
+                                }
+                            }
+                        }
+                        
+                        VStack(spacing: 4.5) {
                             GeometryReader { barGeo in
                                 let w = max(40, barGeo.size.width)
                                 let splitX = max(14, min(w - 14, w * CGFloat(inFrac)))
                                 HStack(spacing: 2) {
-                                    RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                        .fill(self.palette.pine.opacity(self.palette.tokens.isDark ? 0.72 : 0.68))
+                                    RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                                        .fill(self.palette.accentFill.opacity(self.palette.tokens.isDark ? 0.85 : 0.82))
                                         .frame(width: max(8, splitX - 1))
                                     
-                                    RoundedRectangle(cornerRadius: 2, style: .continuous)
-                                        .fill(self.palette.pine.opacity(self.palette.tokens.isDark ? 0.22 : 0.16))
+                                    RoundedRectangle(cornerRadius: 2.5, style: .continuous)
+                                        .fill(self.palette.tokens.heat3.opacity(self.palette.tokens.isDark ? 0.78 : 0.72))
                                         .frame(maxWidth: .infinity)
                                 }
                                 .scaleEffect(x: self.hasAppeared ? 1.0 : 0.08, anchor: .leading)
                                 .animation(DashMotion.resolve(DashMotion.chartReveal.delay(0.12)), value: self.hasAppeared)
                             }
-                            .frame(height: 4)
+                            .frame(height: 5)
                             
                             HStack {
-                                Text("输入 \(Self.compactTokens(inTok)) · \(inPct)%")
-                                    .font(.system(size: 10.5, weight: .medium).monospacedDigit())
-                                    .foregroundStyle(self.palette.secondaryInk)
+                                HStack(spacing: 4) {
+                                    Circle().fill(self.palette.accentFill).frame(width: 5, height: 5)
+                                    Text("输入 \(Self.compactTokens(inTok)) · \(inPct)%")
+                                        .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+                                        .foregroundStyle(self.palette.secondaryInk)
+                                }
                                 Spacer()
-                                Text("生成 \(Self.compactTokens(outTok)) · \(outPct)%")
-                                    .font(.system(size: 10.5, weight: .regular).monospacedDigit())
-                                    .foregroundStyle(self.palette.mutedInk)
+                                HStack(spacing: 4) {
+                                    Circle().fill(self.palette.tokens.heat3).frame(width: 5, height: 5)
+                                    Text("生成 \(Self.compactTokens(outTok)) · \(outPct)%")
+                                        .font(.system(size: 10.5, weight: .regular).monospacedDigit())
+                                        .foregroundStyle(self.palette.mutedInk)
+                                }
                             }
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(.horizontal, 13)
-                .padding(.vertical, 9)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
                 .frame(width: cardGeo.size.width, height: cardGeo.size.height, alignment: .center)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -5459,6 +5761,43 @@ private struct DashboardAIUsageWideCard: View {
                 self.hasAppeared = true
             }
         }
+    }
+    
+    
+    private var topBreakdownRows: [(name: String, share: Double)] {
+        if !self.snapshot.aiModels.isEmpty {
+            let sum = max(1.0, self.snapshot.aiModels.reduce(0.0) { $0 + Double(max(1, $1.totalTokens)) })
+            return self.snapshot.aiModels.prefix(3).map { m in
+                (Self.shortModelLabel(m.model), Double(max(1, m.totalTokens)) / sum)
+            }
+        }
+        if !self.snapshot.aiFeatures.isEmpty {
+            let sum = max(1.0, self.snapshot.aiFeatures.reduce(0.0) { $0 + Double(max(1, $1.totalTokens > 0 ? $1.totalTokens : $1.requests)) })
+            return self.snapshot.aiFeatures.prefix(3).map { f in
+                let val = Double(max(1, f.totalTokens > 0 ? f.totalTokens : f.requests))
+                return (f.displayName.isEmpty ? f.feature : f.displayName, val / sum)
+            }
+        }
+        return []
+    }
+    
+    
+    private func modelSwatchColor(index: Int) -> Color {
+        switch index {
+            case 0: self.palette.accentFill
+            case 1: self.palette.tokens.heat3
+            default: self.palette.mint
+        }
+    }
+    
+    
+    private static func shortModelLabel(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return AppLanguage.text("默认模型", en: "Default") }
+        if let slash = trimmed.lastIndex(of: "/") {
+            return String(trimmed[trimmed.index(after: slash)...])
+        }
+        return trimmed
     }
     
     
@@ -5482,13 +5821,14 @@ private struct DashboardCompactQuadCard: View {
     let onTap: () -> Void
     
     @State private var isHovered = false
+    @State private var compactHoverDetail: String?
     
     
     var body: some View {
         Button {
             self.onTap()
         } label: {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(self.metric.title)
                         .font(.system(size: 12, weight: .medium))
@@ -5499,7 +5839,7 @@ private struct DashboardCompactQuadCard: View {
                     
                     HStack(alignment: .firstTextBaseline, spacing: 2) {
                         Text(self.heroValueText)
-                            .font(.system(size: 16, weight: .semibold).monospacedDigit())
+                            .font(.system(size: 16.5, weight: .bold, design: .rounded).monospacedDigit())
                             .foregroundStyle(self.palette.pine)
                             .contentTransition(.numericText())
                             .lineLimit(1)
@@ -5515,8 +5855,24 @@ private struct DashboardCompactQuadCard: View {
                 
                 self.miniVisualization
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                
+                if let footer = self.compactFooterText {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(self.compactHoverDetail != nil ? self.palette.tokens.heat3 : self.palette.accentFill.opacity(0.65))
+                            .frame(width: 4.5, height: 4.5)
+                        Text(footer)
+                            .font(.system(size: 10, weight: self.compactHoverDetail != nil ? .medium : .regular).monospacedDigit())
+                            .foregroundStyle(self.compactHoverDetail != nil ? self.palette.pine : self.palette.secondaryInk)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 1)
+                }
             }
-            .padding(11)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 10)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .dashboardCardSurface(palette: self.palette, cornerRadius: self.cornerRadius, isHighlighted: self.isHovered, overPhoto: self.overPhoto)
             .contentShape(RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous))
@@ -5527,6 +5883,27 @@ private struct DashboardCompactQuadCard: View {
             if hovering != self.isHovered {
                 self.isHovered = hovering
             }
+            if !hovering {
+                self.compactHoverDetail = nil
+            }
+        }
+    }
+    
+    
+    private var compactFooterText: String? {
+        if let hover = self.compactHoverDetail, !hover.isEmpty {
+            return hover
+        }
+        switch self.metric {
+            case .busyness:
+                let activeSlots = self.snapshot.busyness.slices.filter { $0.intensity >= 0.12 }.count
+                return "峰值 \(self.snapshot.busyness.peakHourLabel) · 活跃 \(activeSlots) 时段"
+            case .mood:
+                let dominant = self.snapshot.mood.dominantLabel.isEmpty ? "沉稳" : self.snapshot.mood.dominantLabel
+                let topChild = self.snapshot.mood.segments.first?.children.first?.label ?? "专注"
+                return "\(dominant) · \(topChild)"
+            default:
+                return nil
         }
     }
     
@@ -5580,9 +5957,19 @@ private struct DashboardCompactQuadCard: View {
             case .aiUsage:
                 AIUsageSunburstChartView(snapshot: self.snapshot, palette: self.palette, detailed: false)
             case .busyness:
-                NightingaleRoseChartView(metrics: self.snapshot.busyness, palette: self.palette, detailed: false)
+                NightingaleRoseChartView(
+                    metrics: self.snapshot.busyness,
+                    palette: self.palette,
+                    detailed: false,
+                    onHoverDetail: { self.compactHoverDetail = $0 }
+                )
             case .mood:
-                EmotionSankeyChartView(snapshot: self.snapshot, palette: self.palette, detailed: false)
+                EmotionSankeyChartView(
+                    snapshot: self.snapshot,
+                    palette: self.palette,
+                    detailed: false,
+                    onHoverDetail: { self.compactHoverDetail = $0 }
+                )
         }
     }
 }
@@ -6350,37 +6737,46 @@ private struct NightingaleRoseCanvas: View, Animatable {
             guard size.width.isFinite, size.height.isFinite,
                   size.width > 8, size.height > 8 else { return }
             let center = CGPoint(x: size.width * 0.5, y: size.height * 0.5)
-            let labelMargin: CGFloat = self.detailed ? 24 : 15
-            let outerLimit = max(14, min(size.width, size.height) * 0.5 - labelMargin)
-            let innerR = max(self.detailed ? 22 : 12, outerLimit * (self.detailed ? 0.28 : 0.34))
-            let maxPetalSpan = max(6, outerLimit - innerR)
+            let labelMargin: CGFloat = self.detailed ? 24 : 13
+            let outerLimit = max(16, min(size.width, size.height) * 0.5 - labelMargin)
+            let innerR = max(self.detailed ? 22 : 13, outerLimit * (self.detailed ? 0.27 : 0.30))
+            let maxPetalSpan = max(8, outerLimit - innerR)
             
-            for frac in (self.detailed ? [0.35, 0.70, 1.0] : [0.5, 1.0]) {
+            // Precision chronometer rings & cardinal radial spokes
+            for frac in (self.detailed ? [0.33, 0.66, 1.0] : [0.5, 1.0]) {
                 let r = innerR + maxPetalSpan * CGFloat(frac)
                 let ringRect = CGRect(x: center.x - r, y: center.y - r, width: r * 2, height: r * 2)
                 context.stroke(
                     Circle().path(in: ringRect),
-                    with: .color(self.palette.hairline),
-                    lineWidth: self.detailed ? 0.7 : 0.55
+                    with: .color(self.palette.hairline.opacity(frac == 1.0 ? 1.15 : 0.85)),
+                    style: StrokeStyle(lineWidth: self.detailed ? 0.7 : 0.6, dash: frac < 1.0 ? [2, 2.5] : [])
                 )
+            }
+            for deg in stride(from: -90.0, to: 270.0, by: 90.0) {
+                let rad = deg * .pi / 180.0
+                var spoke = Path()
+                spoke.move(to: CGPoint(x: center.x + CGFloat(cos(rad)) * innerR, y: center.y + CGFloat(sin(rad)) * innerR))
+                spoke.addLine(to: CGPoint(x: center.x + CGFloat(cos(rad)) * outerLimit, y: center.y + CGFloat(sin(rad)) * outerLimit))
+                context.stroke(spoke, with: .color(self.palette.hairline.opacity(0.65)), lineWidth: 0.55)
             }
             
             let slices = self.metrics.slices
             let totalSlices = max(1, slices.count)
             let stepAngle = 360.0 / Double(totalSlices)
             let hasHover = (self.hoveredSliceIndex != nil)
+            let peakIndex = slices.max(by: { $0.intensity < $1.intensity })?.index
             
             for slice in slices {
-                let padDeg = self.detailed ? 1.5 : 1.8
+                let padDeg = self.detailed ? 1.4 : 1.5
                 let startDeg = -90.0 + Double(slice.index) * stepAngle + padDeg
                 let endDeg = -90.0 + Double(slice.index + 1) * stepAngle - padDeg
                 let stagger = CGFloat(slice.index) / CGFloat(totalSlices) * 0.28
                 let localReveal = max(0.0, min(1.0, (progress - stagger) / max(0.01, 1.0 - stagger)))
                 let easedReveal = 1.0 - pow(1.0 - Double(localReveal), 3.0)
-                let radiusFactor = max(0.16, sqrt(max(0.02, slice.intensity))) * easedReveal
+                let radiusFactor = max(0.18, sqrt(max(0.02, slice.intensity))) * easedReveal
                 let isHovered = (self.hoveredSliceIndex == slice.index)
-                let hoverLift: CGFloat = (isHovered && self.detailed) ? 3.5 : 0.0
-                let petalOuter = innerR + max(1.5, maxPetalSpan * CGFloat(radiusFactor) + hoverLift)
+                let hoverLift: CGFloat = isHovered ? (self.detailed ? 3.5 : 2.2) : 0.0
+                let petalOuter = innerR + max(2.0, maxPetalSpan * CGFloat(radiusFactor) + hoverLift)
                 
                 var petal = Path()
                 petal.addArc(
@@ -6399,16 +6795,32 @@ private struct NightingaleRoseCanvas: View, Animatable {
                 )
                 petal.closeSubpath()
                 
-                let color: Color = {
-                    if slice.intensity >= 0.75 { return self.palette.emerald }
-                    if slice.intensity >= 0.45 { return self.palette.accentFill }
-                    if slice.intensity >= 0.22 { return self.palette.mint }
+                let tipColor: Color = {
+                    if slice.intensity >= 0.72 { return self.palette.tokens.heat3 }
+                    if slice.intensity >= 0.42 { return self.palette.accentFill }
+                    if slice.intensity >= 0.18 { return self.palette.mint }
                     return self.palette.emptyDot
                 }()
-                let fillAlpha = isHovered ? 0.98 : (hasHover ? 0.55 : 0.84)
-                context.fill(petal, with: .color(color.opacity(fillAlpha * max(0.25, easedReveal))))
-                if isHovered {
-                    context.stroke(petal, with: .color(self.palette.pine), lineWidth: 1.25)
+                let baseColor = slice.intensity >= 0.18 ? tipColor.opacity(0.42) : self.palette.emptyDot.opacity(0.65)
+                let fillAlpha = isHovered ? 1.0 : (hasHover ? 0.48 : 0.92)
+                context.fill(
+                    petal,
+                    with: .radialGradient(
+                        Gradient(colors: [
+                            baseColor.opacity(fillAlpha * max(0.25, easedReveal)),
+                            tipColor.opacity(fillAlpha * max(0.25, easedReveal)),
+                        ]),
+                        center: center,
+                        startRadius: innerR,
+                        endRadius: petalOuter
+                    )
+                )
+                if isHovered || (slice.index == peakIndex && slice.intensity >= 0.35) {
+                    context.stroke(
+                        petal,
+                        with: .color(isHovered ? self.palette.pine.opacity(0.85) : tipColor.opacity(0.92)),
+                        lineWidth: isHovered ? 1.25 : 0.85
+                    )
                 }
                 
                 if self.detailed, slice.index.isMultiple(of: 2) {
@@ -6426,23 +6838,23 @@ private struct NightingaleRoseCanvas: View, Animatable {
                 }
             }
             
-            // Compact clock dial markers directly inside the rose chart (00 / 06 / 12 / 18)
+            // Compact clock dial markers directly around the rose (00 / 06 / 12 / 18)
             if !self.detailed {
                 let markers: [(String, Double)] = [
-                    ("夜", -90.0),
-                    ("晨", 0.0),
-                    ("午", 90.0),
-                    ("晚", 180.0),
+                    ("00", -90.0),
+                    ("06", 0.0),
+                    ("12", 90.0),
+                    ("18", 180.0),
                 ]
-                let labelR = outerLimit + 9
+                let labelR = outerLimit + 8.5
                 for (text, deg) in markers {
                     let rad = deg * .pi / 180.0
                     let lx = center.x + CGFloat(cos(rad)) * labelR
                     let ly = center.y + CGFloat(sin(rad)) * labelR
                     context.draw(
                         Text(text)
-                            .font(.system(size: 9.5, weight: .medium))
-                            .foregroundStyle(self.palette.secondaryInk),
+                            .font(.system(size: 9.5, weight: .medium, design: .monospaced).monospacedDigit())
+                            .foregroundStyle(self.palette.mutedInk),
                         at: CGPoint(x: lx, y: ly),
                         anchor: .center
                     )
@@ -6451,19 +6863,24 @@ private struct NightingaleRoseCanvas: View, Animatable {
             
             let coreRect = CGRect(x: center.x - innerR + 1, y: center.y - innerR + 1, width: (innerR - 1) * 2, height: (innerR - 1) * 2)
             context.fill(Circle().path(in: coreRect), with: .color(self.palette.card))
+            context.stroke(Circle().path(in: coreRect), with: .color(self.palette.hairline), lineWidth: 0.6)
             
             // Peak hour label directly inside the rose core
-            let peakShort = self.metrics.peakHourLabel.split(separator: ":").first.map { "\($0)h" } ?? "12h"
+            let activeHoveredSlice: BusynessHourSlice? = self.hoveredSliceIndex.flatMap { idx in
+                self.metrics.slices.indices.contains(idx) ? self.metrics.slices[idx] : nil
+            }
+            let corePrimary = activeHoveredSlice.map { "\($0.index * 2)h" }
+                ?? (self.metrics.peakHourLabel.split(separator: ":").first.map { "\($0)h" } ?? "12h")
             if self.detailed {
                 context.draw(
-                    Text(self.metrics.peakHourLabel)
+                    Text(activeHoveredSlice?.label ?? self.metrics.peakHourLabel)
                         .font(.system(size: 11, weight: .semibold, design: .rounded).monospacedDigit())
                         .foregroundStyle(self.palette.pine),
                     at: CGPoint(x: center.x, y: center.y - 5),
                     anchor: .center
                 )
                 context.draw(
-                    Text("峰值")
+                    Text(activeHoveredSlice != nil ? "当前" : "峰值")
                         .font(.system(size: 9.5, weight: .medium))
                         .foregroundStyle(self.palette.mutedInk),
                     at: CGPoint(x: center.x, y: center.y + 8),
@@ -6471,8 +6888,8 @@ private struct NightingaleRoseCanvas: View, Animatable {
                 )
             } else {
                 context.draw(
-                    Text(peakShort)
-                        .font(.system(size: 9, weight: .semibold, design: .rounded).monospacedDigit())
+                    Text(corePrimary)
+                        .font(.system(size: 9.5, weight: .bold, design: .rounded).monospacedDigit())
                         .foregroundStyle(self.palette.pine),
                     at: center,
                     anchor: .center
@@ -6510,7 +6927,6 @@ private struct NightingaleRoseChartView: View {
                 }
             }
             .onContinuousHover { phase in
-                guard self.detailed else { return }
                 let nextIdx: Int? = switch phase {
                     case .active(let loc):
                         self.hitTestPetal(loc, in: geo.size)
@@ -6523,7 +6939,11 @@ private struct NightingaleRoseChartView: View {
                     }
                     if let idx = nextIdx, idx < self.metrics.slices.count {
                         let slice = self.metrics.slices[idx]
-                        self.onHoverDetail?("\(slice.label) · \(slice.rawChars.formatted()) 字 · \(slice.rawAIRequests) 次 AI")
+                        if self.detailed {
+                            self.onHoverDetail?("\(slice.label) · \(slice.rawChars.formatted()) 字 · \(slice.rawAIRequests) 次 AI")
+                        } else {
+                            self.onHoverDetail?("\(slice.label) · \(slice.rawChars.formatted()) 字")
+                        }
                     } else {
                         self.onHoverDetail?(nil)
                     }
@@ -6538,9 +6958,10 @@ private struct NightingaleRoseChartView: View {
         let dx = point.x - center.x
         let dy = point.y - center.y
         let dist = hypot(dx, dy)
-        let outerLimit = max(14, min(size.width, size.height) * 0.5 - 24)
-        let innerR = max(22, outerLimit * 0.28)
-        guard dist >= innerR && dist <= outerLimit else { return nil }
+        let labelMargin: CGFloat = self.detailed ? 24 : 13
+        let outerLimit = max(16, min(size.width, size.height) * 0.5 - labelMargin)
+        let innerR = max(self.detailed ? 22 : 13, outerLimit * (self.detailed ? 0.27 : 0.30))
+        guard dist >= innerR && dist <= outerLimit + 4 else { return nil }
         var angle = atan2(dy, dx) * 180.0 / .pi + 90.0
         if angle < 0 { angle += 360.0 }
         let idx = Int(floor(angle / (360.0 / Double(max(1, self.metrics.slices.count)))))
@@ -6597,7 +7018,6 @@ struct EmotionSankeyChartView: View {
                 }
             }
             .onContinuousHover { phase in
-                guard self.detailed else { return }
                 let nextHit: SankeyHit? = switch phase {
                     case .active(let loc):
                         self.hitTestColumn(
@@ -6680,47 +7100,75 @@ struct EmotionSankeyChartView: View {
     private func leftTimeSlotNodes(now: Date = Date()) -> [SankeyNode] {
         let currentHour = Calendar.current.component(.hour, from: now)
         let descriptors = Self.timeSlotDescriptors(slices: self.snapshot.busyness.slices, currentHour: currentHour)
+        let isDark = self.palette.tokens.isDark
         return descriptors.map { d in
             let col: Color = switch d.toneSlot {
-                case 0: self.palette.mint
-                case 1: self.palette.accentFill
-                default: self.palette.emerald
+                case 0: isDark ? Color(red: 0.42, green: 0.67, blue: 0.96) : Color(red: 0.25, green: 0.52, blue: 0.90)
+                case 1: isDark ? Color(red: 0.36, green: 0.78, blue: 0.70) : Color(red: 0.16, green: 0.60, blue: 0.56)
+                default: isDark ? Color(red: 0.62, green: 0.55, blue: 0.94) : Color(red: 0.43, green: 0.38, blue: 0.80)
             }
-            return SankeyNode(label: d.label, shortLabel: d.shortLabel, weight: d.weight, color: col)
+            return SankeyNode(label: d.label, shortLabel: d.label, weight: d.weight, color: col)
         }
     }
     
     
     private func middleMoodNodes() -> [SankeyNode] {
         let segs = Array(self.snapshot.mood.segments.prefix(self.detailed ? 4 : 3))
+        let isDark = self.palette.tokens.isDark
+        let stageColors: [Color] = isDark
+            ? [
+                Color(red: 0.31, green: 0.78, blue: 0.58),
+                Color(red: 0.46, green: 0.66, blue: 0.98),
+                Color(red: 0.85, green: 0.64, blue: 0.36),
+                Color(red: 0.68, green: 0.54, blue: 0.92),
+            ]
+            : [
+                Color(red: 0.14, green: 0.58, blue: 0.41),
+                Color(red: 0.20, green: 0.48, blue: 0.88),
+                Color(red: 0.78, green: 0.52, blue: 0.18),
+                Color(red: 0.48, green: 0.38, blue: 0.80),
+            ]
         guard !segs.isEmpty else {
             return [
-                SankeyNode(label: "沉稳", shortLabel: "沉稳", weight: 45, color: self.palette.accentFill),
-                SankeyNode(label: "专注", shortLabel: "专注", weight: 35, color: self.palette.mint),
-                SankeyNode(label: "松弛", shortLabel: "松弛", weight: 20, color: self.palette.paleMint),
+                SankeyNode(label: "沉稳", shortLabel: "沉稳", weight: 45, color: stageColors[0]),
+                SankeyNode(label: "专注", shortLabel: "专注", weight: 35, color: stageColors[1]),
+                SankeyNode(label: "松弛", shortLabel: "松弛", weight: 20, color: stageColors[2]),
             ]
         }
-        return segs.map { seg in
+        return segs.enumerated().map { idx, seg in
             SankeyNode(
                 label: seg.label,
                 shortLabel: String(seg.label.prefix(2)),
                 weight: max(1, seg.weight),
-                color: self.palette.toneColor(for: seg.tone)
+                color: stageColors[idx % stageColors.count]
             )
         }
     }
     
     
     private func rightSubMoodNodes() -> [SankeyNode] {
+        let isDark = self.palette.tokens.isDark
+        let rightPalette: [Color] = isDark
+            ? [
+                Color(red: 0.38, green: 0.72, blue: 0.98),
+                Color(red: 0.34, green: 0.80, blue: 0.60),
+                Color(red: 0.88, green: 0.65, blue: 0.36),
+                Color(red: 0.72, green: 0.56, blue: 0.96),
+            ]
+            : [
+                Color(red: 0.18, green: 0.50, blue: 0.92),
+                Color(red: 0.14, green: 0.60, blue: 0.42),
+                Color(red: 0.80, green: 0.52, blue: 0.16),
+                Color(red: 0.48, green: 0.38, blue: 0.82),
+            ]
         var collected: [SankeyNode] = []
-        for seg in self.snapshot.mood.segments {
-            let baseColor = self.palette.toneColor(for: seg.tone)
-            for child in seg.children.prefix(2) {
+        for (idx, seg) in self.snapshot.mood.segments.enumerated() {
+            for (cIdx, child) in seg.children.prefix(2).enumerated() {
                 collected.append(SankeyNode(
                     label: child.label,
                     shortLabel: String(child.label.prefix(2)),
                     weight: max(1, child.value),
-                    color: baseColor.opacity(0.82)
+                    color: rightPalette[(idx + cIdx) % rightPalette.count]
                 ))
             }
         }
@@ -6728,9 +7176,9 @@ struct EmotionSankeyChartView: View {
             return Array(collected.sorted { $0.weight > $1.weight }.prefix(self.detailed ? 4 : 3))
         }
         return [
-            SankeyNode(label: "心流", shortLabel: "心流", weight: 42, color: self.palette.accentFill),
-            SankeyNode(label: "克制", shortLabel: "克制", weight: 33, color: self.palette.mint),
-            SankeyNode(label: "愉悦", shortLabel: "愉悦", weight: 25, color: self.palette.heat(2)),
+            SankeyNode(label: "心流", shortLabel: "心流", weight: 42, color: rightPalette[0]),
+            SankeyNode(label: "克制", shortLabel: "克制", weight: 33, color: rightPalette[1]),
+            SankeyNode(label: "愉悦", shortLabel: "愉悦", weight: 25, color: rightPalette[2]),
         ]
     }
     
@@ -6759,16 +7207,16 @@ struct EmotionSankeyChartView: View {
             prefix = "状态"
             column = 2
         }
-        let topHeaderH: CGFloat = 22
-        let padBottom: CGFloat = 8
+        let topHeaderH: CGFloat = self.detailed ? 22 : 16
+        let padBottom: CGFloat = self.detailed ? 8 : 3
         let innerH = max(30, size.height - topHeaderH - padBottom)
-        let laid = Self.layoutColumn(nodes: nodes, x: 0, yStart: topHeaderH, height: innerH, width: 10, gap: 8)
+        let laid = Self.layoutColumn(nodes: nodes, x: 0, yStart: topHeaderH, height: innerH, width: self.detailed ? 10 : 6.5, gap: self.detailed ? 8 : 4)
         let total = max(1.0, nodes.reduce(0.0) { $0 + $1.weight })
         for (idx, pair) in zip(nodes, laid).enumerated() {
             let (node, layout) = pair
             if point.y >= layout.rect.minY - 3 && point.y <= layout.rect.maxY + 3 {
                 let pct = Int(((node.weight / total) * 100).rounded())
-                return SankeyHit(column: column, index: idx, caption: "\(prefix) · \(node.label) (\(pct)%)")
+                return SankeyHit(column: column, index: idx, caption: "\(prefix) · \(node.label) \(pct)%")
             }
         }
         return nil
@@ -6892,11 +7340,11 @@ private struct EmotionSankeyCanvas: View, Animatable {
         Canvas { context, size in
             guard size.width.isFinite, size.height.isFinite,
                   size.width > 8, size.height > 8 else { return }
-            let leftMargin: CGFloat = self.detailed ? 72 : 20
-            let rightMargin: CGFloat = self.detailed ? 82 : 30
-            let topHeaderH: CGFloat = self.detailed ? 22 : 4
-            let padBottom: CGFloat = self.detailed ? 8 : 4
-            let nodeW: CGFloat = self.detailed ? 10 : 6
+            let leftMargin: CGFloat = self.detailed ? 72 : 30
+            let rightMargin: CGFloat = self.detailed ? 82 : 32
+            let topHeaderH: CGFloat = self.detailed ? 22 : 16
+            let padBottom: CGFloat = self.detailed ? 8 : 3
+            let nodeW: CGFloat = self.detailed ? 10 : 6.5
             let innerW = max(36, size.width - leftMargin - rightMargin)
             let innerH = max(30, size.height - topHeaderH - padBottom)
             
@@ -6904,12 +7352,11 @@ private struct EmotionSankeyCanvas: View, Animatable {
             let col2X = leftMargin + innerW * 0.5 - nodeW * 0.5
             let col3X = leftMargin + innerW - nodeW
             
-            if self.detailed {
-                let headerStyle = Font.system(size: 10.5, weight: .medium)
-                let headerColor = self.palette.mutedInk
-                context.draw(Text("时段").font(headerStyle).foregroundStyle(headerColor), at: CGPoint(x: col1X + nodeW * 0.5, y: 8), anchor: .center)
-                context.draw(Text("状态").font(headerStyle).foregroundStyle(headerColor), at: CGPoint(x: col3X + nodeW * 0.5, y: 8), anchor: .center)
-            }
+            let headerStyle = Font.system(size: self.detailed ? 10.5 : 9.5, weight: .medium)
+            let headerColor = self.palette.mutedInk.opacity(self.detailed ? 1.0 : 0.86)
+            context.draw(Text("时段").font(headerStyle).foregroundStyle(headerColor), at: CGPoint(x: col1X + nodeW * 0.5, y: 7), anchor: .center)
+            context.draw(Text("心境").font(headerStyle).foregroundStyle(headerColor), at: CGPoint(x: col2X + nodeW * 0.5, y: 7), anchor: .center)
+            context.draw(Text("状态").font(headerStyle).foregroundStyle(headerColor), at: CGPoint(x: col3X + nodeW * 0.5, y: 7), anchor: .center)
             
             let gap: CGFloat = self.detailed ? 8 : 4
             let rects1 = EmotionSankeyChartView.layoutColumn(nodes: self.col1Nodes, x: col1X, yStart: topHeaderH, height: innerH, width: nodeW, gap: gap)

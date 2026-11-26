@@ -220,8 +220,13 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     // Bounding Box Resize & handle morph animation state
     private var inlineImageTrackingArea: NSTrackingArea?
+    private var hoveredInlineImageIdentifier: String?
     private var hoveredResizeHandle: BoundingBoxHandle?
     private var activeDraggingResizeHandle: BoundingBoxHandle?
+    private var isLiveManipulatingInlineImage = false
+    private var activePinchImageID: String?
+    private var activePinchWidth: CGFloat?
+    private var didCrossPinch100Percent = false
     private var resizeMorphSprings: [BoundingBoxHandle: BoundingBoxMorphSpring] = {
         Dictionary(uniqueKeysWithValues: BoundingBoxHandle.allCases.map { ($0, BoundingBoxMorphSpring()) })
     }()
@@ -236,10 +241,65 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     private var heightPillRect: NSRect = .zero
     private weak var inlineDimensionEditor: NSTextField?
     private var editingDimensionIsWidth: Bool?
-    private lazy var hiddenResizeHandleCursor: NSCursor = {
-        let transparent = NSImage(size: NSSize(width: 1, height: 1))
-        return NSCursor(image: transparent, hotSpot: .zero)
-    }()
+    
+    private static let diagonalNWSECursor: NSCursor = EditorTextView.makeDiagonalResizeCursor(angleDegrees: -45)
+    private static let diagonalNESWCursor: NSCursor = EditorTextView.makeDiagonalResizeCursor(angleDegrees: 45)
+    
+    private static func makeDiagonalResizeCursor(angleDegrees: CGFloat) -> NSCursor {
+        let side: CGFloat = 22
+        let img = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+            NSGraphicsContext.saveGraphicsState()
+            let transform = NSAffineTransform()
+            transform.translateX(by: rect.midX, yBy: rect.midY)
+            transform.rotate(byDegrees: angleDegrees)
+            transform.concat()
+            
+            let path = NSBezierPath()
+            // Double-headed resize arrow along horizontal axis before rotation
+            path.move(to: NSPoint(x: -7.5, y: 0))
+            path.line(to: NSPoint(x: -3.2, y: 3.6))
+            path.line(to: NSPoint(x: -3.2, y: 1.3))
+            path.line(to: NSPoint(x: 3.2, y: 1.3))
+            path.line(to: NSPoint(x: 3.2, y: 3.6))
+            path.line(to: NSPoint(x: 7.5, y: 0))
+            path.line(to: NSPoint(x: 3.2, y: -3.6))
+            path.line(to: NSPoint(x: 3.2, y: -1.3))
+            path.line(to: NSPoint(x: -3.2, y: -1.3))
+            path.line(to: NSPoint(x: -3.2, y: -3.6))
+            path.close()
+            path.lineJoinStyle = .round
+            
+            NSColor.white.setStroke()
+            path.lineWidth = 2.2
+            path.stroke()
+            
+            NSColor.black.setFill()
+            path.fill()
+            NSGraphicsContext.restoreGraphicsState()
+            return true
+        }
+        return NSCursor(image: img, hotSpot: NSPoint(x: side * 0.5, y: side * 0.5))
+    }
+    
+    private func cursorForResizeHandle(_ handle: BoundingBoxHandle, rotationDegrees: CGFloat = 0) -> NSCursor {
+        let baseAngle: CGFloat = switch handle {
+            case .middleLeft, .middleRight: 0
+            case .topCenter, .bottomCenter: 90
+            case .topLeft, .bottomRight: 45
+            case .topRight, .bottomLeft: 135
+        }
+        var total = (baseAngle + rotationDegrees).truncatingRemainder(dividingBy: 180)
+        if total < 0 { total += 180 }
+        if total < 22.5 || total >= 157.5 {
+            return .resizeLeftRight
+        } else if total < 67.5 {
+            return Self.diagonalNWSECursor
+        } else if total < 112.5 {
+            return .resizeUpDown
+        } else {
+            return Self.diagonalNESWCursor
+        }
+    }
     
     // Cmd-key link preview underline state
     private var isCommandKeyHeld = false
@@ -341,8 +401,17 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         
         let point = self.convert(event.locationInWindow, from: nil)
         if (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true {
-            if self.activeDraggingResizeHandle != nil || self.selectedInlineImageEntry()?.hitTestHandle(at: point) != nil {
-                self.hiddenResizeHandleCursor.set()
+            if let dragging = self.activeDraggingResizeHandle {
+                let deg = self.selectedInlineImageEntry()?.rotationDegrees ?? 0
+                self.cursorForResizeHandle(dragging, rotationDegrees: deg).set()
+                return
+            }
+            if let hit = self.inlineImageHoverTarget(at: point) {
+                if let handle = hit.handle {
+                    self.cursorForResizeHandle(handle, rotationDegrees: hit.entry.rotationDegrees).set()
+                } else {
+                    NSCursor.openHand.set()
+                }
                 return
             }
         }
@@ -354,39 +423,75 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
+    private func inlineImageHoverTarget(at point: NSPoint) -> (entry: InlineImageCardEntry, handle: BoundingBoxHandle?)? {
+        if let selected = self.selectedInlineImageEntry() {
+            if let handle = selected.hitTestHandle(at: point) {
+                return (selected, handle)
+            }
+            if selected.hitTestImage(point: point) {
+                return (selected, nil)
+            }
+        }
+        for entry in self.inlineImageCardEntries {
+            if let handle = entry.hitTestHandle(at: point) {
+                return (entry, handle)
+            }
+            if entry.hitTestImage(point: point) {
+                return (entry, nil)
+            }
+        }
+        return nil
+    }
+    
+    
     override func mouseMoved(with event: NSEvent) {
         
         let point = self.convert(event.locationInWindow, from: nil)
         if (self.layoutManager as? LayoutManager)?.rendersPlainTextInlineImages == true,
-           let selected = self.selectedInlineImageEntry(),
            self.activeDraggingResizeHandle == nil
         {
-            let hit = selected.hitTestHandle(at: point)
-            if hit != self.hoveredResizeHandle {
-                let previous = self.hoveredResizeHandle
-                self.hoveredResizeHandle = hit
+            if let target = self.inlineImageHoverTarget(at: point) {
+                let nextImageID = target.entry.identifier
+                let nextHandle = target.handle
+                let imageChanged = (nextImageID != self.hoveredInlineImageIdentifier)
+                let handleChanged = (nextHandle != self.hoveredResizeHandle)
+                if imageChanged || handleChanged {
+                    self.hoveredInlineImageIdentifier = nextImageID
+                    self.hoveredResizeHandle = nextHandle
+                    if target.entry.identifier == self.selectedInlineImageIdentifier {
+                        for handle in BoundingBoxHandle.allCases {
+                            self.resizeMorphSprings[handle]?.target = (handle == nextHandle) ? 1.0 : 0.0
+                        }
+                        self.startResizeSpringTimerIfNeeded()
+                    }
+                    self.needsDisplay = true
+                }
+                if let handle = nextHandle {
+                    self.cursorForResizeHandle(handle, rotationDegrees: target.entry.rotationDegrees).set()
+                } else {
+                    NSCursor.openHand.set()
+                }
+                return
+            } else if self.hoveredInlineImageIdentifier != nil || self.hoveredResizeHandle != nil {
+                self.hoveredInlineImageIdentifier = nil
+                self.hoveredResizeHandle = nil
                 for handle in BoundingBoxHandle.allCases {
-                    self.resizeMorphSprings[handle]?.target = (handle == hit) ? 1.0 : 0.0
+                    self.resizeMorphSprings[handle]?.target = 0.0
                 }
                 self.startResizeSpringTimerIfNeeded()
+                self.window?.invalidateCursorRects(for: self)
+                NSCursor.iBeam.set()
                 self.needsDisplay = true
-                if hit != nil {
-                    self.hiddenResizeHandleCursor.set()
-                } else if previous != nil {
-                    self.window?.invalidateCursorRects(for: self)
-                    NSCursor.iBeam.set()
-                }
-            } else if hit != nil {
-                self.hiddenResizeHandleCursor.set()
-                return
             }
-        } else if self.hoveredResizeHandle != nil {
+        } else if self.hoveredInlineImageIdentifier != nil || self.hoveredResizeHandle != nil {
+            self.hoveredInlineImageIdentifier = nil
             self.hoveredResizeHandle = nil
             for handle in BoundingBoxHandle.allCases {
                 self.resizeMorphSprings[handle]?.target = 0.0
             }
             self.startResizeSpringTimerIfNeeded()
             self.window?.invalidateCursorRects(for: self)
+            self.needsDisplay = true
         }
         
         if self.isCommandKeyHeld {
@@ -409,7 +514,10 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     
     override func mouseExited(with event: NSEvent) {
         
-        if self.hoveredResizeHandle != nil, self.activeDraggingResizeHandle == nil {
+        if (self.hoveredInlineImageIdentifier != nil || self.hoveredResizeHandle != nil),
+           self.activeDraggingResizeHandle == nil
+        {
+            self.hoveredInlineImageIdentifier = nil
             self.hoveredResizeHandle = nil
             for handle in BoundingBoxHandle.allCases {
                 self.resizeMorphSprings[handle]?.target = 0.0
@@ -2777,13 +2885,23 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             return false
         }
         let point = self.convert(event.locationInWindow, from: nil)
-        let targetEntry = self.inlineImageCardEntries.first(where: { $0.hitTestImage(point: point) })
-            ?? self.selectedInlineImageEntry()
+        let targetEntry: InlineImageCardEntry? = {
+            if let activeID = self.activePinchImageID,
+               let active = self.inlineImageCardEntries.first(where: { $0.identifier == activeID })
+            {
+                return active
+            }
+            return self.inlineImageCardEntries.first(where: { $0.hitTestImage(point: point) })
+                ?? self.selectedInlineImageEntry()
+        }()
         guard let entry = targetEntry else {
             return false
         }
         
+        let isEnded = (event.phase == .ended || event.phase == .cancelled)
         self.selectedInlineImageIdentifier = entry.identifier
+        self.isLiveManipulatingInlineImage = !isEnded
+        
         let docURL = self.currentInlineImageDocURL
         let currentTx = PlainTextInlineImageStore.shared.transform(for: entry.identifier, documentURL: docURL)
         let factor = max(0.5, min(2.0, 1.0 + event.magnification))
@@ -2794,11 +2912,52 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         if let naturalSize = PlainTextInlineImageStore.shared.naturalSize(for: entry.identifier, documentURL: docURL),
            naturalSize.width > 0, naturalSize.height > 0
         {
-            updatedTx = InlineImageZoomMath.transformForMagnify(
-                current: currentTx,
-                currentDrawSize: entry.drawSize,
+            let base = InlineImageZoomMath.baseDrawSize(naturalSize: naturalSize, maxImageWidth: maxImgW)
+            let canvasMaxW = InlineImageZoomMath.canvasMaxWidth(containerWidth: containerW, maxImageWidth: maxImgW)
+            let minSize = InlineImageZoomMath.clampedAspectSize(
+                desiredWidth: max(1, base.width * InlineImageZoomMath.minScaleFloor),
                 naturalSize: naturalSize,
-                factor: factor,
+                maxWidth: canvasMaxW
+            )
+            let maxSize = InlineImageZoomMath.clampedAspectSize(
+                desiredWidth: base.width * InlineImageZoomMath.maxScaleCeiling,
+                naturalSize: naturalSize,
+                maxWidth: canvasMaxW
+            )
+            
+            // Accumulate continuous floating-point width across the pinch so micro-deltas never stall on integer rounding.
+            let seedWidth: CGFloat
+            if self.activePinchImageID == entry.identifier, let existing = self.activePinchWidth {
+                seedWidth = existing
+            } else {
+                let liveGeom = PlainTextInlineImageStore.shared.displayGeometry(
+                    for: entry.identifier,
+                    documentURL: docURL,
+                    containerWidth: containerW,
+                    maxImageWidth: maxImgW
+                )
+                seedWidth = liveGeom?.drawSize.width ?? entry.drawSize.width
+                self.activePinchImageID = entry.identifier
+                self.didCrossPinch100Percent = abs(seedWidth - base.width) < 3.0
+            }
+            let prevScale = seedWidth / max(1, base.width)
+            let nextWidth = max(minSize.width, min(maxSize.width, seedWidth * factor))
+            self.activePinchWidth = nextWidth
+            let nextScale = nextWidth / max(1, base.width)
+            
+            if !self.didCrossPinch100Percent,
+               (prevScale < 1.0 && nextScale >= 1.0) || (prevScale > 1.0 && nextScale <= 1.0)
+            {
+                self.didCrossPinch100Percent = true
+                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
+            } else if abs(nextScale - 1.0) > 0.08 {
+                self.didCrossPinch100Percent = false
+            }
+            
+            updatedTx = InlineImageZoomMath.transformForTargetScale(
+                nextScale,
+                baseTransform: currentTx,
+                naturalSize: naturalSize,
                 containerWidth: containerW,
                 maxImageWidth: maxImgW
             )
@@ -2810,13 +2969,27 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             updatedTx = fallback.clamped()
         }
         
-        PlainTextInlineImageStore.shared.setTransform(updatedTx, for: entry.identifier, documentURL: docURL)
-        self.liveInlineImageHUDText = "\(Int((updatedTx.scale * 100).rounded()))%"
-        self.applyInlineImageLayoutUpdate(in: entry.tokenRange)
+        PlainTextInlineImageStore.shared.setTransform(
+            updatedTx,
+            for: entry.identifier,
+            documentURL: docURL,
+            persist: isEnded
+        )
         
-        if event.phase == .ended || event.phase == .cancelled {
+        if isEnded {
+            self.activePinchImageID = nil
+            self.activePinchWidth = nil
+            self.didCrossPinch100Percent = false
             self.liveInlineImageHUDText = nil
-            self.needsDisplay = true
+            self.applyInlineImageLayoutUpdate(in: entry.tokenRange, isLiveManipulation: false)
+        } else {
+            let pct = Int((updatedTx.scale * 100).rounded())
+            if let cw = updatedTx.customWidth, let ch = updatedTx.customHeight {
+                self.liveInlineImageHUDText = "\(pct)% · \(Int(round(cw))) × \(Int(round(ch)))"
+            } else {
+                self.liveInlineImageHUDText = "\(pct)%"
+            }
+            self.applyInlineImageLayoutUpdate(in: entry.tokenRange, isLiveManipulation: true)
         }
         return true
     }
@@ -3039,11 +3212,12 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             self.inlineImageCardEntries.append(entry)
             
             let isSelected = (self.selectedInlineImageIdentifier == token.identifier)
-            let repaintBounds = isSelected ? cardRect.insetBy(dx: -48, dy: -52) : cardRect
+            let isHoveredImage = (!isSelected && self.hoveredInlineImageIdentifier == token.identifier)
+            let repaintBounds = (isSelected || isHoveredImage) ? cardRect.insetBy(dx: -48, dy: -52) : cardRect
             guard repaintBounds.intersects(dirtyRect) else { continue }
             
             NSGraphicsContext.saveGraphicsState()
-            NSGraphicsContext.current?.imageInterpolation = .high
+            NSGraphicsContext.current?.imageInterpolation = self.isLiveManipulatingInlineImage ? .medium : .high
             
             let xform = NSAffineTransform()
             xform.translateX(by: center.x, yBy: center.y)
@@ -3054,8 +3228,11 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             fillColor.setFill()
             cardPath.fill()
             if !isSelected {
-                borderColor.setStroke()
-                cardPath.lineWidth = 0.75
+                let frameStroke = isHoveredImage
+                    ? NSColor.labelColor.withAlphaComponent(0.32)
+                    : borderColor
+                frameStroke.setStroke()
+                cardPath.lineWidth = isHoveredImage ? 1.25 : 0.75
                 cardPath.stroke()
             }
             
@@ -3074,7 +3251,96 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             
             if isSelected {
                 self.drawSelectionHandles(for: entry, accentColor: accentColor, haloColor: fillColor)
+            } else if isHoveredImage {
+                self.drawHoverAffordance(for: entry, haloColor: fillColor)
             }
+        }
+    }
+    
+    
+    /// Draws clear hover feedback on an unselected inline image: architectural corner resize ticks,
+    /// highlighted corner handle when pointer nears a corner/edge, and a quiet size readout pill.
+    private func drawHoverAffordance(for entry: InlineImageCardEntry, haloColor: NSColor) {
+        let unrotatedRect = NSRect(
+            x: -entry.unrotatedCardSize.width * 0.5,
+            y: -entry.unrotatedCardSize.height * 0.5,
+            width: entry.unrotatedCardSize.width,
+            height: entry.unrotatedCardSize.height
+        )
+        let activeHandle = self.hoveredResizeHandle
+        let neutralInk = NSColor.labelColor.withAlphaComponent(0.68)
+        let accentBlue = NSColor(srgbRed: 30.0 / 255.0, green: 137.0 / 255.0, blue: 245.0 / 255.0, alpha: 1.0)
+        
+        NSGraphicsContext.saveGraphicsState()
+        let xform = NSAffineTransform()
+        xform.translateX(by: entry.center.x, yBy: entry.center.y)
+        xform.rotate(byDegrees: entry.rotationDegrees)
+        xform.concat()
+        
+        // 1. Four crisp corner brackets communicating immediate resize affordance
+        let arm: CGFloat = min(13, max(8, min(unrotatedRect.width, unrotatedRect.height) * 0.14))
+        let corners: [(BoundingBoxHandle, NSPoint, CGFloat, CGFloat)] = [
+            (.topLeft, NSPoint(x: unrotatedRect.minX, y: unrotatedRect.minY), 1, 1),
+            (.topRight, NSPoint(x: unrotatedRect.maxX, y: unrotatedRect.minY), -1, 1),
+            (.bottomLeft, NSPoint(x: unrotatedRect.minX, y: unrotatedRect.maxY), 1, -1),
+            (.bottomRight, NSPoint(x: unrotatedRect.maxX, y: unrotatedRect.maxY), -1, -1),
+        ]
+        for (handle, pt, sx, sy) in corners {
+            let isHot = (activeHandle == handle)
+            let bracket = NSBezierPath()
+            bracket.lineCapStyle = .round
+            bracket.lineJoinStyle = .round
+            bracket.move(to: NSPoint(x: pt.x + sx * arm, y: pt.y))
+            bracket.line(to: pt)
+            bracket.line(to: NSPoint(x: pt.x, y: pt.y + sy * arm))
+            
+            haloColor.withAlphaComponent(0.92).setStroke()
+            bracket.lineWidth = isHot ? 4.4 : 3.2
+            bracket.stroke()
+            
+            (isHot ? accentBlue : neutralInk).setStroke()
+            bracket.lineWidth = isHot ? 2.4 : 1.75
+            bracket.stroke()
+        }
+        
+        // 2. If pointer is over any corner/edge handle, highlight the exact grab knob
+        if let activeHandle {
+            let localPt = activeHandle.localPoint(size: entry.unrotatedCardSize)
+            let haloRect = NSRect(x: localPt.x - 8, y: localPt.y - 8, width: 16, height: 16)
+            accentBlue.withAlphaComponent(0.20).setFill()
+            NSBezierPath(ovalIn: haloRect).fill()
+            
+            let knobRect = NSRect(x: localPt.x - 5, y: localPt.y - 5, width: 10, height: 10)
+            let knobPath = NSBezierPath(ovalIn: knobRect)
+            NSColor.white.setFill()
+            knobPath.fill()
+            accentBlue.setStroke()
+            knobPath.lineWidth = 1.6
+            knobPath.stroke()
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        
+        // 3. Quiet bottom-right scale & pixel readout pill inside card bounds
+        let pct = Int((entry.scale * 100).rounded())
+        let label = "\(pct)% · \(Int(round(entry.drawSize.width)))×\(Int(round(entry.drawSize.height)))"
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium),
+            .foregroundColor: NSColor.white.withAlphaComponent(0.95),
+        ]
+        let attrStr = NSAttributedString(string: label, attributes: attrs)
+        let sz = attrStr.size()
+        let pillW = sz.width + 12
+        let pillH: CGFloat = 18
+        if entry.rect.width >= pillW + 18 && entry.rect.height >= 44 {
+            let pillRect = NSRect(
+                x: entry.rect.maxX - pillW - 8,
+                y: entry.rect.maxY - pillH - 8,
+                width: pillW,
+                height: pillH
+            )
+            NSColor.black.withAlphaComponent(0.62).setFill()
+            NSBezierPath(roundedRect: pillRect, xRadius: pillH * 0.5, yRadius: pillH * 0.5).fill()
+            attrStr.draw(at: NSPoint(x: pillRect.minX + 6, y: pillRect.minY + (pillH - sz.height) * 0.5))
         }
     }
     
@@ -3271,7 +3537,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
     }
     
     
-    private func applyInlineImageLayoutUpdate(in tokenRange: NSRange? = nil) {
+    private func applyInlineImageLayoutUpdate(in tokenRange: NSRange? = nil, isLiveManipulation: Bool = false) {
         if let lm = self.layoutManager as? LayoutManager {
             lm.invalidateInlineImageLayout(in: tokenRange)
             if let tc = self.textContainer {
@@ -3282,10 +3548,15 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 }
             }
         }
-        self.sizeToFit()
-        self.needsLayout = true
+        if !isLiveManipulation {
+            self.sizeToFit()
+            self.needsLayout = true
+            self.invalidateInsertionIndicatorDisplayMode()
+        }
         self.needsDisplay = true
-        self.invalidateInsertionIndicatorDisplayMode()
+        if isLiveManipulation {
+            self.displayIfNeeded()
+        }
         if self.funEffects.ownsVimCursorDrawing {
             self.funEffects.syncVimCursor(animated: false)
         }
@@ -3328,7 +3599,18 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             }
         }
         
-        // 2. Check clicking inside any inline image body -> select + smooth position drag (NO zoom popup!)
+        // 2. Allow immediate 1-click corner/edge resize on ANY hovered image (even before selecting!)
+        for entry in self.inlineImageCardEntries {
+            if let handle = entry.hitTestHandle(at: point) {
+                self.dismissInlineDimensionEditor(commit: false)
+                self.selectedInlineImageIdentifier = entry.identifier
+                self.needsDisplay = true
+                self.trackInlineImageResize(for: entry, handle: handle, startPoint: point)
+                return true
+            }
+        }
+        
+        // 3. Check clicking inside any inline image body -> select + smooth position drag (NO zoom popup!)
         guard let hit = self.inlineImageCardEntries.first(where: { $0.hitTestImage(point: point) }) else {
             return false
         }
@@ -3572,6 +3854,7 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
         }()
         
         self.activeDraggingResizeHandle = handle
+        self.isLiveManipulatingInlineImage = true
         self.dimensionPillHideWorkItem?.cancel()
         self.dimensionPillHideWorkItem = nil
         self.visibleDimensionPills = (
@@ -3584,21 +3867,36 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             self.resizePressSprings[candidate]?.target = (candidate == handle) ? 1.0 : 0.0
         }
         self.startResizeSpringTimerIfNeeded()
-        self.hiddenResizeHandleCursor.set()
+        self.cursorForResizeHandle(handle, rotationDegrees: entry.rotationDegrees).set()
         self.needsDisplay = true
         
         let negRad = -entry.rotationDegrees * .pi / 180.0
         let cosR = cos(negRad)
         let sinR = sin(negRad)
         var wasCancelled = false
+        var latestTransform = startTx
+        var prevScale = startTx.scale
+        var crossed100 = abs(startTx.scale - 1.0) < 0.02
         
-        while let event = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp, .keyDown]) {
+        while var event = window.nextEvent(matching: [.leftMouseDragged, .leftMouseUp, .keyDown]) {
             if event.type == .keyDown {
                 if event.keyCode == 53 { // Escape cancels current resize
                     wasCancelled = true
                     break
                 }
                 continue
+            }
+            
+            // Drain any immediately queued drag events so the image locks 1:1 to the pointer with zero lag.
+            if event.type == .leftMouseDragged {
+                while let newer = window.nextEvent(
+                    matching: .leftMouseDragged,
+                    until: .distantPast,
+                    inMode: .eventTracking,
+                    dequeue: true
+                ) {
+                    event = newer
+                }
             }
             
             let curPt = self.convert(event.locationInWindow, from: nil)
@@ -3637,32 +3935,54 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
                 nextFrame: nextFrame,
                 handle: handle
             )
-            PlainTextInlineImageStore.shared.setTransform(updated, for: entry.identifier, documentURL: docURL)
-            self.liveInlineImageHUDText = "\(Int((updated.scale * 100).rounded()))%"
+            
+            if !crossed100,
+               (prevScale < 1.0 && updated.scale >= 1.0) || (prevScale > 1.0 && updated.scale <= 1.0)
+            {
+                crossed100 = true
+                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
+            } else if abs(updated.scale - 1.0) > 0.08 {
+                crossed100 = false
+            }
+            prevScale = updated.scale
+            latestTransform = updated
+            
+            // Pure in-memory update during live drag (zero disk I/O per pixel)
+            PlainTextInlineImageStore.shared.setTransform(updated, for: entry.identifier, documentURL: docURL, persist: false)
+            self.liveInlineImageHUDText = "\(Int((updated.scale * 100).rounded()))% · \(Int(round(nextFrame.width))) × \(Int(round(nextFrame.height)))"
             
             self.stepResizeSprings()
-            self.applyInlineImageLayoutUpdate(in: entry.tokenRange)
+            self.applyInlineImageLayoutUpdate(in: entry.tokenRange, isLiveManipulation: true)
             
             if event.type == .leftMouseUp { break }
         }
         
+        self.isLiveManipulatingInlineImage = false
         self.liveInlineImageHUDText = nil
         if wasCancelled {
-            PlainTextInlineImageStore.shared.setTransform(startTx, for: entry.identifier, documentURL: docURL)
-            self.applyInlineImageLayoutUpdate(in: entry.tokenRange)
+            PlainTextInlineImageStore.shared.setTransform(startTx, for: entry.identifier, documentURL: docURL, persist: true)
+            self.applyInlineImageLayoutUpdate(in: entry.tokenRange, isLiveManipulation: false)
+        } else {
+            // Single atomic flush + high-quality final repaint and sizeToFit on release
+            PlainTextInlineImageStore.shared.setTransform(latestTransform, for: entry.identifier, documentURL: docURL, persist: true)
+            self.applyInlineImageLayoutUpdate(in: entry.tokenRange, isLiveManipulation: false)
         }
         
         self.activeDraggingResizeHandle = nil
         let endPt = self.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
-        let stillHoveringHandle = self.selectedInlineImageEntry()?.hitTestHandle(at: endPt)
+        let hoverAfter = self.inlineImageHoverTarget(at: endPt)
+        let stillHoveringHandle = hoverAfter?.handle
+        self.hoveredInlineImageIdentifier = hoverAfter?.entry.identifier
         self.hoveredResizeHandle = stillHoveringHandle
         for candidate in BoundingBoxHandle.allCases {
             self.resizeMorphSprings[candidate]?.target = (candidate == stillHoveringHandle) ? 1.0 : 0.0
             self.resizePressSprings[candidate]?.target = 0.0
         }
         self.startResizeSpringTimerIfNeeded()
-        if stillHoveringHandle != nil {
-            self.hiddenResizeHandleCursor.set()
+        if let stillHoveringHandle, let target = hoverAfter {
+            self.cursorForResizeHandle(stillHoveringHandle, rotationDegrees: target.entry.rotationDegrees).set()
+        } else if hoverAfter != nil {
+            NSCursor.openHand.set()
         } else {
             self.window?.invalidateCursorRects(for: self)
             NSCursor.iBeam.set()
