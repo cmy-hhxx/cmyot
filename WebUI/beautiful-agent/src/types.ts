@@ -82,6 +82,8 @@ export type BotMentionItem = {
   tagline: string;
   accentHex: string;
   model?: string | null;
+  avatarURL?: string | null;
+  isCustom?: boolean;
 };
 
 export type AttachedDocumentRef = {

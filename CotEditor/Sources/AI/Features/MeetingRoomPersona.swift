@@ -108,6 +108,30 @@ nonisolated enum BotReplyDirectiveParser {
     }
     
     
+    /// Strips complete and trailing incomplete `[STICKER:...]`, `[SEARCH_STICKER:...]`, `[MOOD:...]`, and `[PASS]`
+    /// directives while tokens are streaming so raw protocol tags never flash in the UI.
+    static func stripDirectivesForLiveDisplay(_ raw: String) -> String {
+        var cleaned = raw
+        cleaned = Self.removingMatches(Self.moodRegex, in: cleaned)
+        cleaned = Self.removingMatches(Self.stickerRegex, in: cleaned)
+        cleaned = Self.removingMatches(Self.searchStickerRegex, in: cleaned)
+        cleaned = cleaned.replacingOccurrences(of: "[PASS]", with: "", options: [.caseInsensitive])
+        // Hide any trailing half-typed bracket tag such as `[STICKER:stk_` or `[MOOD:` during streaming
+        if let lastOpen = cleaned.lastIndex(of: "["),
+           !cleaned[lastOpen...].contains("]")
+        {
+            let tailUpper = String(cleaned[lastOpen...]).uppercased()
+            if tailUpper.hasPrefix("[STIC") || tailUpper.hasPrefix("[SEAR")
+                || tailUpper.hasPrefix("[MOOD") || tailUpper.hasPrefix("[PAS")
+                || tailUpper == "["
+            {
+                cleaned = String(cleaned[..<lastOpen])
+            }
+        }
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    
+    
     private static func firstMatchGroup(_ regex: NSRegularExpression, in text: String) -> String? {
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         guard let match = regex.firstMatch(in: text, options: [], range: range),
@@ -138,7 +162,7 @@ nonisolated enum MeetingRoomPersona {
     - 严禁客服式反问收尾（不要问“今天想写周报还是先清待办？”“需要我帮你做什么吗？”）。
     - 严禁用标题（#）、加粗（**）、编号列表（1. 2. 3.）、八股总结、机械腔（「综上所述」「节奏挺稳」「作为AI」）或 emoji。
     - 先看群里前面刚说过的话：能顺嘴附和、轻吐槽或接梗最好；如果跟你没关系或前面已经说得够好了，别硬挤。
-    - 简短松弛：普通助手 15～45 字为佳，总管不超过 60 字；有真实数据作背景时绝不编造。
+    - 简短松弛：文字回复 15～45 字为佳（总管不超过 60 字）；若选择纯表情包表态，则一个字都不要多写，只输出表情包标签；有真实数据作背景时绝不编造。
     """
     
     
@@ -204,7 +228,11 @@ nonisolated enum MeetingRoomPersona {
         
         if !isButlerSynthesis {
             if isMentioned {
-                parts.append("用户点名了你，必须回答，不能 PASS。直接针对用户的话，用你自己的口吻自然回一句。")
+                if allowStickerOnly {
+                    parts.append("用户点名了你，必须回应，不能 PASS。直接针对用户的话，用你自己的口吻自然回应（若候选表情包已精准表达你的态度，也允许只回该表情包）。")
+                } else {
+                    parts.append("用户点名了你，必须回答，不能 PASS。直接针对用户的话，用你自己的口吻自然回一句。")
+                }
             } else if !isProgressCheck {
                 parts.append("群聊规则：用户现在只是随口打招呼或聊天，不是让你汇报工作！绝对不要背诵后台数字或流水账。如果前面已经有人接过话了、或者这话题跟你没啥关系，只回复 \(self.passToken)，不要多写一个字。")
             } else {
@@ -270,22 +298,25 @@ nonisolated enum MeetingRoomPersona {
         allowOnlineSearch: Bool
     ) -> String {
         var lines: [String] = [
-            "表情包与情绪表达规则（仅在真的贴切时使用，不要每句硬发）：",
-            "- 可在回复末尾附带一次实时心情标记（可选）：[MOOD:calm|happy|excited|focused|slacking|speechless|aggrieved]",
+            "表情包与情绪表达规则（克制使用，宁缺毋滥）：",
+            "- 可在回复末尾附带实时心情标记（可选）：[MOOD:calm|happy|excited|focused|slacking|speechless|aggrieved]",
+            "- 默认只发纯文字，不要每次都硬凑表情包！只有当你确认表情包能精准表达某个核心概念、情绪或接梗时，才使用表情包。",
         ]
         if !candidates.isEmpty {
-            let listText = candidates.prefix(10).map { item in
+            let listText = candidates.prefix(5).map { item in
                 "- \(item.id) | \(item.promptDescription)"
             }.joined(separator: "\n")
-            lines.append("- 如果下面候选表情包里有**真正贴合你想表达观点/情绪**的图，可在回复末尾加上 [STICKER:表情ID]（只能从下方候选 ID 里选，严禁编造 ID）：\n\(listText)")
             if allowStickerOnly {
-                lines.append("- 如果某张候选图的画面/文字已经完全能替你表态、无需废话，允许**只输出这一个标签** [STICKER:表情ID]（不写多余文字）。若候选里没有准确表达你观点的图，就正常说话，不要硬凑。")
+                lines.append("""
+                - 【纯表情包回复优先】如果下方某张候选图本身就已经完整表达了你要说的话（精准接梗/表态/无语/摸鱼/开心/赞同），请**只输出**这一个标签 `[STICKER:表情ID]`（可附 `[MOOD:...]`），**一个多余的汉字都不要写**，不要文字+表情包同时发；只有在必须补充文字信息且该图也很贴切时，才使用「文字 + [STICKER:表情ID]」：
+                \(listText)
+                """)
             } else {
-                lines.append("- 当前属于正经进度/工作讨论，必须先用文字讲清重点，表情包最多只能作为辅助配图放在末尾。")
+                lines.append("- 当前属于正经进度/工作讨论，必须先用文字讲清重点；若下面有非常贴切的配图再附 `[STICKER:表情ID]`，否则不要发图：\n\(listText)")
             }
         }
         if allowOnlineSearch {
-            lines.append("- 如果本地候选表情包都不贴切、且你非常需要一张特定梗图来表态，可输出 [SEARCH_STICKER:简短中文关键词] 自动搜索一张入库并发送。")
+            lines.append("- 仅当非常需要某个特定概念的表情包且本地无图时，才偶发使用 `[SEARCH_STICKER:简短中文关键词]`（克制触发）。")
         }
         return lines.joined(separator: "\n")
     }

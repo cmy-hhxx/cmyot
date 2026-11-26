@@ -141,6 +141,8 @@ nonisolated struct BeautifulAgentBotMentionPayload: Codable, Equatable, Identifi
     var tagline: String
     var accentHex: String
     var model: String? = nil
+    var avatarURL: String? = nil
+    var isCustom: Bool? = nil
 }
 
 

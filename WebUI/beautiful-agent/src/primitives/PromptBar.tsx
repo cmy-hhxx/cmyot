@@ -129,6 +129,7 @@ type PromptBarProps = {
   quotedExcerpt?: string | null;
   effort?: EffortLevel;
   showEffort?: boolean;
+  inlineBotMentions?: boolean;
   onClearQuote?: () => void;
   onSelectModel: (model: ModelOption) => void;
   onSelectEffort?: (effort: EffortLevel) => void;
@@ -158,6 +159,7 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
     quotedExcerpt,
     effort = "balanced",
     showEffort = false,
+    inlineBotMentions = false,
     onClearQuote,
     onSelectModel,
     onSelectEffort,
@@ -250,7 +252,7 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
           b.tagline.toLowerCase().includes(query) ||
           b.id.toLowerCase().includes(query),
       );
-      const limit = effectiveTab === "all" && !query ? 6 : 12;
+      const limit = effectiveTab === "all" && !query ? 10 : 60;
       for (const bot of matchedBots.slice(0, limit)) {
         out.push({ kind: "bot", key: `bot:${bot.id}`, bot });
       }
@@ -419,8 +421,13 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
       return;
     }
     if (row.kind === "bot") {
-      setSelectedBot(row.bot);
-      setDraft(prefix);
+      if (inlineBotMentions) {
+        const cleanPrefix = prefix.length > 0 && !/\s$/.test(prefix) ? `${prefix} ` : prefix;
+        setDraft(`${cleanPrefix}@${row.bot.name} `);
+      } else {
+        setSelectedBot(row.bot);
+        setDraft(prefix);
+      }
       setManualAtTab(null);
       setDismissed(true);
       inputRef.current?.focus();
@@ -511,7 +518,7 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
                   [
                     ["all", locale === "zh" ? "全部" : "All"],
                     ["docs", locale === "zh" ? "文档" : "Docs"],
-                    ["bots", locale === "zh" ? "助手" : "Bots"],
+                    ["bots", "Bots"],
                     ["context", locale === "zh" ? "上下文" : "Context"],
                   ] as [MentionTab, string][]
                 ).map(([tabKey, tabLabel]) => {
@@ -599,10 +606,18 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
                       onClick={() => pickRow(row)}
                       className="relative z-10 flex h-9.5 w-full items-center gap-2.5 rounded-[7px] px-2.5 text-left"
                     >
-                      <span
-                        className="size-2.5 shrink-0 rounded-full"
-                        style={{ backgroundColor: row.bot.accentHex || "var(--accent)" }}
-                      />
+                      {row.bot.avatarURL ? (
+                        <img
+                          src={row.bot.avatarURL}
+                          alt={row.bot.name}
+                          className="size-5 shrink-0 rounded-[5px] border border-line object-cover"
+                        />
+                      ) : (
+                        <span
+                          className="size-2.5 shrink-0 rounded-full"
+                          style={{ backgroundColor: row.bot.accentHex || "var(--accent)" }}
+                        />
+                      )}
                       <span className="shrink-0 text-[13.5px] font-medium text-ink">@{row.bot.name}</span>
                       <span className="min-w-0 flex-1 truncate text-[13px] text-ink-3">{row.bot.tagline}</span>
                       {isChosen && (
@@ -813,7 +828,7 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
                     style={{ backgroundColor: selectedBot.accentHex || "var(--accent)" }}
                   />
                   <span className="truncate">
-                    {locale === "zh" ? `交由 @${selectedBot.name}` : `Assign @${selectedBot.name}`}
+                    {`@${selectedBot.name}`}
                   </span>
                   <button
                     type="button"
@@ -933,7 +948,7 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
                       : "text-ink-2 hover:bg-hover hover:text-ink"
                   }`}
                 >
-                  {locale === "zh" ? "@助手" : "@Bot"}
+                  {"@Bots"}
                 </button>
               </>
             ) : contextSources.length > 0 ? (

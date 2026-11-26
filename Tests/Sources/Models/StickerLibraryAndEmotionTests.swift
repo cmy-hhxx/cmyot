@@ -236,4 +236,44 @@ struct StickerLibraryAndEmotionTests {
         #expect(store.stickers.isEmpty)
         #expect(db.fetchAllStickers().isEmpty)
     }
+    
+    
+    @Test func strictStickerRelevanceLiveSanitizationAndMentionPreservation() async throws {
+        // 1. Strict relevance search rejects unrelated topics instead of spamming random stickers
+        let tempDir = self.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        let db = CotLocalDatabase(customURL: tempDir.appending(path: "relevance.sqlite3"))
+        let store = CotStickerLibraryStore(database: db, stickersDirectory: tempDir.appending(path: "stickers", directoryHint: .isDirectory))
+        let imgURL = tempDir.appending(path: "slacking.png")
+        try self.makeTestPNG(color: .systemTeal).write(to: imgURL)
+        _ = await store.importFiles([imgURL], defaultCategory: "cat")
+        let stk = try #require(store.stickers.first)
+        store.updateSemantics(
+            id: stk.id,
+            category: "cat",
+            ocrText: "摸鱼躺平",
+            meaning: "打工人准备摸鱼下班",
+            moods: ["摸鱼"],
+            tags: ["摸鱼", "下班"]
+        )
+        #expect(store.searchRelevantForReply(query: "Swift并发编译报错排查", mood: "专注").isEmpty)
+        #expect(store.searchRelevantForReply(query: "好想摸鱼下班啊", mood: "摸鱼").first?.id == stk.id)
+        
+        // 2. Live streaming sanitization removes complete and trailing incomplete directives
+        #expect(BotReplyDirectiveParser.stripDirectivesForLiveDisplay("好主意 [STICKER:stk_123") == "好主意")
+        #expect(BotReplyDirectiveParser.stripDirectivesForLiveDisplay("[MOOD:happy] 没问题 [STICKER:stk_123]") == "没问题")
+        
+        // 3. MeetingRoom preserves explicit @bot mention inside user bubble & message text
+        let manager = ButlerMeetingRoomManager(database: db)
+        let botStore = AIBotStore(database: db)
+        let custom = botStore.createCustomBot(
+            name: "测试小八",
+            nickname: "小八",
+            personaPrompt: "热情回应",
+            baseline: .optimistic
+        )
+        await manager.submitPrompt("帮我看下这段配置", explicitBotID: custom.id, allowRemoteAI: false, botStore: botStore)
+        let userMsg = manager.messages.first { $0.role == "user" }
+        #expect(userMsg?.text.contains("@测试小八") == true)
+    }
 }

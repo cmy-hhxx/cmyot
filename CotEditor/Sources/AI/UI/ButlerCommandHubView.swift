@@ -853,7 +853,7 @@ struct ButlerCommandHubView: View {
             isStreaming: isActiveSessionStreaming,
             streamingStatusLabel: isActiveSessionStreaming && !self.butler.streamingStatusLabel.isEmpty ? self.butler.streamingStatusLabel : nil,
             errorMessage: self.butler.lastErrorMessage,
-            placeholder: AppLanguage.text("输入问题，输入 @ 引用文档或指派助手…", en: "Ask anything, or type @ for docs & bots…"),
+            placeholder: AppLanguage.text("输入问题，输入 @ 引用文档或指派 Bots", en: "Ask anything, or type @ for docs & bots"),
             greetingName: greetingName,
             greetingSubtitle: nil,
             articleTitle: nil,
@@ -966,6 +966,22 @@ struct ButlerCommandHubView: View {
     
     
     private func buildBotMentionCandidates() -> [BeautifulAgentBotMentionPayload] {
+        let avatarRev = self.botStore.avatarRevision &+ self.botStore.customBotsRevision
+        var list: [BeautifulAgentBotMentionPayload] = []
+        // Put user-created custom Bots first so newly added Bots immediately surface in @ menus
+        for custom in self.botStore.customBots where custom.isEnabled {
+            list.append(BeautifulAgentBotMentionPayload(
+                id: custom.id,
+                name: custom.name,
+                nickname: custom.nickname,
+                handle: custom.handle,
+                tagline: custom.personaPrompt.isEmpty ? custom.baseline.displayName : custom.personaPrompt,
+                accentHex: custom.accentHex,
+                model: custom.modelOverride.isEmpty ? nil : custom.modelOverride,
+                avatarURL: CotMediaSchemeHandler.botAvatarURLString(botID: custom.id, revision: avatarRev),
+                isCustom: true
+            ))
+        }
         let delegatable: [AIBotID] = [
             .translate,
             .summarize,
@@ -978,29 +994,20 @@ struct ButlerCommandHubView: View {
             .readingCompanion,
             .persona,
         ]
-        var list = delegatable.compactMap { botID -> BeautifulAgentBotMentionPayload? in
+        for botID in delegatable {
             let cfg = self.botStore.config(for: botID)
-            guard cfg.isEnabled else { return nil }
+            guard cfg.isEnabled else { continue }
             let resolvedModel = cfg.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
-            return BeautifulAgentBotMentionPayload(
+            list.append(BeautifulAgentBotMentionPayload(
                 id: botID.rawValue,
                 name: self.botStore.resolvedName(for: botID),
                 nickname: self.botStore.resolvedNickname(for: botID),
                 handle: botID.handle,
                 tagline: botID.tagline,
                 accentHex: botID.accentHex,
-                model: resolvedModel.isEmpty ? nil : resolvedModel
-            )
-        }
-        for custom in self.botStore.customBots where custom.isEnabled {
-            list.append(BeautifulAgentBotMentionPayload(
-                id: custom.id,
-                name: custom.name,
-                nickname: custom.nickname,
-                handle: custom.handle,
-                tagline: custom.personaPrompt.isEmpty ? custom.baseline.displayName : custom.personaPrompt,
-                accentHex: custom.accentHex,
-                model: custom.modelOverride.isEmpty ? nil : custom.modelOverride
+                model: resolvedModel.isEmpty ? nil : resolvedModel,
+                avatarURL: CotMediaSchemeHandler.botAvatarURLString(botID: botID.rawValue, revision: avatarRev),
+                isCustom: false
             ))
         }
         return list

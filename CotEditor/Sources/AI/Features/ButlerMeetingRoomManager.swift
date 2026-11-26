@@ -344,6 +344,8 @@ final class ButlerMeetingRoomManager {
     @ObservationIgnored private var cachedRosterKey: String?
     @ObservationIgnored private var cachedRosterAt: Date = .distantPast
     @ObservationIgnored private var cachedRoster: [MeetingRoomParticipantPayload] = []
+    @ObservationIgnored private var customBotsObserver: (any NSObjectProtocol)?
+    @ObservationIgnored private var knownCustomBotIDs: Set<String> = []
     
     static let encoder = JSONEncoder()
     static let decoder = JSONDecoder()
@@ -351,7 +353,42 @@ final class ButlerMeetingRoomManager {
     
     init(database: CotLocalDatabase = .shared) {
         self.database = database
+        if database === CotLocalDatabase.shared {
+            self.knownCustomBotIDs = Set(AIBotStore.shared.customBots.map(\.id))
+            self.customBotsObserver = NotificationCenter.default.addObserver(
+                forName: AIBotStore.customBotsDidChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.syncNewlyAddedCustomBotsToActiveSession()
+                }
+            }
+        }
         self.bootstrapSessionsAndMessages()
+    }
+    
+    
+    private func syncNewlyAddedCustomBotsToActiveSession() {
+        let enabledCustomIDs = AIBotStore.shared.customBots.filter(\.isEnabled).map(\.id)
+        let brandNewIDs = enabledCustomIDs.filter { !self.knownCustomBotIDs.contains($0) }
+        self.knownCustomBotIDs.formUnion(enabledCustomIDs)
+        guard !brandNewIDs.isEmpty, var session = self.activeSession else {
+            self.cachedRosterKey = nil
+            self.revision &+= 1
+            return
+        }
+        var changed = false
+        for cid in brandNewIDs where !session.participantIDs.contains(cid) {
+            session.participantIDs.append(cid)
+            changed = true
+        }
+        if changed {
+            self.database.upsertMeetingRoomSession(session)
+            self.sessions = self.database.fetchMeetingRoomSessions()
+        }
+        self.cachedRosterKey = nil
+        self.revision &+= 1
     }
     
     
@@ -605,17 +642,36 @@ final class ButlerMeetingRoomManager {
         let generation = self.activeGeneration
         self.isConvening = true
         
+        let displayText: String = {
+            guard let cleanID = explicitBotID?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !cleanID.isEmpty,
+                  let bot = botStore.unifiedBot(id: cleanID)
+            else {
+                return trimmed
+            }
+            let lower = trimmed.lowercased()
+            let hasInline = [bot.name, bot.nickname]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                .filter { !$0.isEmpty }
+                .contains { lower.contains("@\($0)") }
+            if hasInline {
+                return trimmed
+            }
+            return trimmed.isEmpty ? "@\(bot.name)" : "@\(bot.name) \(trimmed)"
+        }()
+        
         let effectivePromptForLLM: String = {
-            if !trimmed.isEmpty, let sticker {
-                return "\(trimmed)（附带表情包：\(sticker.searchableSummary)）"
+            if !displayText.isEmpty, let sticker {
+                return "\(displayText)（附带表情包：\(sticker.searchableSummary)）"
             }
             if let sticker {
                 return "用户发了一张表情包（\(sticker.promptDescription)）"
             }
-            return trimmed
+            return displayText
         }()
         
-        self.autoTitleActiveSessionIfNeeded(from: trimmed.isEmpty ? (sticker?.searchableSummary ?? "表情讨论") : trimmed)
+        let titleSeed = displayText.isEmpty ? (sticker?.searchableSummary ?? "表情讨论") : displayText
+        self.autoTitleActiveSessionIfNeeded(from: titleSeed)
         
         let userMsg = MeetingRoomMessage(
             id: "mr-user-\(UUID().uuidString)",
@@ -625,7 +681,7 @@ final class ButlerMeetingRoomManager {
             botHandle: nil,
             botAccentHex: nil,
             botRoleLabel: nil,
-            text: trimmed,
+            text: displayText,
             stickerID: sticker?.id,
             stickerURL: sticker.map { CotMediaSchemeHandler.stickerURLString(id: $0.id) },
             stickerCaption: sticker?.searchableSummary,
@@ -641,8 +697,10 @@ final class ButlerMeetingRoomManager {
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             await self.runMeetingDispatch(
-                rawPrompt: trimmed,
+                rawPrompt: displayText,
                 llmPrompt: effectivePromptForLLM,
+                userMessageID: userMsg.id,
+                userSentSticker: sticker != nil,
                 explicitBotID: explicitBotID,
                 generation: generation,
                 allowRemoteAI: allowRemoteAI,

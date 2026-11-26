@@ -3,6 +3,7 @@ import { copyTextWithFallback, postToNative } from "./bridge";
 import LoadingState from "./primitives/LoadingState";
 import MarkdownProse from "./primitives/MarkdownProse";
 import MeetingRoomView from "./primitives/MeetingRoomView";
+import { renderTextWithMentions } from "./primitives/MentionText";
 import PromptBar, { type PromptBarHandle } from "./primitives/PromptBar";
 import SidebarNav from "./primitives/SidebarNav";
 import ThinkingState from "./primitives/ThinkingState";
@@ -34,7 +35,7 @@ const DEFAULT_STATE: HostState = {
   activeSessionID: "",
   messages: [],
   isStreaming: false,
-  placeholder: "输入问题，输入 @ 引用文档或指派助手…",
+  placeholder: "输入问题，输入 @ 引用文档或指派 Bots",
   availableModels: [],
   selectedModelID: "",
   selectedModelTitle: "",
@@ -111,7 +112,7 @@ const UserBubble = memo(function UserBubble({
       )}
       {text.trim().length > 0 && (
         <div className="max-w-[92%] select-text whitespace-pre-wrap break-words rounded-[13px] bg-field px-3.5 py-2.5 text-[14px] leading-relaxed text-ink shadow-hairline">
-          {text}
+          {renderTextWithMentions(text, "subtle")}
         </div>
       )}
       {stickerURL && (

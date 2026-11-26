@@ -313,6 +313,56 @@ nonisolated enum StickerSearchEngine {
     }
     
     
+    /// Strict semantic search for AI replies: returns stickers ONLY when the query/topic
+    /// genuinely matches a sticker's text, meaning, tags, or category (`conceptScore >= minConceptScore`).
+    /// Returns `[]` when nothing in the library fits, preventing repetitive/unrelated sticker spam.
+    static func searchRelevantForReply(
+        _ stickers: [StickerAsset],
+        query: String,
+        mood: String? = nil,
+        preferredCategories: [String] = [],
+        limit: Int = 5,
+        minConceptScore: Double = 3.0
+    ) -> [StickerAsset] {
+        let queryTerms = Self.tokenize(query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        guard !queryTerms.isEmpty else { return [] }
+        let cleanMood = mood?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        let prefSet = Set(preferredCategories.map { StickerCategory.normalize($0) })
+        
+        var scored: [(asset: StickerAsset, score: Double)] = []
+        for item in stickers {
+            let ocr = item.ocrText.lowercased()
+            let mean = item.meaning.lowercased()
+            let tagsJoined = item.tags.joined(separator: " ").lowercased()
+            let moodsJoined = item.moods.joined(separator: " ").lowercased()
+            let catLower = item.category.lowercased()
+            guard !ocr.isEmpty || !mean.isEmpty || !tagsJoined.isEmpty else { continue }
+            
+            var conceptScore = 0.0
+            for term in queryTerms {
+                if ocr.contains(term) { conceptScore += 4.0 }
+                if mean.contains(term) { conceptScore += 3.5 }
+                if tagsJoined.contains(term) { conceptScore += 3.0 }
+                if moodsJoined.contains(term) { conceptScore += 2.0 }
+                if catLower.contains(term) { conceptScore += 1.5 }
+            }
+            guard conceptScore >= minConceptScore else { continue }
+            
+            var total = conceptScore
+            if !cleanMood.isEmpty && moodsJoined.contains(cleanMood) { total += 1.5 }
+            if !prefSet.isEmpty && prefSet.contains(item.category) { total += 1.0 }
+            if item.isFavorite { total += 0.4 }
+            total -= min(0.8, Double(item.useCount) * 0.1)
+            scored.append((item, total))
+        }
+        scored.sort { lhs, rhs in
+            if abs(lhs.score - rhs.score) > 0.01 { return lhs.score > rhs.score }
+            return lhs.asset.createdAt > rhs.asset.createdAt
+        }
+        return Array(scored.prefix(limit).map(\.asset))
+    }
+    
+    
     private static func tokenize(_ text: String) -> [String] {
         guard !text.isEmpty else { return [] }
         var parts = text

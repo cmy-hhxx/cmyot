@@ -1077,7 +1077,19 @@ final class CotButlerManager {
         let allAttachedDocs = attachedDocuments + inlineDocs
         
         let text: String = {
-            if !trimmedInput.isEmpty { return trimmedInput }
+            if !trimmedInput.isEmpty {
+                let botDisplay = targetBot.map { AIBotStore.shared.resolvedName(for: $0) } ?? targetCustomBot?.name
+                let botNick = targetBot.map { AIBotStore.shared.resolvedNickname(for: $0) } ?? targetCustomBot?.nickname
+                if let botDisplay {
+                    let lower = trimmedInput.lowercased()
+                    let alreadyMentioned = [botDisplay, botNick ?? ""]
+                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                        .filter { !$0.isEmpty }
+                        .contains { lower.contains("@\($0)") }
+                    return alreadyMentioned ? trimmedInput : "@\(botDisplay) \(trimmedInput)"
+                }
+                return trimmedInput
+            }
             if let targetBot {
                 let botName = AIBotStore.shared.resolvedName(for: targetBot)
                 if !allAttachedDocs.isEmpty {
@@ -1263,16 +1275,16 @@ final class CotButlerManager {
             }
         }
         let emotion = AIBotStore.shared.emotionState(for: bot.id)
-        let candidates = CotStickerLibraryStore.shared.search(
+        let candidates = CotStickerLibraryStore.shared.searchRelevantForReply(
             query: userText,
             mood: emotion.mood.displayLabel,
             preferredCategories: bot.preferredStickerCategories,
-            limit: 8
+            limit: 5
         )
         let stickerBlock = MeetingRoomPersona.buildStickerProtocolBlock(
             candidates: candidates,
             allowStickerOnly: true,
-            allowOnlineSearch: OnlineStickerSearchService.isAutoExpansionEnabled
+            allowOnlineSearch: !candidates.isEmpty && OnlineStickerSearchService.isAutoExpansionEnabled
         )
         let systemPrompt = """
         你是「\(bot.name)」。\(bot.personaPrompt)
@@ -1292,7 +1304,7 @@ final class CotButlerManager {
                 analyticsFeature: "custom_bot_\(bot.id)"
             ) { [weak self] partial in
                 guard let self, self.activeTurnGeneration == generation else { return }
-                self.streamingDraft = partial
+                self.streamingDraft = BotReplyDirectiveParser.stripDirectivesForLiveDisplay(partial)
                 self.emitStreamPatch()
             }
             guard self.activeTurnGeneration == generation else { return }
@@ -1514,7 +1526,7 @@ final class CotButlerManager {
                 let now = Date()
                 guard now.timeIntervalSince(lastDraftFlushAt) >= 0.04 else { return }
                 lastDraftFlushAt = now
-                self.streamingDraft = Self.stripActionEnvelope(partial)
+                self.streamingDraft = BotReplyDirectiveParser.stripDirectivesForLiveDisplay(Self.stripActionEnvelope(partial))
                 self.emitStreamPatch()
             }
             guard self.activeTurnGeneration == generation else { return }
@@ -1782,7 +1794,7 @@ final class CotButlerManager {
                 let now = Date()
                 guard now.timeIntervalSince(lastDraftFlushAt) >= 0.04 else { return }
                 lastDraftFlushAt = now
-                self.streamingDraft = Self.stripActionEnvelope(partial)
+                self.streamingDraft = BotReplyDirectiveParser.stripDirectivesForLiveDisplay(Self.stripActionEnvelope(partial))
                 self.emitStreamPatch()
             }
             
@@ -1966,10 +1978,10 @@ final class CotButlerManager {
         let isUserStickerTurn = text.contains("表情包") || self.messages.last?.actionsJSON.contains("stickerID") == true
         if metadata.errorMessage == nil && !text.isEmpty {
             let botKey = metadata.delegatedBotID ?? AIBotID.butler.rawValue
-            let candidates = CotStickerLibraryStore.shared.search(query: text, limit: 8)
+            let allowedIDs = Set(CotStickerLibraryStore.shared.stickers.map(\.id))
             let parsed = BotReplyDirectiveParser.parse(
                 raw: text,
-                allowedStickerIDs: Set(candidates.map(\.id)),
+                allowedStickerIDs: allowedIDs,
                 allowStickerOnly: true,
                 stickerOnlyCountInTurn: 0,
                 allowOnlineSearch: OnlineStickerSearchService.isAutoExpansionEnabled
@@ -1980,8 +1992,6 @@ final class CotButlerManager {
                 enrichedMeta.stickerID = stk.id
                 enrichedMeta.stickerURL = CotMediaSchemeHandler.stickerURLString(id: stk.id)
                 enrichedMeta.stickerCaption = stk.searchableSummary
-            } else if enrichedMeta.stickerID == nil, isUserStickerTurn, !candidates.isEmpty, text.count < 80 {
-                // Keep clean text if model didn't emit explicit tag
             }
             AIBotStore.shared.updateEmotion(for: botKey, userPrompt: self.messages.last?.content ?? "", botReply: resolvedText, explicitMood: parsed.mood)
             let assistantMsg = ButlerChatMessage(
@@ -2280,10 +2290,10 @@ final class CotButlerManager {
         }
         
         let butlerEmotion = AIBotStore.shared.emotionState(for: AIBotID.butler.rawValue)
-        let stickerCandidates = CotStickerLibraryStore.shared.search(
+        let stickerCandidates = CotStickerLibraryStore.shared.searchRelevantForReply(
             query: userMessage,
             mood: butlerEmotion.mood.displayLabel,
-            limit: 6
+            limit: 5
         )
         if !stickerCandidates.isEmpty {
             lines.append(MeetingRoomPersona.buildStickerProtocolBlock(

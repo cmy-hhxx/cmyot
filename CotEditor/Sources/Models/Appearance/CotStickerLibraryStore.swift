@@ -198,6 +198,22 @@ final class CotStickerLibraryStore {
     }
     
     
+    func searchRelevantForReply(
+        query: String,
+        mood: String? = nil,
+        preferredCategories: [String] = [],
+        limit: Int = 5
+    ) -> [StickerAsset] {
+        StickerSearchEngine.searchRelevantForReply(
+            self.stickers,
+            query: query,
+            mood: mood,
+            preferredCategories: preferredCategories,
+            limit: limit
+        )
+    }
+    
+    
     // MARK: - Mutations
     
     func toggleFavorite(id: String) {

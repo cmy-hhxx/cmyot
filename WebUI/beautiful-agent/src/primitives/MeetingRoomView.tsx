@@ -3,6 +3,7 @@ import { copyTextWithFallback } from "../bridge";
 import LoadingState from "./LoadingState";
 import MarkdownProse from "./MarkdownProse";
 import MeetingMembersDrawer from "./MeetingMembersDrawer";
+import { renderTextWithMentions } from "./MentionText";
 import PromptBar, { type PromptBarHandle } from "./PromptBar";
 import type {
   BotMentionItem,
@@ -183,7 +184,7 @@ const ChatMessageBubbleRow = memo(function ChatMessageBubbleRow({
         {hasText && (
           <div className="flex items-start justify-end gap-2.5 pl-10">
             <div className="max-w-[78%] select-text whitespace-pre-wrap break-words rounded-[12px] rounded-tr-[4px] bg-accent px-3.5 py-2 text-[14px] leading-relaxed text-white shadow-hairline">
-              {message.text}
+              {renderTextWithMentions(message.text, "accent")}
             </div>
             <AvatarTile
               url={userAvatarURL}
@@ -219,7 +220,10 @@ const ChatMessageBubbleRow = memo(function ChatMessageBubbleRow({
   }
 
   const avatarAction = message.botID ? () => onOpenBotConfig(message.botID as string) : undefined;
-  const showPrimaryRow = hasText || isSpeaking || !hasSticker;
+  const showPrimaryRow = hasText || isSpeaking;
+  if (!hasText && !isSpeaking && !hasSticker) {
+    return null;
+  }
 
   return (
     <div className="flex flex-col gap-2.5">
@@ -353,18 +357,19 @@ const MeetingRoomView = memo(function MeetingRoomView({
     [stickers],
   );
 
-  const mentionBots = useMemo<BotMentionItem[]>(
-    () =>
-      participants.map((p) => ({
-        id: p.id,
-        name: p.name,
-        nickname: p.nickname,
-        handle: p.handle,
-        tagline: p.moodLabel || p.roleLabel,
-        accentHex: p.accentHex,
-      })),
-    [participants],
-  );
+  const mentionBots = useMemo<BotMentionItem[]>(() => {
+    const ordered = participants.slice().sort((a, b) => Number(Boolean(b.isCustom)) - Number(Boolean(a.isCustom)));
+    return ordered.map((p) => ({
+      id: p.id,
+      name: p.name,
+      nickname: p.nickname,
+      handle: p.handle,
+      tagline: p.moodLabel || p.roleLabel,
+      accentHex: p.accentHex,
+      avatarURL: p.avatarURL,
+      isCustom: p.isCustom,
+    }));
+  }, [participants]);
 
   useEffect(() => {
     const el = composerRef.current;
@@ -416,7 +421,8 @@ const MeetingRoomView = memo(function MeetingRoomView({
               <PromptBar
                 ref={promptBarRef}
                 tall
-                placeholder={locale === "zh" ? "输入议题或 @ 指定助手" : "Ask all bots or @mention one"}
+                inlineBotMentions
+                placeholder={locale === "zh" ? "输入议题或 @ 指定 Bots" : "Ask all bots or @mention one"}
                 locale={locale}
                 isStreaming={isConvening}
                 availableModels={availableModels}
@@ -471,6 +477,7 @@ const MeetingRoomView = memo(function MeetingRoomView({
               <div className="mx-auto max-w-[760px]">
                 <PromptBar
                   ref={promptBarRef}
+                  inlineBotMentions
                   placeholder={locale === "zh" ? "发言，或 @ 指定成员" : "Reply or @mention"}
                   locale={locale}
                   isStreaming={isConvening}
