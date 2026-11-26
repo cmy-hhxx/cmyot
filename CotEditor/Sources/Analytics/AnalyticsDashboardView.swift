@@ -1321,6 +1321,7 @@ struct AnalyticsDashboardView: View {
                         hasHeroPhoto: hasHeroPhoto
                     )
                     
+                    let fullBleedPhoto = hasHeroPhoto && !self.isEmbeddedInSettings
                     let contentStack = Group {
                         if let snapshot = self.snapshot {
                             DashboardAchievementHeroBar(
@@ -1330,6 +1331,10 @@ struct AnalyticsDashboardView: View {
                                 heroHeight: layout.heroHeight,
                                 innerGap: layout.unifiedInnerGap,
                                 bottomPad: layout.unifiedBottomPad,
+                                maxContentWidth: fullBleedPhoto ? layout.maxContentWidth : nil,
+                                outerPadH: fullBleedPhoto ? layout.outerPadH : 0,
+                                outerPadV: fullBleedPhoto ? layout.outerPadV : 0,
+                                isFullBleed: fullBleedPhoto,
                                 compact: self.isEmbeddedInSettings,
                                 palette: self.palette,
                                 onBack: self.isEmbeddedInSettings ? nil : self.onDismiss
@@ -1340,13 +1345,17 @@ struct AnalyticsDashboardView: View {
                                 }
                             }
                             .frame(maxWidth: .infinity)
-                            .frame(height: layout.unifiedFullStageHeight)
+                            .frame(
+                                minHeight: fullBleedPhoto ? max(viewportGeo.size.height, layout.totalContentHeight) : layout.unifiedFullStageHeight,
+                                maxHeight: fullBleedPhoto ? max(viewportGeo.size.height, layout.totalContentHeight) : layout.unifiedFullStageHeight,
+                                alignment: .top
+                            )
                             .animation(DashMotion.resolve(DashMotion.standard), value: hasHeroPhoto)
                             .opacity(self.hasAppeared ? 1 : 0)
                             .animation(DashMotion.resolve(DashMotion.staggeredEntrance), value: self.hasAppeared)
-                            .padding(.horizontal, layout.outerPadH)
-                            .padding(.vertical, layout.outerPadV)
-                            .frame(maxWidth: layout.maxContentWidth, alignment: .leading)
+                            .padding(.horizontal, fullBleedPhoto ? 0 : layout.outerPadH)
+                            .padding(.vertical, fullBleedPhoto ? 0 : layout.outerPadV)
+                            .frame(maxWidth: fullBleedPhoto ? .infinity : layout.maxContentWidth, alignment: .leading)
                             .frame(maxWidth: .infinity, minHeight: viewportGeo.size.height, alignment: .top)
                         } else {
                             Color.clear.frame(maxWidth: .infinity, minHeight: viewportGeo.size.height)
@@ -3018,6 +3027,10 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
     let heroHeight: CGFloat
     let innerGap: CGFloat
     let bottomPad: CGFloat
+    let maxContentWidth: CGFloat?
+    let outerPadH: CGFloat
+    let outerPadV: CGFloat
+    let isFullBleed: Bool
     let compact: Bool
     let palette: DashPalette
     let onBack: (() -> Void)?
@@ -3049,6 +3062,10 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
         heroHeight: CGFloat,
         innerGap: CGFloat,
         bottomPad: CGFloat,
+        maxContentWidth: CGFloat? = nil,
+        outerPadH: CGFloat = 0,
+        outerPadV: CGFloat = 0,
+        isFullBleed: Bool = false,
         compact: Bool,
         palette: DashPalette,
         onBack: (() -> Void)?,
@@ -3060,6 +3077,10 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
         self.heroHeight = heroHeight
         self.innerGap = innerGap
         self.bottomPad = bottomPad
+        self.maxContentWidth = maxContentWidth
+        self.outerPadH = outerPadH
+        self.outerPadV = outerPadV
+        self.isFullBleed = isFullBleed
         self.compact = compact
         self.palette = palette
         self.onBack = onBack
@@ -3327,7 +3348,10 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
                     .padding(.bottom, self.bottomPad)
                     .allowsHitTesting(!self.isAdjustingCover)
             }
-            .frame(width: heroGeo.size.width, height: heroGeo.size.height, alignment: .topLeading)
+            .padding(.horizontal, self.outerPadH)
+            .padding(.vertical, self.outerPadV)
+            .frame(maxWidth: self.maxContentWidth ?? .infinity, alignment: .topLeading)
+            .frame(width: heroGeo.size.width, height: heroGeo.size.height, alignment: .top)
             .background {
                 HeroPhotoFadeBackdrop(
                     coverImage: self.coverStore.coverImage,
@@ -3338,15 +3362,15 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
                     palette: self.palette
                 )
             }
-            .clipShape(RoundedRectangle(cornerRadius: outerRadius, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: self.isFullBleed ? 0 : outerRadius, style: .continuous))
             .overlay {
                 if self.isDropTargeted || self.isAdjustingCover {
-                    RoundedRectangle(cornerRadius: outerRadius, style: .continuous)
+                    RoundedRectangle(cornerRadius: self.isFullBleed ? 0 : outerRadius, style: .continuous)
                         .strokeBorder(
                             self.isDropTargeted ? self.palette.accentFill : self.palette.accentFill.opacity(0.55),
                             lineWidth: 1.5
                         )
-                } else {
+                } else if !self.isFullBleed {
                     RoundedRectangle(cornerRadius: outerRadius, style: .continuous)
                         .strokeBorder(
                             LinearGradient(
@@ -3362,10 +3386,10 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
                 }
             }
             .shadow(
-                color: Color.black.opacity(self.palette.tokens.isDark ? 0.22 : 0.045),
-                radius: 12,
+                color: self.isFullBleed ? .clear : Color.black.opacity(self.palette.tokens.isDark ? 0.22 : 0.045),
+                radius: self.isFullBleed ? 0 : 12,
                 x: 0,
-                y: 4
+                y: self.isFullBleed ? 0 : 4
             )
             .simultaneousGesture(
                 DragGesture(minimumDistance: 2)
@@ -3677,6 +3701,7 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
+                .environment(\.colorScheme, tone.isLightBackground ? .light : .dark)
                 .fixedSize()
                 .pointerStyle(.link)
                 .onHover { hovering in
@@ -3703,6 +3728,7 @@ private struct DashboardAchievementHeroBar<EmbeddedRow1: View>: View {
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
+                .environment(\.colorScheme, tone.isLightBackground ? .light : .dark)
                 .fixedSize()
                 .pointerStyle(.link)
                 .onHover { hovering in
