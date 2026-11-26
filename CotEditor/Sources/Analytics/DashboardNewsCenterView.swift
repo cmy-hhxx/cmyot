@@ -935,7 +935,7 @@ struct DashboardNewsCenterView: View {
                     .pointerStyle(.link)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(bui.surface)
+                .background(self.hasCustomBackground ? bui.surface.opacity(0.78) : bui.surface)
             }
         }
     }
@@ -1306,7 +1306,7 @@ struct DashboardNewsCenterView: View {
             callbacks: callbacks
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(isCenteredCard ? bui.surface : bui.page)
+        .background(isCenteredCard ? bui.surface : (self.hasCustomBackground ? bui.surface.opacity(0.88) : bui.page))
     }
     
     

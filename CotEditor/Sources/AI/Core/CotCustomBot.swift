@@ -118,8 +118,8 @@ nonisolated enum BotMood: String, CaseIterable, Codable, Identifiable, Sendable 
             case .excited: "当前兴致很高、干劲满满，可以带一点雀跃感。"
             case .focused: "当前进入专注状态，说话利落直接、切中要点。"
             case .slacking: "当前有点犯懒想摸鱼，语气松弛随性。"
-            case .speechless: "当前有点无语或无奈，可轻吐槽或甩一张应景表情包。"
-            case .aggrieved: "当前略带委屈或小怨念，但依然乖乖接话。"
+            case .speechless: "当前略显无奈，语气偏淡定克制，不强行吐槽。"
+            case .aggrieved: "当前有点小低落，语气轻一点，正常沟通即可。"
         }
     }
     

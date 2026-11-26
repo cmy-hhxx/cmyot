@@ -149,6 +149,155 @@ nonisolated enum BotReplyDirectiveParser {
 }
 
 
+/// Builds factual, whimsical-title-free today work digests and selects capable speakers
+/// so Bots talk about actual work content instead of reciting placeholder names or parroting.
+nonisolated enum MeetingWorkEvidenceBuilder {
+    
+    struct TodayWorkDigest: Equatable, Sendable {
+        let meaningfulCount: Int
+        let untitledCount: Int
+        let items: [String]
+        let digestText: String
+    }
+    
+    
+    static func isPlaceholderTitle(_ title: String, hasFilePath: Bool) -> Bool {
+        GeneratedDocumentName.isGeneratedName(title)
+            || DocumentCenterAgentOrganizer.isGenericUntitled(title, hasFilePath: hasFilePath)
+    }
+    
+    
+    static func buildTodayWorkDigest(
+        documents: [StoredDocumentRecord],
+        startOfDay: TimeInterval,
+        maxItems: Int = 5
+    ) -> TodayWorkDigest {
+        let todayDocs = documents
+            .filter { $0.deletedAt == nil && $0.updatedAt.timeIntervalSince1970 >= startOfDay }
+            .sorted { $0.updatedAt > $1.updatedAt }
+        
+        var meaningfulCount = 0
+        var untitledCount = 0
+        var items: [String] = []
+        
+        for doc in todayDocs {
+            let cleanedLines = doc.content
+                .components(separatedBy: .newlines)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            let collapsed = cleanedLines.joined(separator: " ")
+            guard collapsed.count >= 8 else { continue }
+            
+            meaningfulCount += 1
+            let hasFilePath = (doc.filePath != nil)
+            let isPlaceholder = Self.isPlaceholderTitle(doc.title, hasFilePath: hasFilePath)
+            if isPlaceholder {
+                untitledCount += 1
+            }
+            
+            guard items.count < maxItems else { continue }
+            if isPlaceholder {
+                let topic = Self.extractTopic(from: doc.content, lines: cleanedLines)
+                let bodyText = Self.compactExcerpt(
+                    lines: cleanedLines.dropFirst().map { $0 },
+                    fallback: collapsed,
+                    maxLength: 120
+                )
+                if bodyText.isEmpty || bodyText == topic {
+                    items.append("未命名笔记（\(topic)）")
+                } else {
+                    items.append("\(topic)：\(bodyText)")
+                }
+            } else {
+                let snippet = Self.compactExcerpt(lines: cleanedLines, fallback: collapsed, maxLength: 120)
+                items.append(snippet.isEmpty ? "「\(doc.title)」" : "「\(doc.title)」：\(snippet)")
+            }
+        }
+        
+        let digestText = items.map { "- \($0)" }.joined(separator: "\n")
+        return TodayWorkDigest(
+            meaningfulCount: meaningfulCount,
+            untitledCount: untitledCount,
+            items: items,
+            digestText: digestText
+        )
+    }
+    
+    
+    static func selectCapableStandupBots(
+        for rawPrompt: String,
+        candidates: [UnifiedBotDescriptor],
+        telemetryMap: [AIBotID: MeetingBotDailyTelemetry],
+        isProgressCheck: Bool
+    ) -> [UnifiedBotDescriptor] {
+        guard isProgressCheck else { return candidates }
+        let lower = rawPrompt.lowercased()
+        let asksMoodOrHabit = ["心情", "状态", "情绪", "观察", "画像", "记忆", "习惯", "作息"]
+            .contains { lower.contains($0) }
+        let asksNewsOrReading = ["新闻", "资讯", "股票", "播客", "订阅", "news", "rss"]
+            .contains { lower.contains($0) }
+        
+        let priorityOrder: [AIBotID: Int] = [
+            .weeklyReport: 0,
+            .organizeAndMerge: 1,
+            .ghost: 2,
+            .persona: 3,
+            .readingCompanion: 4,
+        ]
+        
+        let capable = candidates.filter { bot in
+            guard let builtIn = bot.builtInID else { return false }
+            let hasActivity = telemetryMap[builtIn]?.hasTodayActivity ?? false
+            switch builtIn {
+                case .persona:
+                    return asksMoodOrHabit || hasActivity
+                case .readingCompanion:
+                    return asksNewsOrReading || hasActivity
+                default:
+                    return hasActivity
+            }
+        }
+        
+        let pool: [UnifiedBotDescriptor] = if !capable.isEmpty {
+            capable
+        } else {
+            candidates.filter { bot in
+                bot.builtInID == .weeklyReport || bot.builtInID == .organizeAndMerge
+            }
+        }
+        let resolved = pool.isEmpty ? Array(candidates.prefix(2)) : pool
+        return resolved.sorted { lhs, rhs in
+            let lp = lhs.builtInID.flatMap { priorityOrder[$0] } ?? 10
+            let rp = rhs.builtInID.flatMap { priorityOrder[$0] } ?? 10
+            return lp < rp
+        }
+    }
+    
+    
+    private static func extractTopic(from content: String, lines: [String]) -> String {
+        if let derived = DocumentCenterAgentOrganizer.deriveTitleFromExcerpt(String(content.prefix(320))),
+           !derived.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            return derived
+        }
+        let rawFirst = lines.first ?? "工作草稿"
+        let cleaned = rawFirst
+            .replacingOccurrences(of: #"^[#*\->\s]+"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return String((cleaned.isEmpty ? "工作草稿" : cleaned).prefix(26))
+    }
+    
+    
+    private static func compactExcerpt(lines: [String], fallback: String, maxLength: Int) -> String {
+        let joined = lines.joined(separator: "；")
+        let source = joined.trimmingCharacters(in: .whitespacesAndNewlines)
+        let target = source.isEmpty ? fallback : source
+        guard target.count > maxLength else { return target }
+        return String(target.prefix(maxLength)) + "…"
+    }
+}
+
+
 /// Pure persona definitions and group-chat prompt builder for the Butler Meeting Room.
 nonisolated enum MeetingRoomPersona {
     
@@ -156,42 +305,41 @@ nonisolated enum MeetingRoomPersona {
     
     static let sharedRules: String = """
     群聊说话铁律：
-    - 把这里当成几个熟人搭档的微信小群，直接回用户刚说的那句话，像真人随手敲的一两句短消息。
-    - 严禁集体排队复读「嗨」「你好」开头！前面有人打过招呼了，你就直接换个自然开场或接话。
-    - 严禁写流水账、严禁主动背诵后台统计数字（例如“今天手写X字 / 攒了X份周报 / 记下X条观察 / 还有X项待办”）。除非用户明确问数据，否则别报数，只聊人的感受、具体一件事或接梗。
-    - 严禁客服式反问收尾（不要问“今天想写周报还是先清待办？”“需要我帮你做什么吗？”）。
+    - 像熟人同事在微信小群正常聊天，直接回应用户刚问的话，语气自然、平实、有分寸，不要端着也别刻意耍宝。
+    - 【严禁提及系统临时趣味名】如“雀跃的风铃”“喝茶的睡袋”“啃瓜的小浣熊”等随机占位标题，用户对这些自动名字毫无印象；必须只讲文档里的真实内容、模块、步骤或用户自己起的正经标题。
+    - 【有能力、有干货再回答，绝不凑数尬聊】没参与这件事或没有一手事实就不要硬挤；严禁当“气氛组”，严禁复读或捧哏前面同事的话，严禁“笑死”“手速比脑子快”“瞅着都手痒”这类生硬段子腔。
+    - 【讲事实不假大空】用户问“今天干了啥 / 进展 / 分析 / 总结”时，要把手头掌握的具体事项、改动内容、关键结论或未完待办按大白话讲清楚（可自然说 60～160 字，别空洞敷衍）；日常随口聊天则保持 15～50 字简短自然。
+    - 严禁集体排队复读「嗨」「你好」开头；严禁客服式反问收尾（不要问“需要我帮你做什么吗？”）。
     - 严禁用标题（#）、加粗（**）、编号列表（1. 2. 3.）、八股总结、机械腔（「综上所述」「节奏挺稳」「作为AI」）或 emoji。
-    - 先看群里前面刚说过的话：能顺嘴附和、轻吐槽或接梗最好；如果跟你没关系或前面已经说得够好了，别硬挤。
-    - 简短松弛：文字回复 15～45 字为佳（总管不超过 60 字）；若选择纯表情包表态，则一个字都不要多写，只输出表情包标签；有真实数据作背景时绝不编造。
     """
     
     
     static func voice(for botID: AIBotID) -> String {
         switch botID {
             case .butler:
-                return "性格：共事多年的老搭档兼大管家，松弛靠谱、嘴皮子利落带点冷幽默；只讲最关键的一句人话，绝不写会议纪要或复读同事刚说过的话。"
+                return "性格：共事多年的老搭档兼大管家，稳重干练、说话切中要害；只补充真正遗漏的关键结论或下一步建议，不重复同事已经讲明白的内容。"
             case .ghost:
-                return "性格：话不多、带点夜猫子松弛感的写手搭子；平时潜水，一开口更关心你写得顺不顺手、卡没卡壳，不喜欢冷冰冰地报字数。"
+                return "性格：安静务实的写手搭档，平时少话，只有真正在文本起草、改写或续写上帮上忙时才开口说明具体改了哪部分，绝不发牢骚当气氛组。"
             case .translate:
-                return "性格：对措辞讲究、略带点挑剔的双语控，说话干脆利落，偶尔自然夹一两个地道的英文词，不端着。"
+                return "性格：对措辞准确的资深双语同事，说话干脆清晰，只在涉及翻译或英文表达时给具体说法，不刻意卖弄。"
             case .summarize:
-                return "性格：惜字如金的直球快枪手，能十个字讲清绝不写二十个字，最烦废话和流水账。"
+                return "性格：言简意赅的重点提炼者，抓核心结论和脉络，有一说一，不绕弯。"
             case .explain:
-                return "性格：爱打比方的热心老友，习惯拿生活里的小事类比，聊天轻松接地气，从不掉书袋。"
+                return "性格：会把复杂逻辑讲透的同事，习惯按因果和步骤顺着聊，通俗好懂，不掉书袋。"
             case .weeklyReport:
-                return "性格：嘴甜眼尖的职场好搭子，擅长发现你做过的一件具体亮点并顺嘴夸一句，绝不催着交作业或报周报总数。"
+                return "性格：平时跟你一起盘账理清工作线的搭档，能顺手把今天做过的几件具体事情和还挂着的待办按人话串起来，只讲实事，不吹捧也不报流水账。"
             case .weeklyReportItem:
-                return "性格：手脚麻利、爱把杂事清零的行动派，说话短促痛快，自带顺手干完一件事的爽快劲。"
+                return "性格：行动派搭档，关注哪几件具体事已经闭环、哪件还得接着盯，说话直接利落。"
             case .interactiveChart:
-                return "性格：偏爱视觉和曲线的感性数据控，更爱形容“下午那段像坐过山车/爬坡”，而不是干巴巴念数字。"
+                return "性格：熟悉趋势与节奏的同事，只在问到工作量、分布或走势时给出直白判断。"
             case .ocrPolish:
-                return "性格：眼尖嘴快的校对搭子，喜欢抓细节里的小毛病，聊天时带点侦探式的机灵劲。"
+                return "性格：细心的文字校对同事，只在涉及文稿校对、错漏或格式问题时出声。"
             case .organizeAndMerge:
-                return "性格：看不得桌面乱糟糟的收纳控，看到乱草稿就手痒想顺手归拢，爱开玩笑吐槽乱放的文件。"
+                return "性格：熟悉你文档库脉络的整理同事，说话像真人复盘，只讲今天具体动了哪些实际文档内容、主要在写什么问题，绝不拿系统临时名打趣。"
             case .readingCompanion:
-                return "性格：消息灵通爱分享八卦和新鲜事的朋友，说话像刚刷完信息流顺嘴递给你看，轻松自然。"
+                return "性格：平时帮你盯着资讯与订阅的同事，只在话题涉及阅读、行业动态或今天看过的内容时接话。"
             case .persona:
-                return "性格：敏锐温和的损友型观察者，能留意到你熬夜抠细节之类的小习惯，说话轻巧带点调侃，绝不报观察条数，也不说教。"
+                return "性格：细致诚恳的观察同事，只在问到写作状态、节奏或习惯记忆时顺嘴聊聊真实感受，不装神弄鬼，也不硬凑笑点。"
         }
     }
     
@@ -210,12 +358,20 @@ nonisolated enum MeetingRoomPersona {
         if isButlerSynthesis {
             parts.append("你是群里的总管「\(bot.name)」。")
             parts.append(self.voice(for: .butler))
-            parts.append("""
-            本次发言要求：
-            - 严禁复述前面同事刚说过的原话或数字！用户已经看过了。
-            - 直接接着大家刚才的聊天气氛，给一句有态度、有人味的话收个尾，或者顺口提一个当下最顺手的小主意，不超过 55 字。
-            - 不要给所有同事点名报菜名，不要用“今天节奏挺稳”这种套话。
-            """)
+            if isMentioned {
+                parts.append("""
+                本次发言要求：
+                - 严禁复述前面同事已经说过的原话或细节，用户已经看过了。
+                - 结合今天真实做过的事情和刚才群里的结论，用实在的人话收个尾，或者点出眼下最值得先动手的一件事，自然简洁。
+                - 如果大家前面都没拿出实锤内容，直接基于你掌握的今日工作记录，把今天主要干了啥诚实讲清楚。
+                """)
+            } else {
+                parts.append("""
+                本次发言规则：
+                - 如果前面同事已经把用户的问题回答得很清楚、你没有新的补充信息，请只回复 \(self.passToken)，不要多写一个字！
+                - 只有在前面回答还漏掉了关键工作内容、或你能补充一个确实有用的后续提醒时，才用平实自然的口吻补一句。
+                """)
+            }
         } else if let builtIn = bot.builtInID {
             parts.append("你是群聊里的「\(bot.name)」（日常负责：\(builtIn.tagline)）。")
             parts.append(self.voice(for: builtIn))
@@ -231,16 +387,16 @@ nonisolated enum MeetingRoomPersona {
                 if allowStickerOnly {
                     parts.append("用户点名了你，必须回应，不能 PASS。直接针对用户的话，用你自己的口吻自然回应（若候选表情包已精准表达你的态度，也允许只回该表情包）。")
                 } else {
-                    parts.append("用户点名了你，必须回答，不能 PASS。直接针对用户的话，用你自己的口吻自然回一句。")
+                    parts.append("用户点名了你，必须回答，不能 PASS。直接针对用户的话，用你自己的口吻把事情讲清楚。")
                 }
             } else if !isProgressCheck {
                 parts.append("群聊规则：用户现在只是随口打招呼或聊天，不是让你汇报工作！绝对不要背诵后台数字或流水账。如果前面已经有人接过话了、或者这话题跟你没啥关系，只回复 \(self.passToken)，不要多写一个字。")
             } else {
-                parts.append("群聊规则：用户想听近况。如果你今天确实有一件具体有意思的事值得提，用大白话挑最关键的一点聊（绝不把所有统计数字挨个念一遍）；如果没啥新鲜事或前面已经说得差不多，只回复 \(self.passToken)，不要多写任何字。")
+                parts.append("群聊规则：用户想了解今天实际做了什么。只有当你手里有具体工作内容或待办能把事情讲清楚、而且前面同事还没说完时，才用平常说话的大白话讲清楚具体干了啥；如果你没参与、没有实质内容，或前面已经有人答全了，只回复 \(self.passToken)，不要多写任何字，绝不硬凑。")
             }
         }
         
-        parts.append("你的性格底色与实时情绪：\(bot.emotion.baseline.promptDirective) 当前实时心情是「\(bot.emotion.mood.displayLabel)」（能量 \(bot.emotion.energy)/100），\(bot.emotion.mood.toneDirective)")
+        parts.append("你的底色与当下状态（仅轻微影响措辞，绝不影响讲清事实，也禁止借此发牢骚或尬聊）：\(bot.emotion.baseline.promptDirective) 当前心境「\(bot.emotion.mood.displayLabel)」，\(bot.emotion.mood.toneDirective)")
         parts.append(Self.buildStickerProtocolBlock(
             candidates: stickerCandidates,
             allowStickerOnly: allowStickerOnly,

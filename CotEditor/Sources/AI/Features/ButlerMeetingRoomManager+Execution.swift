@@ -150,20 +150,32 @@ extension ButlerMeetingRoomManager {
                     guard selectedSet.contains(bid.rawValue) else { return nil }
                     return allUnified.first { $0.id == bid.rawValue }
                 }
-                for custom in allUnified where !custom.isBuiltIn && selectedSet.contains(custom.id) {
-                    candidateBots.append(custom)
+                let lowerPrompt = rawPrompt.lowercased()
+                let isExplicitAllHands = ["所有", "各位", "大家", "挨个", "每个", "/meeting", "开会"]
+                    .contains { lowerPrompt.contains($0) }
+                if remoteEnabled && !isExplicitAllHands {
+                    candidateBots = MeetingWorkEvidenceBuilder.selectCapableStandupBots(
+                        for: rawPrompt,
+                        candidates: candidateBots,
+                        telemetryMap: telemetryMap,
+                        isProgressCheck: isProgress
+                    )
+                } else {
+                    for custom in allUnified where !custom.isBuiltIn && selectedSet.contains(custom.id) {
+                        candidateBots.append(custom)
+                    }
                 }
                 
                 var reports: [(botID: String, messageID: String, name: String, text: String)] = []
                 for bot in candidateBots {
                     guard self.activeGeneration == generation, !Task.isCancelled else { return }
-                    if !isProgress && remoteEnabled && reports.count >= 2 { break }
+                    if remoteEnabled && !isExplicitAllHands && reports.count >= 2 { break }
                     let ctx = MeetingTurnContext(
                         rawPrompt: rawPrompt, llmPrompt: llmPrompt, currentUserMessageID: userMessageID,
                         userSentSticker: userSentSticker, isProgressCheck: isProgress,
                         isMentioned: false, isButlerSynthesis: false, delegatedFromButler: false,
                         shouldRefresh: false, generation: generation, allowRemoteAI: allowRemoteAI,
-                        telemetryMap: telemetryMap, subordinateReports: []
+                        telemetryMap: telemetryMap, subordinateReports: reports
                     )
                     if let rep = await self.runUnifiedBotTurn(
                         bot: bot,
@@ -177,11 +189,11 @@ extension ButlerMeetingRoomManager {
                 }
                 guard self.activeGeneration == generation, !Task.isCancelled else { return }
                 if let butler = allUnified.first(where: { $0.id == AIBotID.butler.rawValue }) {
-                    let runAsSynthesis = isProgress || !remoteEnabled || reports.isEmpty
+                    let mustWrapUp = !remoteEnabled || reports.isEmpty || isExplicitAllHands
                     let ctx = MeetingTurnContext(
                         rawPrompt: rawPrompt, llmPrompt: llmPrompt, currentUserMessageID: userMessageID,
                         userSentSticker: userSentSticker, isProgressCheck: isProgress,
-                        isMentioned: runAsSynthesis, isButlerSynthesis: runAsSynthesis, delegatedFromButler: false,
+                        isMentioned: mustWrapUp, isButlerSynthesis: true, delegatedFromButler: false,
                         shouldRefresh: false, generation: generation, allowRemoteAI: allowRemoteAI,
                         telemetryMap: telemetryMap, subordinateReports: reports
                     )
@@ -324,7 +336,7 @@ extension ButlerMeetingRoomManager {
         )
         guard self.activeGeneration == context.generation else { return nil }
         
-        if !context.isMentioned && !context.isButlerSynthesis && MeetingRoomPersona.isPass(rawReply) {
+        if !context.isMentioned && MeetingRoomPersona.isPass(rawReply) {
             self.messages.removeAll { $0.id == msgID }
             self.botStatuses[bot.id] = "idle"
             self.persistActiveMessages()
@@ -451,7 +463,7 @@ extension ButlerMeetingRoomManager {
         let evidence = telemetry?.evidenceSummary ?? ""
         var config = botStore.resolvedConfiguration(forBotID: bot.id)
         if let builtIn = bot.builtInID, botStore.config(for: builtIn).temperature == nil {
-            config.temperature = 0.92
+            config.temperature = context.isProgressCheck ? 0.58 : 0.72
         }
         let canCallRemote = context.allowRemoteAI && AIService.shared.isConfigured
             && !config.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -483,16 +495,16 @@ extension ButlerMeetingRoomManager {
         var contextLines = ["【用户刚说】\(context.llmPrompt)"]
         if !evidence.isEmpty {
             if context.isProgressCheck {
-                contextLines.append("【你的本地背景（挑最值得说的一点聊，不要念流水账）】\n\(evidence)")
+                contextLines.append("【今日真实工作记录（严格依据内容用大白话讲清干了啥，绝不要提系统自动生成的趣味文件名）】\n\(evidence)")
             } else if context.rawPrompt.count > 8 {
-                contextLines.append("【静默背景（仅当话题直接相关时参考，严禁主动报数字）】\n\(evidence)")
+                contextLines.append("【静默背景（仅当话题直接相关时参考，严禁主动报数字或提趣味文件名）】\n\(evidence)")
             }
         }
         if !recentChat.isEmpty { contextLines.append("【群聊最近消息】\n\(recentChat)") }
         if !receipts.isEmpty { contextLines.append("【刚完成的动作】\(receipts.joined(separator: "；"))") }
         if !context.subordinateReports.isEmpty {
             let merged = context.subordinateReports.map { "\($0.name)：\($0.text)" }.joined(separator: "\n")
-            contextLines.append("【刚才同事已经发在群里的话（严禁复述或照抄里面的数字）】\n\(merged)")
+            contextLines.append("【群里同事刚刚已经回答的内容（如果已经把问题讲清楚了，直接只回复 [PASS]；严禁复读、捧哏或尬聊）】\n\(merged)")
         }
         let userContext = contextLines.joined(separator: "\n\n")
         
@@ -636,6 +648,11 @@ extension ButlerMeetingRoomManager {
         let todayKey = AnalyticsManager.dateKey()
         let startOfDay = Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
         let usageByFeature = self.queryTodayUsageByFeature(dateKey: todayKey)
+        let todayWork = MeetingWorkEvidenceBuilder.buildTodayWorkDigest(
+            documents: self.database.documents,
+            startOfDay: startOfDay
+        )
+        let openReminders = self.queryOpenReminderTitles(limit: 4)
         
         var map: [AIBotID: MeetingBotDailyTelemetry] = [:]
         for botID in AIBotID.allCases {
@@ -646,7 +663,9 @@ extension ButlerMeetingRoomManager {
                 todayKey: todayKey,
                 startOfDay: startOfDay,
                 callCount: usage.0,
-                tokens: usage.1
+                tokens: usage.1,
+                precomputedWork: todayWork,
+                precomputedReminders: openReminders
             )
             map[botID] = MeetingBotDailyTelemetry(
                 botID: botID,
@@ -666,34 +685,60 @@ extension ButlerMeetingRoomManager {
         todayKey: String,
         startOfDay: TimeInterval,
         callCount: Int,
-        tokens: Int
+        tokens: Int,
+        precomputedWork: MeetingWorkEvidenceBuilder.TodayWorkDigest? = nil,
+        precomputedReminders: [String]? = nil
     ) -> (badge: String, evidence: String, hasTodayActivity: Bool) {
+        let todayWork = precomputedWork ?? MeetingWorkEvidenceBuilder.buildTodayWorkDigest(
+            documents: self.database.documents,
+            startOfDay: startOfDay
+        )
         switch botID {
             case .organizeAndMerge:
                 let activeDocs = self.database.documents.filter { $0.deletedAt == nil }
-                let todayDocs = activeDocs.filter { $0.updatedAt.timeIntervalSince1970 >= startOfDay }
-                let untitledCount = activeDocs.filter {
-                    DocumentCenterAgentOrganizer.isGenericUntitled($0.title, hasFilePath: $0.filePath != nil)
-                }.count
-                let titles = todayDocs.prefix(4).map(\.title).joined(separator: "、")
-                let badge = todayDocs.isEmpty ? "\(activeDocs.count) 篇" : "今日 \(todayDocs.count) 篇"
-                let line1 = "今日动了 \(todayDocs.count) 篇文档（库里一共 \(activeDocs.count) 篇）" + (titles.isEmpty ? "。" : "：\(titles)。")
-                let line2 = untitledCount > 0 ? "还有 \(untitledCount) 篇未命名草稿待归类。" : "文档都归拢得挺整齐。"
-                return (badge, "\(line1)\(line2)", !todayDocs.isEmpty || untitledCount > 0 || callCount > 0)
+                let badge = todayWork.meaningfulCount > 0 ? "今日 \(todayWork.meaningfulCount) 篇" : "\(activeDocs.count) 篇"
+                let summary: String
+                if todayWork.items.isEmpty {
+                    summary = "今天文档库暂时没有新增实质内容（库里一共 \(activeDocs.count) 篇）。"
+                } else {
+                    var block = "今天实际写或改了 \(todayWork.meaningfulCount) 篇有内容的文档：\n\(todayWork.digestText)"
+                    if todayWork.untitledCount > 0 {
+                        block += "\n（其中 \(todayWork.untitledCount) 篇暂时没起正式标题）"
+                    }
+                    summary = block
+                }
+                return (badge, summary, todayWork.meaningfulCount > 0 || callCount > 0)
             case .ghost:
                 let stats = self.queryTodayWritingRow(dateKey: todayKey)
-                let badge = stats.typed > 0 ? "\(stats.typed) 字" : "待命"
-                return (badge, "今天手写了 \(stats.typed) 字，采纳了 \(stats.aiChars) 字续写。", stats.typed > 0 || stats.aiChars > 0 || callCount > 0)
+                let badge = stats.aiChars > 0 ? "续写 \(stats.aiChars) 字" : (stats.typed > 0 ? "\(stats.typed) 字" : "待命")
+                let docHint = todayWork.items.first.map { "主要在写：\($0)。" } ?? ""
+                let summary = stats.aiChars > 0
+                    ? "今天辅助续写了 \(stats.aiChars) 字（用户自己写了 \(stats.typed) 字）。\(docHint)"
+                    : "今天暂未触发 AI 续写（用户自己手写了 \(stats.typed) 字）。"
+                return (badge, summary, stats.aiChars > 0 || callCount > 0)
             case .weeklyReport:
                 let reports = self.database.weeklyReports
-                let openTasks = self.queryInt("SELECT COUNT(*) FROM user_reminders WHERE is_completed = 0;")
+                let openReminders = precomputedReminders ?? self.queryOpenReminderTitles(limit: 4)
                 let latestTitle = reports.first?.title ?? "暂无周报"
-                return ("\(reports.count) 份", "手头存着 \(reports.count) 份周报（最近是「\(latestTitle)」），还有 \(openTasks) 项未完待办。", callCount > 0 || openTasks > 0)
+                var parts: [String] = []
+                if !todayWork.digestText.isEmpty {
+                    parts.append("今天实际推进过的事情：\n\(todayWork.digestText)")
+                } else {
+                    parts.append("今天暂未查到有实质内容的文档记录。")
+                }
+                if !openReminders.isEmpty {
+                    parts.append("还在跟进的待办：\(openReminders.joined(separator: "、"))。")
+                }
+                if !reports.isEmpty {
+                    parts.append("历史归档周报 \(reports.count) 份（最近「\(latestTitle)」）。")
+                }
+                let badge = todayWork.meaningfulCount > 0 ? "\(todayWork.meaningfulCount) 项记录" : "\(openReminders.count) 待办"
+                return (badge, parts.joined(separator: "\n"), todayWork.meaningfulCount > 0 || !openReminders.isEmpty || callCount > 0)
             case .persona:
                 let memories = self.queryTopMemoryTitles(limit: 4)
                 let todayJournals = self.queryInt("SELECT COUNT(*) FROM user_memory_journal WHERE timestamp >= \(startOfDay);")
                 let memText = memories.isEmpty ? "还在慢慢熟悉你的习惯" : memories.joined(separator: "、")
-                return ("\(memories.count) 记忆", "最近对你的印象是：\(memText)。", todayJournals > 0 || callCount > 0)
+                return ("\(memories.count) 记忆", "最近观察到的偏好：\(memText)。", todayJournals > 0 || callCount > 0)
             case .readingCompanion:
                 let stocks = self.queryInt("SELECT COUNT(*) FROM user_watchlist_stocks;")
                 let podcasts = self.queryInt("SELECT COUNT(*) FROM user_podcasts;")
@@ -702,13 +747,18 @@ extension ButlerMeetingRoomManager {
                 return (badge, "目前盯着 \(stocks) 只自选股、\(podcasts) 条播客和 \(feeds) 个资讯源。", callCount > 0)
             case .butler:
                 let todayMsgs = self.queryInt("SELECT COUNT(*) FROM butler_messages WHERE created_at >= \(startOfDay);")
-                let openReminders = self.queryOpenReminderTitles(limit: 3)
+                let openReminders = precomputedReminders ?? self.queryOpenReminderTitles(limit: 4)
                 let badge = todayMsgs > 0 ? "\(todayMsgs) 条" : "在线"
-                let remText = openReminders.isEmpty ? "眼下没有卡住的待办" : openReminders.joined(separator: "、")
-                return (badge, "今天总管这边聊了 \(todayMsgs) 条，手头待办是：\(remText)。", todayMsgs > 0 || !openReminders.isEmpty)
+                var parts: [String] = []
+                if !todayWork.digestText.isEmpty {
+                    parts.append("今天实际推进过的文档工作：\n\(todayWork.digestText)")
+                }
+                let remText = openReminders.isEmpty ? "眼下没有挂着的待办" : openReminders.joined(separator: "、")
+                parts.append("手头待办：\(remText)（今天总管对话 \(todayMsgs) 条）。")
+                return (badge, parts.joined(separator: "\n"), todayWork.meaningfulCount > 0 || todayMsgs > 0 || !openReminders.isEmpty)
             default:
                 let badge = callCount > 0 ? "\(callCount) 次" : "待命"
-                let evidence = callCount > 0 ? "今天帮了 \(callCount) 次忙（\(tokens) tokens）。" : "今天先候着。"
+                let evidence = callCount > 0 ? "今天实际协助了 \(callCount) 次（\(tokens) tokens）。" : "今天未参与具体任务。"
                 return (badge, evidence, callCount > 0)
         }
     }

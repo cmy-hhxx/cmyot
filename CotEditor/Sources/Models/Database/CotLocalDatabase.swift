@@ -230,6 +230,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         static let dashboardHeroCoverFocalX = "dashboard.heroCoverFocalX"
         static let dashboardHeroCoverFocalY = "dashboard.heroCoverFocalY"
         static let dashboardHeroCoverFitMode = "dashboard.heroCoverFitMode"
+        static let dashboardHeroCoverBlurStyle = "dashboard.heroCoverBlurStyle"
         static let userAvatarLibraryJSON = "media.avatarLibraryJSON"
         static let userBackgroundLibraryJSON = "media.backgroundLibraryJSON"
         static let boardBackgroundAssignmentsJSON = "media.boardBackgroundAssignmentsJSON"

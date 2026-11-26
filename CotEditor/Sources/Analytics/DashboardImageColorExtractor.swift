@@ -21,11 +21,24 @@
 import CoreGraphics
 import Foundation
 
-/// Extracted average, dominant, and accent tones from the user's Dashboard background image.
+/// Extracted average, dominant, accent, and optional distinct secondary tones from the user's Dashboard background image.
 nonisolated struct DashboardImageTone: Equatable, Sendable {
     let average: HeroRegionTone
     let dominant: HeroRegionTone
     let accent: HeroRegionTone
+    let secondary: HeroRegionTone?
+    
+    init(
+        average: HeroRegionTone,
+        dominant: HeroRegionTone,
+        accent: HeroRegionTone,
+        secondary: HeroRegionTone? = nil
+    ) {
+        self.average = average
+        self.dominant = dominant
+        self.accent = accent
+        self.secondary = secondary
+    }
 }
 
 
@@ -58,8 +71,8 @@ nonisolated enum DashboardImageColorExtractor {
     }
     
     
-    /// Adjusts an extracted image dominant tone so it achieves readable contrast against `cardRGB`
-    /// while preserving the image's signature hue.
+    /// Adjusts an extracted image dominant tone in HSV space so it achieves crisp contrast against `cardRGB`
+    /// without degenerating into muddy olive or flat gray.
     static func harmonizedAccentRGB(
         from dominant: HeroRegionTone,
         against cardRGB: (Double, Double, Double),
@@ -67,41 +80,84 @@ nonisolated enum DashboardImageColorExtractor {
     ) -> (Double, Double, Double)? {
         guard dominant.saturation >= 0.14 else { return nil }
         let cardTone = HeroRegionTone(red: cardRGB.0, green: cardRGB.1, blue: cardRGB.2)
-        var candidate = (dominant.red, dominant.green, dominant.blue)
-        let targetTone: (Double, Double, Double) = isDark ? (0.94, 0.96, 1.0) : (0.04, 0.07, 0.12)
-        for _ in 0..<8 {
+        var (h, s, v) = Self.rgbToHSV((dominant.red, dominant.green, dominant.blue))
+        s = s < 0.22 ? min(0.55, s * 1.15) : min(0.84, max(s, isDark ? 0.50 : 0.56))
+        v = isDark ? max(0.68, min(0.92, v)) : min(0.66, max(0.36, v))
+        
+        for _ in 0..<12 {
+            let candidate = Self.hsvToRGB((h, s, v))
             let current = HeroRegionTone(red: candidate.0, green: candidate.1, blue: candidate.2)
-            if Self.contrastRatio(current, cardTone) >= 3.4 {
+            if Self.contrastRatio(current, cardTone) >= 3.6 {
                 return candidate
             }
-            candidate = Self.mixRGB(candidate, targetTone, t: 0.22)
+            if isDark {
+                v = min(0.96, v + 0.04)
+                s = max(0.38, s - 0.02)
+            } else {
+                v = max(0.24, v - 0.045)
+                s = min(0.88, s + 0.015)
+            }
         }
-        return candidate
+        return Self.hsvToRGB((h, s, v))
     }
     
     
-    /// Derives a 4-color analogous harmonic series from `accentRGB` (hue shifts 0°, -22°, +26°, -44°)
-    /// so multi-series charts (Sankey, radial rose) match the user's uploaded backdrop instead of clashing.
+    /// Derives a 4-color perceptually distinct harmonic series from `accentRGB`, preferring an extracted
+    /// secondary hue when present and separating remaining channels cleanly across hues.
+    static func harmonicSeriesRGB(
+        from accentRGB: (Double, Double, Double),
+        secondary: HeroRegionTone? = nil,
+        against cardRGB: (Double, Double, Double)? = nil,
+        isDark: Bool
+    ) -> [(Double, Double, Double)] {
+        let (h0, rawS, rawV) = Self.rgbToHSV(accentRGB)
+        let baseSat = min(0.82, max(0.54, rawS))
+        let baseVal = isDark ? min(0.90, max(0.68, rawV)) : min(0.66, max(0.42, rawV))
+        let primary = Self.hsvToRGB((h0, baseSat, baseVal))
+        
+        let resolvedCard = cardRGB ?? (isDark ? (0.11, 0.12, 0.14) : (0.985, 0.988, 0.992))
+        var color1: (Double, Double, Double)?
+        var hue1Offset = 44.0 / 360.0
+        
+        if let secondary,
+           let secHarmonized = Self.harmonizedAccentRGB(from: secondary, against: resolvedCard, isDark: isDark)
+        {
+            let (hSec, sSec, vSec) = Self.rgbToHSV(secHarmonized)
+            let diff = abs(hSec - h0)
+            let circularDiff = min(diff, 1.0 - diff)
+            if circularDiff >= 36.0 / 360.0 {
+                color1 = Self.hsvToRGB((
+                    hSec,
+                    min(0.82, max(0.48, sSec)),
+                    isDark ? min(0.90, max(0.66, vSec)) : min(0.68, max(0.42, vSec))
+                ))
+                hue1Offset = circularDiff
+            }
+        }
+        
+        func shifted(_ deg: Double, sat: Double, valOffset: Double) -> (Double, Double, Double) {
+            var nh = (h0 + deg / 360.0).truncatingRemainder(dividingBy: 1.0)
+            if nh < 0 { nh += 1.0 }
+            let ns = min(0.84, max(0.42, sat))
+            let nv = min(0.92, max(0.36, baseVal + valOffset))
+            return Self.hsvToRGB((nh, ns, nv))
+        }
+        
+        let resolvedColor1 = color1 ?? shifted(44.0, sat: max(0.50, baseSat - 0.04), valOffset: isDark ? 0.03 : 0.04)
+        let angle2 = abs(hue1Offset - (48.0 / 360.0)) < 0.06 ? 142.0 : -48.0
+        let resolvedColor2 = shifted(angle2, sat: max(0.48, baseSat - 0.06), valOffset: isDark ? -0.02 : 0.02)
+        let resolvedColor3 = shifted(155.0, sat: min(0.66, max(0.44, baseSat - 0.10)), valOffset: isDark ? 0.04 : 0.05)
+        
+        return [primary, resolvedColor1, resolvedColor2, resolvedColor3]
+    }
+    
+    
+    /// Derives a 4-color multi-hue harmonic series from `accentRGB`.
     static func analogousSeriesRGB(
         from accentRGB: (Double, Double, Double),
         isDark: Bool
     ) -> [(Double, Double, Double)] {
-        let (h, s, v) = Self.rgbToHSV(accentRGB)
-        let baseSat = min(0.84, max(0.38, s))
-        let baseVal = isDark ? min(0.92, max(0.64, v)) : min(0.76, max(0.42, v))
-        let specs: [(dh: Double, ds: Double, dv: Double)] = [
-            (0.0, 0.0, 0.0),
-            (-22.0 / 360.0, -0.06, isDark ? 0.05 : 0.06),
-            (26.0 / 360.0, -0.10, isDark ? -0.04 : -0.04),
-            (-44.0 / 360.0, -0.16, isDark ? 0.08 : 0.10),
-        ]
-        return specs.map { spec in
-            var nh = (h + spec.dh).truncatingRemainder(dividingBy: 1.0)
-            if nh < 0 { nh += 1.0 }
-            let ns = min(0.90, max(0.24, baseSat + spec.ds))
-            let nv = min(0.94, max(0.32, baseVal + spec.dv))
-            return Self.hsvToRGB((nh, ns, nv))
-        }
+        Self.harmonicSeriesRGB(from: accentRGB, secondary: nil, against: nil, isDark: isDark)
     }
     
     
@@ -150,7 +206,7 @@ nonisolated enum DashboardImageColorExtractor {
     
     
     static func extract(from cgImage: CGImage) -> DashboardImageTone? {
-        let side = 48
+        let side = 64
         let totalPixels = side * side
         var bytes = [UInt8](repeating: 0, count: totalPixels * 4)
         guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
@@ -173,11 +229,8 @@ nonisolated enum DashboardImageColorExtractor {
         var sumB = 0.0
         var validCount = 0.0
         
-        let binCount = 24
-        var binWeight = [Double](repeating: 0, count: binCount)
-        var binR = [Double](repeating: 0, count: binCount)
-        var binG = [Double](repeating: 0, count: binCount)
-        var binB = [Double](repeating: 0, count: binCount)
+        var primaryHist = Self.makeHistogram(binCount: 36)
+        var shadowHist = Self.makeHistogram(binCount: 36)
         
         for i in 0..<totalPixels {
             let offset = i * 4
@@ -192,29 +245,18 @@ nonisolated enum DashboardImageColorExtractor {
             sumB += b
             validCount += 1.0
             
-            let maxC = max(r, max(g, b))
-            let minC = min(r, min(g, b))
-            let delta = maxC - minC
-            let sat = maxC > 0.001 ? delta / maxC : 0.0
-            let val = maxC
-            guard sat >= 0.14, val >= 0.12, val <= 0.96, delta > 0.0001 else { continue }
+            let (hue, sat, val) = Self.rgbToHSV((r, g, b))
+            guard sat >= 0.16, val >= 0.12, !(val > 0.97 && sat < 0.22) else { continue }
+            let bin = min(35, max(0, Int(floor(hue * 36.0))))
             
-            var hue = 0.0
-            if maxC == r {
-                hue = ((g - b) / delta).truncatingRemainder(dividingBy: 6.0)
-            } else if maxC == g {
-                hue = (b - r) / delta + 2.0
+            if val >= 0.26 {
+                let lumCurve = pow(min(1.0, max(0.0, (val - 0.18) / 0.62)), 1.35)
+                let popWeight = (sat * sat) * (0.06 + 0.94 * lumCurve)
+                primaryHist.record(bin: bin, r: r, g: g, b: b, weight: popWeight)
             } else {
-                hue = (r - g) / delta + 4.0
+                let popWeight = sat * (0.35 + 0.65 * val)
+                shadowHist.record(bin: bin, r: r, g: g, b: b, weight: popWeight)
             }
-            if hue < 0 { hue += 6.0 }
-            let normalizedHue = hue / 6.0
-            let bin = min(binCount - 1, max(0, Int(floor(normalizedHue * Double(binCount)))))
-            let weight = sat * (0.35 + 0.65 * val)
-            binWeight[bin] += weight
-            binR[bin] += r * weight
-            binG[bin] += g * weight
-            binB[bin] += b * weight
         }
         
         guard validCount > 0 else { return nil }
@@ -224,25 +266,91 @@ nonisolated enum DashboardImageColorExtractor {
             blue: sumB / validCount
         )
         
+        let activeHist = primaryHist.totalChromatic >= max(12, Int(validCount * 0.02)) ? primaryHist : shadowHist
+        let picked = Self.selectPrimaryAndSecondaryBins(from: activeHist)
+        let dominant = picked.primary ?? average
+        return DashboardImageTone(
+            average: average,
+            dominant: dominant,
+            accent: dominant,
+            secondary: picked.secondary
+        )
+    }
+    
+    
+    private struct HueHistogram {
+        let binCount: Int
+        var binPop: [Double]
+        var binPixels: [Int]
+        var binR: [Double]
+        var binG: [Double]
+        var binB: [Double]
+        var totalChromatic: Int = 0
+        
+        mutating func record(bin: Int, r: Double, g: Double, b: Double, weight: Double) {
+            self.binPop[bin] += weight
+            self.binPixels[bin] += 1
+            self.binR[bin] += r * weight
+            self.binG[bin] += g * weight
+            self.binB[bin] += b * weight
+            self.totalChromatic += 1
+        }
+    }
+    
+    
+    private static func makeHistogram(binCount: Int) -> HueHistogram {
+        HueHistogram(
+            binCount: binCount,
+            binPop: [Double](repeating: 0, count: binCount),
+            binPixels: [Int](repeating: 0, count: binCount),
+            binR: [Double](repeating: 0, count: binCount),
+            binG: [Double](repeating: 0, count: binCount),
+            binB: [Double](repeating: 0, count: binCount)
+        )
+    }
+    
+    
+    private static func selectPrimaryAndSecondaryBins(
+        from hist: HueHistogram
+    ) -> (primary: HeroRegionTone?, secondary: HeroRegionTone?) {
+        func score(at bin: Int) -> Double {
+            guard hist.binPixels[bin] > 0, hist.binPop[bin] > 0 else { return 0 }
+            return hist.binPop[bin] * pow(Double(hist.binPixels[bin]), 0.30)
+        }
+        
+        func tone(at bin: Int) -> HeroRegionTone? {
+            let pop = hist.binPop[bin]
+            guard pop > 0 else { return nil }
+            return HeroRegionTone(red: hist.binR[bin] / pop, green: hist.binG[bin] / pop, blue: hist.binB[bin] / pop)
+        }
+        
         var bestBin = -1
-        var bestWeight = 0.0
-        for b in 0..<binCount where binWeight[b] > bestWeight {
-            bestWeight = binWeight[b]
-            bestBin = b
+        var bestScore = 0.0
+        for b in 0..<hist.binCount {
+            let s = score(at: b)
+            if s > bestScore {
+                bestScore = s
+                bestBin = b
+            }
+        }
+        guard bestBin >= 0, let primary = tone(at: bestBin) else {
+            return (nil, nil)
         }
         
-        let dominant: HeroRegionTone
-        if bestBin >= 0, bestWeight > 0 {
-            dominant = HeroRegionTone(
-                red: binR[bestBin] / bestWeight,
-                green: binG[bestBin] / bestWeight,
-                blue: binB[bestBin] / bestWeight
-            )
-        } else {
-            dominant = average
+        let minSecondaryPixels = max(6, Int(Double(hist.totalChromatic) * 0.015))
+        var secondBin = -1
+        var secondScore = 0.0
+        for b in 0..<hist.binCount where hist.binPixels[b] >= minSecondaryPixels {
+            let rawDist = abs(b - bestBin)
+            let circularDist = min(rawDist, hist.binCount - rawDist)
+            guard circularDist >= 5 else { continue }
+            let s = score(at: b)
+            if s > secondScore {
+                secondScore = s
+                secondBin = b
+            }
         }
-        
-        let accent = Self.mixTone(dominant, average, t: 0.15)
-        return DashboardImageTone(average: average, dominant: dominant, accent: accent)
+        let secondary = secondBin >= 0 ? tone(at: secondBin) : nil
+        return (primary, secondary)
     }
 }
