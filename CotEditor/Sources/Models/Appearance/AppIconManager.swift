@@ -191,6 +191,10 @@ final class AppIconManager {
     var spec: AppIconSpec {
         didSet {
             guard self.spec != oldValue else { return }
+            if self.isReloadingFromDatabase {
+                self.refreshPreview()
+                return
+            }
             if self.database === CotLocalDatabase.shared,
                !Self.isRunningUnitTests,
                self.spec.source == oldValue.source
@@ -215,6 +219,7 @@ final class AppIconManager {
     private var dockApplyTask: Task<Void, Never>?
     @ObservationIgnored private var persistDebounceTask: Task<Void, Never>?
     @ObservationIgnored private var cachedCustomImage: NSImage?
+    @ObservationIgnored private var isReloadingFromDatabase = false
     
     
     isolated deinit {
@@ -247,7 +252,65 @@ final class AppIconManager {
             self.spec = .default
         }
         
+        _ = database.restoreMediaBlobsToDisk(
+            namespace: .appIcon,
+            rootDirectory: self.storageDirectory,
+            allowedRelativePaths: ["user-icon.png"],
+            overwriteMismatched: false
+        )
+        
         self.refreshPreview()
+    }
+    
+    
+    /// Reloads App Icon spec and custom icon image from the backing database (e.g. after DB import).
+    func reloadFromDatabase(overwriteMismatchedBlobs: Bool = false) {
+        self.persistDebounceTask?.cancel()
+        self.persistDebounceTask = nil
+        
+        _ = self.database.restoreMediaBlobsToDisk(
+            namespace: .appIcon,
+            rootDirectory: self.storageDirectory,
+            allowedRelativePaths: ["user-icon.png"],
+            overwriteMismatched: overwriteMismatchedBlobs
+        )
+        self.cachedCustomImage = nil
+        self.customImageVersion &+= 1
+        
+        self.isReloadingFromDatabase = true
+        let rawJSON = self.database.string(forKey: CotLocalDatabase.ConfigKey.appIconSpecJSON)
+        if !rawJSON.isEmpty,
+           let data = rawJSON.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(AppIconSpec.self, from: data)
+        {
+            self.spec = decoded
+        } else {
+            self.spec = .default
+        }
+        self.isReloadingFromDatabase = false
+        
+        self.refreshPreview()
+        if !Self.isRunningUnitTests {
+            self.applyIconToSystemAndDock()
+        }
+    }
+    
+    
+    /// Flushes pending spec edits and backfills the custom app icon image into SQLite `media_blobs`.
+    func syncBlobsToDatabase() {
+        self.persistDebounceTask?.cancel()
+        self.persistDebounceTask = nil
+        self.persistSpecImmediately()
+        if FileManager.default.fileExists(atPath: self.customImageURL.path) {
+            self.database.syncDiskFilesToMediaBlobs(
+                namespace: .appIcon,
+                rootDirectory: self.storageDirectory,
+                expectedRelativePaths: ["user-icon.png"],
+                pruneUnreferenced: true
+            )
+        } else {
+            self.database.pruneMediaBlobs(in: .appIcon, keepingRelativePaths: [])
+        }
     }
     
     
@@ -281,6 +344,13 @@ final class AppIconManager {
                 if let cached = self.cachedCustomImage {
                     return cached
                 }
+                if !FileManager.default.fileExists(atPath: self.customImageURL.path) {
+                    _ = self.database.ensureDiskFileFromMediaBlob(
+                        namespace: .appIcon,
+                        relativePath: "user-icon.png",
+                        rootDirectory: self.storageDirectory
+                    )
+                }
                 if let loaded = NSImage(contentsOf: self.customImageURL) {
                     self.cachedCustomImage = loaded
                     return loaded
@@ -300,6 +370,7 @@ final class AppIconManager {
         do {
             try FileManager.default.createDirectory(at: self.storageDirectory, withIntermediateDirectories: true)
             try png.write(to: self.customImageURL, options: .atomic)
+            self.database.upsertMediaBlob(namespace: .appIcon, relativePath: "user-icon.png", data: png)
             self.cachedCustomImage = NSImage(data: png)
             self.customImageVersion &+= 1
             self.spec.source = .customImage

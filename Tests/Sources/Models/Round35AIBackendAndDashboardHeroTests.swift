@@ -598,12 +598,12 @@ struct Round35AIBackendAndDashboardHeroTests {
         let decoded = CotButlerManager.decodeMetadata(from: encoded)
         #expect(decoded == meta)
         
-        // Clean compiled WebUI bundle check: no "已连接 Pi 内核", no cheap 4-point sparkle SVG, includes @文档 and @助手
+        // Clean compiled WebUI bundle check: no "已连接 Pi 内核", no cheap 4-point sparkle SVG, includes @文档 and @Bots
         let html = BeautifulAgentUIBundle.htmlDocument()
         #expect(!html.contains("已连接 Pi 内核"))
         #expect(!html.contains("M12 2l2.4 7.2"))
         #expect(html.contains("@文档"))
-        #expect(html.contains("@助手"))
+        #expect(html.contains("@Bots"))
         #expect(html.contains("新建工作区"))
     }
     
@@ -619,22 +619,22 @@ struct Round35AIBackendAndDashboardHeroTests {
         )
         #expect(laptop.needsVerticalScroll == false)
         #expect(laptop.totalContentHeight <= 700)
-        #expect(laptop.heroHeight >= 122 && laptop.heroHeight <= 158)
-        #expect(laptop.row1Height >= 208)
-        #expect(laptop.row2Height >= 210)
+        #expect(laptop.heroHeight >= 110 && laptop.heroHeight <= 144)
+        #expect(laptop.row1Height >= 216)
+        #expect(laptop.row2Height >= 196 && laptop.row2Height <= 238)
         #expect(laptop.unifiedTopStageHeight >= 340)
         
-        // Large display (1440x960) -> single page, capped compact heights so cards keep balanced proportions
+        // Large display (1440x960) -> void-free full-viewport fill (~60% Row 1 / ~40% Row 2) capped at 144 / 456 / 324
         let desktop = DashboardViewportLayout.resolve(
             viewportSize: CGSize(width: 1440, height: 960),
             isEmbeddedInSettings: false,
             hasHeroPhoto: true
         )
         #expect(desktop.needsVerticalScroll == false)
-        #expect(desktop.totalContentHeight <= 960)
-        #expect(desktop.heroHeight <= 158)
-        #expect(desktop.row1Height <= 264)
-        #expect(desktop.row2Height <= 308)
+        #expect(desktop.totalContentHeight >= 920 && desktop.totalContentHeight <= 960)
+        #expect(desktop.heroHeight >= 110 && desktop.heroHeight <= 144)
+        #expect(desktop.row1Height >= 360 && desktop.row1Height <= 456)
+        #expect(desktop.row2Height >= 260 && desktop.row2Height <= 324)
         
         // Embedded Settings pane (980x620) -> single page, zero vertical scroll
         let settings = DashboardViewportLayout.resolve(

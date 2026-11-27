@@ -255,6 +255,8 @@ extension AIBotStore {
         }
         for custom in self.customBots {
             if !includeDisabled && !custom.isEnabled { continue }
+            let trimmedPersona = custom.personaPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+            let customRoleLabel = trimmedPersona.isEmpty ? "" : String(trimmedPersona.prefix(28))
             list.append(UnifiedBotDescriptor(
                 id: custom.id,
                 isBuiltIn: false,
@@ -263,7 +265,7 @@ extension AIBotStore {
                 name: custom.name,
                 nickname: custom.nickname,
                 handle: custom.handle,
-                roleLabel: custom.baseline.displayName,
+                roleLabel: customRoleLabel,
                 accentHex: custom.accentHex,
                 personaPrompt: custom.personaPrompt,
                 preferredStickerCategories: custom.preferredStickerCategories,

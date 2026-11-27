@@ -230,12 +230,14 @@ final class WallpaperManager {
             if !self.spec.isEnabled {
                 self.clearTransientImageCaches()
             }
-            if self.shouldDebouncePersist(from: oldValue, to: self.spec) {
-                self.scheduleDebouncedPersistSpec()
-            } else {
-                self.persistDebounceTask?.cancel()
-                self.persistDebounceTask = nil
-                self.persistSpecImmediately()
+            if !self.isReloadingFromDatabase {
+                if self.shouldDebouncePersist(from: oldValue, to: self.spec) {
+                    self.scheduleDebouncedPersistSpec()
+                } else {
+                    self.persistDebounceTask?.cancel()
+                    self.persistDebounceTask = nil
+                    self.persistSpecImmediately()
+                }
             }
             NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
         }
@@ -246,6 +248,7 @@ final class WallpaperManager {
     
     private let database: CotLocalDatabase
     private let storageDirectory: URL
+    @ObservationIgnored private var isReloadingFromDatabase = false
     @ObservationIgnored private lazy var ciContext = CIContext(options: [.useSoftwareRenderer: false])
     private let rawImageCache: NSCache<NSString, NSImage> = {
         let cache = NSCache<NSString, NSImage>()
@@ -315,11 +318,26 @@ final class WallpaperManager {
         {
             self.customRecords = decoded
         }
+        
+        if !self.customRecords.isEmpty {
+            _ = database.restoreMediaBlobsToDisk(
+                namespace: .wallpaper,
+                rootDirectory: self.storageDirectory,
+                allowedRelativePaths: Set(self.customRecords.map(\.filename)),
+                overwriteMismatched: false
+            )
+        }
     }
     
     
     /// Reloads wallpaper spec and custom catalog from the backing database (e.g. after DB import).
-    func reloadFromDatabase() {
+    func reloadFromDatabase(overwriteMismatchedBlobs: Bool = false) {
+        self.persistDebounceTask?.cancel()
+        self.persistDebounceTask = nil
+        
+        self.isReloadingFromDatabase = true
+        defer { self.isReloadingFromDatabase = false }
+        
         let rawSpec = self.database.string(forKey: CotLocalDatabase.ConfigKey.editorWallpaperSpecJSON)
         if let data = rawSpec.data(using: .utf8),
            let decoded = try? JSONDecoder().decode(WallpaperSpec.self, from: data)
@@ -336,11 +354,35 @@ final class WallpaperManager {
         } else {
             self.customRecords = []
         }
+        
+        if !self.customRecords.isEmpty {
+            _ = self.database.restoreMediaBlobsToDisk(
+                namespace: .wallpaper,
+                rootDirectory: self.storageDirectory,
+                allowedRelativePaths: Set(self.customRecords.map(\.filename)),
+                overwriteMismatched: overwriteMismatchedBlobs
+            )
+        }
+        
         self.rawImageCache.removeAllObjects()
         self.thumbnailCache.removeAllObjects()
         self.blurredImageCache.removeAllObjects()
         self.catalogVersion += 1
         NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+    }
+    
+    
+    /// Flushes pending spec edits and backfills custom wallpaper files into SQLite `media_blobs`.
+    func syncBlobsToDatabase() {
+        self.persistDebounceTask?.cancel()
+        self.persistDebounceTask = nil
+        self.persistSpecImmediately()
+        self.database.syncDiskFilesToMediaBlobs(
+            namespace: .wallpaper,
+            rootDirectory: self.storageDirectory,
+            expectedRelativePaths: self.customRecords.map(\.filename),
+            pruneUnreferenced: true
+        )
     }
     
     
@@ -630,6 +672,7 @@ final class WallpaperManager {
         let fileURL = self.storageDirectory.appending(path: filename)
         do {
             try jpegData.write(to: fileURL, options: .atomic)
+            self.database.upsertMediaBlob(namespace: .wallpaper, relativePath: filename, data: jpegData)
         } catch {
             return nil
         }
@@ -657,6 +700,7 @@ final class WallpaperManager {
         let removed = self.customRecords.remove(at: idx)
         let url = self.storageDirectory.appending(path: removed.filename)
         try? FileManager.default.removeItem(at: url)
+        self.database.deleteMediaBlob(namespace: .wallpaper, relativePath: removed.filename)
         self.rawImageCache.removeObject(forKey: id as NSString)
         self.thumbnailCache.removeObject(forKey: id as NSString)
         self.blurredImageCache.removeAllObjects()
@@ -688,7 +732,11 @@ final class WallpaperManager {
         }
         let targetSize = NSSize(width: 192, height: 128)
         if let record = self.customRecords.first(where: { $0.id == id }) {
-            let url = self.storageDirectory.appending(path: record.filename)
+            let url = self.database.ensureDiskFileFromMediaBlob(
+                namespace: .wallpaper,
+                relativePath: record.filename,
+                rootDirectory: self.storageDirectory
+            ) ?? self.storageDirectory.appending(path: record.filename)
             if let source = self.rawImageCache.object(forKey: id as NSString) ?? Self.downsampledImage(from: url, maxPixelSize: 384) {
                 let thumb = Self.downsample(source, to: targetSize)
                 self.thumbnailCache.setObject(thumb, forKey: id as NSString, cost: Self.estimatedImageCost(thumb))
@@ -708,7 +756,11 @@ final class WallpaperManager {
             return cached
         }
         if let record = self.customRecords.first(where: { $0.id == id }) {
-            let url = self.storageDirectory.appending(path: record.filename)
+            let url = self.database.ensureDiskFileFromMediaBlob(
+                namespace: .wallpaper,
+                relativePath: record.filename,
+                rootDirectory: self.storageDirectory
+            ) ?? self.storageDirectory.appending(path: record.filename)
             if let img = Self.downsampledImage(from: url, maxPixelSize: 2048) ?? NSImage(contentsOf: url) {
                 self.rawImageCache.setObject(img, forKey: id as NSString, cost: Self.estimatedImageCost(img))
                 return img

@@ -152,4 +152,120 @@ struct MeetingRoomQualityTests {
         )
         #expect(optionalButler.contains("只回复 [PASS]"))
     }
+    
+    
+    @Test
+    func customPersonaPromptOverridesCannedEmotionDirectives() {
+        let customText = "说话极简、直截了当，永远只给可执行结论。"
+        let builtInPrompt = MeetingRoomPersona.systemPrompt(
+            bot: .weeklyReport,
+            name: "周报搭档",
+            isMentioned: true,
+            isButlerSynthesis: false,
+            customPersona: customText,
+            isProgressCheck: true
+        )
+        #expect(builtInPrompt.contains("你的性格与情绪风格（严格遵循）：\(customText)"))
+        #expect(!builtInPrompt.contains("你的底色与当下状态"))
+        
+        let customDescriptor = UnifiedBotDescriptor(
+            id: "custom_concise",
+            isBuiltIn: false,
+            builtInID: nil,
+            customProfile: nil,
+            name: "直白",
+            nickname: "直白",
+            handle: "@直白",
+            roleLabel: "",
+            accentHex: "#2F6BFF",
+            personaPrompt: customText,
+            preferredStickerCategories: [],
+            emotion: BotEmotionEngine.initialState(botID: "custom_concise", baseline: .calm),
+            isEnabled: true
+        )
+        let customPrompt = MeetingRoomPersona.systemPrompt(
+            bot: customDescriptor,
+            isMentioned: true,
+            isButlerSynthesis: false,
+            isProgressCheck: false
+        )
+        #expect(customPrompt.contains("你的性格与情绪风格（严格遵循）：\(customText)"))
+        #expect(!customPrompt.contains("你的底色与当下状态"))
+    }
+    
+    
+    @MainActor
+    @Test
+    func meetingRoomRosterAndWebUIBundleOmitMoodStatusBadges() {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appending(path: "cot_mr_roster_\(UUID().uuidString)", directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let db = CotLocalDatabase(customURL: tempDir.appending(path: "roster.sqlite3"))
+        let botStore = AIBotStore(database: db)
+        let manager = ButlerMeetingRoomManager(database: db)
+        let roster = manager.participantRoster(botStore: botStore)
+        #expect(!roster.isEmpty)
+        #expect(roster.allSatisfy { $0.moodLabel == nil })
+        
+        let html = BeautifulAgentUIBundle.htmlDocument()
+        #expect(html.contains("@文档"))
+        #expect(html.contains("@Bots"))
+        #expect(html.contains("新建工作区"))
+        #expect(!html.contains("正在输入"))
+    }
+    
+    
+    @MainActor
+    @Test
+    func abortMeetingRemovesEmptySpeakingPlaceholders() {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appending(path: "cot_mr_abort_\(UUID().uuidString)", directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let db = CotLocalDatabase(customURL: tempDir.appending(path: "abort.sqlite3"))
+        let manager = ButlerMeetingRoomManager(database: db)
+        manager.appendExternalMessage(MeetingRoomMessage(
+            id: "msg-empty-speaking",
+            role: "bot",
+            botID: "ghost",
+            botName: "幽灵",
+            botHandle: "@幽灵",
+            botAccentHex: "#0EA5E9",
+            botRoleLabel: "续写",
+            botMoodLabel: nil,
+            botAvatarURL: nil,
+            text: "   ",
+            status: "speaking",
+            receipts: [],
+            delegatedFromButler: false,
+            createdAtMs: 100
+        ))
+        manager.appendExternalMessage(MeetingRoomMessage(
+            id: "msg-nonempty-speaking",
+            role: "bot",
+            botID: "butler",
+            botName: "曜",
+            botHandle: "@曜",
+            botAccentHex: "#3B82F6",
+            botRoleLabel: "总管",
+            botMoodLabel: nil,
+            botAvatarURL: nil,
+            text: "已经输出的部分结论",
+            status: "speaking",
+            receipts: [],
+            delegatedFromButler: false,
+            createdAtMs: 200
+        ))
+        
+        manager.abortMeeting()
+        
+        #expect(!manager.messages.contains(where: { $0.id == "msg-empty-speaking" }))
+        #expect(!manager.messages.contains(where: { $0.text.contains("已中止发言") }))
+        let kept = manager.messages.first(where: { $0.id == "msg-nonempty-speaking" })
+        #expect(kept?.status == "done")
+        #expect(kept?.text == "已经输出的部分结论")
+    }
 }

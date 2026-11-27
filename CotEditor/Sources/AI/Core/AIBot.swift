@@ -1160,6 +1160,7 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
         } else {
             self.configs = [:]
         }
+        self.avatarRevision &+= 1
         self.reloadCustomBotsAndEmotions()
     }
     

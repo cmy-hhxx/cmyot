@@ -970,12 +970,13 @@ struct ButlerCommandHubView: View {
         var list: [BeautifulAgentBotMentionPayload] = []
         // Put user-created custom Bots first so newly added Bots immediately surface in @ menus
         for custom in self.botStore.customBots where custom.isEnabled {
+            let trimmedPersona = custom.personaPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
             list.append(BeautifulAgentBotMentionPayload(
                 id: custom.id,
                 name: custom.name,
                 nickname: custom.nickname,
                 handle: custom.handle,
-                tagline: custom.personaPrompt.isEmpty ? custom.baseline.displayName : custom.personaPrompt,
+                tagline: trimmedPersona.isEmpty ? "" : String(trimmedPersona.prefix(28)),
                 accentHex: custom.accentHex,
                 model: custom.modelOverride.isEmpty ? nil : custom.modelOverride,
                 avatarURL: CotMediaSchemeHandler.botAvatarURLString(botID: custom.id, revision: avatarRev),

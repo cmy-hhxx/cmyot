@@ -93,8 +93,7 @@ const MeetingMembersDrawer = memo(function MeetingMembersDrawer({
       (bot) =>
         bot.name.toLowerCase().includes(clean) ||
         bot.nickname.toLowerCase().includes(clean) ||
-        bot.roleLabel.toLowerCase().includes(clean) ||
-        (bot.moodLabel && bot.moodLabel.toLowerCase().includes(clean)),
+        bot.roleLabel.toLowerCase().includes(clean),
     );
   }, [participants, query]);
 
@@ -173,13 +172,12 @@ const MeetingMembersDrawer = memo(function MeetingMembersDrawer({
               >
                 <div className="flex items-center gap-1.5">
                   <span className="truncate text-[13px] font-medium text-ink">{bot.name}</span>
-                  {bot.status === "speaking" && (
-                    <span className="size-1.5 shrink-0 rounded-full bg-accent animate-pulse" />
-                  )}
                 </div>
-                <div className="truncate text-[12px] text-ink-3">
-                  {bot.moodLabel || bot.roleLabel}
-                </div>
+                {bot.roleLabel && (
+                  <div className="truncate text-[12px] text-ink-3">
+                    {bot.roleLabel}
+                  </div>
+                )}
               </button>
 
               <button

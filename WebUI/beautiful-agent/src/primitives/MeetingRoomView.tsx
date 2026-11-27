@@ -1,6 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { copyTextWithFallback } from "../bridge";
-import LoadingState from "./LoadingState";
 import MarkdownProse from "./MarkdownProse";
 import MeetingMembersDrawer from "./MeetingMembersDrawer";
 import { renderTextWithMentions } from "./MentionText";
@@ -220,8 +219,8 @@ const ChatMessageBubbleRow = memo(function ChatMessageBubbleRow({
   }
 
   const avatarAction = message.botID ? () => onOpenBotConfig(message.botID as string) : undefined;
-  const showPrimaryRow = hasText || isSpeaking;
-  if (!hasText && !isSpeaking && !hasSticker) {
+  const showPrimaryRow = hasText;
+  if (!hasText && !hasSticker) {
     return null;
   }
 
@@ -240,11 +239,6 @@ const ChatMessageBubbleRow = memo(function ChatMessageBubbleRow({
           <div className="flex min-w-0 max-w-[78%] flex-col items-start gap-1">
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="text-[12.5px] font-semibold text-ink-2">{displayName}</span>
-              {message.botMoodLabel && (
-                <span className="rounded-[5px] bg-inset px-1.5 py-0.5 text-[12px] text-ink-3">
-                  {message.botMoodLabel}
-                </span>
-              )}
               {message.delegatedFromButler && (
                 <span className="rounded-[5px] bg-accent-tint px-1.5 py-0.5 text-[12px] text-accent-ink">
                   {locale === "zh" ? "总管调度" : "Dispatched"}
@@ -274,15 +268,9 @@ const ChatMessageBubbleRow = memo(function ChatMessageBubbleRow({
               </div>
             )}
 
-            {isSpeaking && !hasText ? (
-              <div className="rounded-[12px] rounded-tl-[4px] border border-line bg-surface px-3.5 py-2 shadow-hairline">
-                <LoadingState label={locale === "zh" ? "正在输入" : "Typing"} variant="Dots" />
-              </div>
-            ) : hasText ? (
-              <div className="w-fit max-w-full rounded-[12px] rounded-tl-[4px] border border-line bg-surface px-3.5 py-2 shadow-hairline">
-                <MarkdownProse markdown={message.text} isStreaming={isSpeaking} locale={locale} />
-              </div>
-            ) : null}
+            <div className="w-fit max-w-full rounded-[12px] rounded-tl-[4px] border border-line bg-surface px-3.5 py-2 shadow-hairline">
+              <MarkdownProse markdown={message.text} isStreaming={isSpeaking} locale={locale} />
+            </div>
           </div>
         </div>
       )}
@@ -300,11 +288,6 @@ const ChatMessageBubbleRow = memo(function ChatMessageBubbleRow({
           <div className="flex min-w-0 max-w-[78%] flex-col items-start gap-1">
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="text-[12.5px] font-semibold text-ink-2">{displayName}</span>
-              {!hasText && message.botMoodLabel && (
-                <span className="rounded-[5px] bg-inset px-1.5 py-0.5 text-[12px] text-ink-3">
-                  {message.botMoodLabel}
-                </span>
-              )}
             </div>
             <StickerAttachmentBlock
               url={message.stickerURL}
@@ -317,6 +300,54 @@ const ChatMessageBubbleRow = memo(function ChatMessageBubbleRow({
           </div>
         </div>
       )}
+    </div>
+  );
+});
+
+const MeetingTypingBubble = memo(function MeetingTypingBubble({
+  speakingBots,
+}: {
+  speakingBots: MeetingRoomParticipant[];
+}) {
+  return (
+    <div className="flex items-center justify-start" style={{ animation: "fade-in 160ms ease-out both" }}>
+      <div className="inline-flex items-center gap-2 rounded-full border border-line bg-surface px-3 py-1.5 shadow-hairline">
+        {speakingBots.length > 0 && (
+          <div className="flex items-center gap-1.5">
+            {speakingBots.slice(0, 3).map((bot) => (
+              <span key={bot.id} className="inline-flex items-center gap-1">
+                {bot.avatarURL ? (
+                  <img
+                    src={bot.avatarURL}
+                    alt={bot.name}
+                    className="size-[18px] shrink-0 rounded-[5px] border border-line object-cover"
+                  />
+                ) : (
+                  <span
+                    className="flex size-[18px] shrink-0 items-center justify-center rounded-[5px] text-[10px] font-semibold"
+                    style={{
+                      backgroundColor: `${bot.accentHex || "var(--accent)"}20`,
+                      color: bot.accentHex || "var(--accent)",
+                    }}
+                  >
+                    {bot.name.slice(0, 1)}
+                  </span>
+                )}
+                <span className="text-[12px] font-medium text-ink-2">{bot.name}</span>
+              </span>
+            ))}
+          </div>
+        )}
+        <span aria-hidden className="flex items-center gap-1">
+          {[0, 160, 320].map((delay) => (
+            <span
+              key={delay}
+              className="size-[5px] rounded-full bg-ink-3"
+              style={{ animation: `pixel-on 900ms ease-in-out ${delay}ms infinite` }}
+            />
+          ))}
+        </span>
+      </div>
     </div>
   );
 });
@@ -352,6 +383,15 @@ const MeetingRoomView = memo(function MeetingRoomView({
   const [previewSticker, setPreviewSticker] = useState<{ url: string; caption?: string | null } | null>(null);
 
   const hasMessages = messages.length > 0;
+  const hasActiveTextStream = useMemo(
+    () => messages.some((m) => m.role === "bot" && m.status === "speaking" && m.text.trim().length > 0),
+    [messages],
+  );
+  const activeSpeakingBots = useMemo(
+    () => participants.filter((p) => p.status === "speaking"),
+    [participants],
+  );
+  const showTypingBubble = isConvening && !hasActiveTextStream;
   const favoriteStickerIDs = useMemo(
     () => new Set(stickers.filter((s) => s.isFavorite).map((s) => s.id)),
     [stickers],
@@ -364,7 +404,7 @@ const MeetingRoomView = memo(function MeetingRoomView({
       name: p.name,
       nickname: p.nickname,
       handle: p.handle,
-      tagline: p.moodLabel || p.roleLabel,
+      tagline: p.roleLabel,
       accentHex: p.accentHex,
       avatarURL: p.avatarURL,
       isCustom: p.isCustom,
@@ -465,6 +505,7 @@ const MeetingRoomView = memo(function MeetingRoomView({
                     onToggleFavoriteSticker={onToggleFavoriteSticker}
                   />
                 ))}
+                {showTypingBubble && <MeetingTypingBubble speakingBots={activeSpeakingBots} />}
               </div>
             </div>
 

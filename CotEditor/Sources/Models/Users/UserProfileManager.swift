@@ -391,6 +391,7 @@ nonisolated struct UserProfile: Identifiable, Codable, Sendable, Equatable {
             }
             CotLocalDatabase.shared.syncAIEndpointsToDatabase()
             CotLocalDatabase.shared.syncUserProfileToDatabase()
+            CotLocalDatabase.shared.syncAllLocalMediaBlobsToDatabase()
             CotLocalDatabase.shared.syncUserPreferencesToDatabase()
             CotLocalDatabase.shared.checkpointDatabase()
         }
@@ -407,10 +408,7 @@ nonisolated struct UserProfile: Identifiable, Codable, Sendable, Equatable {
             CotLocalDatabase.shared.restoreAIEndpointsFromDatabase(resetIfMissing: true)
             CotLocalDatabase.shared.restoreUserPreferencesFromDatabase(overwriteExisting: true)
             
-            AIBotStore.shared.reloadFromDatabase()
-            UserHabitPredictor.shared.reloadFromDatabase()
-            AINextTokenPredictor.shared.reloadForActiveUser()
-            AnalyticsManager.shared.reloadFromDatabase()
+            CotLocalDatabase.shared.reloadAllSharedStoresAfterMigration()
             
             self.reloadOpenWindowsForActiveUser()
         }

@@ -298,25 +298,31 @@ extension ButlerMeetingRoomManager {
         
         let avatarRev = botStore.avatarRevision &+ botStore.customBotsRevision
         let msgID = "mr-bot-\(bot.id)-\(UUID().uuidString)"
-        let placeholder = MeetingRoomMessage(
-            id: msgID,
-            role: "bot",
-            botID: bot.id,
-            botName: bot.name,
-            botHandle: bot.handle,
-            botAccentHex: bot.accentHex,
-            botRoleLabel: context.isButlerSynthesis ? AppLanguage.text("总管收口", en: "Chief") : bot.roleLabel,
-            botMoodLabel: bot.emotion.mood.displayLabel,
-            botAvatarURL: CotMediaSchemeHandler.botAvatarURLString(botID: bot.id, revision: avatarRev),
-            text: "",
-            status: "speaking",
-            receipts: receipts,
-            delegatedFromButler: context.delegatedFromButler,
-            createdAtMs: Date().timeIntervalSince1970 * 1000
-        )
-        self.messages.append(placeholder)
-        self.botStatuses[bot.id] = "speaking"
-        self.revision &+= 1
+        let roleLabel = context.isButlerSynthesis ? AppLanguage.text("总管收口", en: "Chief") : bot.roleLabel
+        let botAvatarURL = CotMediaSchemeHandler.botAvatarURLString(botID: bot.id, revision: avatarRev)
+        let makeMessage: (String, String) -> MeetingRoomMessage = { text, status in
+            MeetingRoomMessage(
+                id: msgID,
+                role: "bot",
+                botID: bot.id,
+                botName: bot.name,
+                botHandle: bot.handle,
+                botAccentHex: bot.accentHex,
+                botRoleLabel: roleLabel,
+                botMoodLabel: nil,
+                botAvatarURL: botAvatarURL,
+                text: text,
+                status: status,
+                receipts: receipts,
+                delegatedFromButler: context.delegatedFromButler,
+                createdAtMs: Date().timeIntervalSince1970 * 1000
+            )
+        }
+        
+        if context.isMentioned {
+            self.botStatuses[bot.id] = "speaking"
+            self.revision &+= 1
+        }
         
         let candidates = self.stickerCandidatesForTurn(
             bot: bot,
@@ -330,6 +336,7 @@ extension ButlerMeetingRoomManager {
             telemetry: telemetry,
             receipts: receipts,
             placeholderID: msgID,
+            makeStreamingMessage: { makeMessage($0, "speaking") },
             stickerCandidates: candidates,
             allowStickerOnly: allowStickerOnly,
             botStore: botStore
@@ -337,10 +344,15 @@ extension ButlerMeetingRoomManager {
         guard self.activeGeneration == context.generation else { return nil }
         
         if !context.isMentioned && MeetingRoomPersona.isPass(rawReply) {
-            self.messages.removeAll { $0.id == msgID }
-            self.botStatuses[bot.id] = "idle"
-            self.persistActiveMessages()
-            self.revision &+= 1
+            let hadMessage = self.messages.contains { $0.id == msgID }
+            if hadMessage {
+                self.messages.removeAll { $0.id == msgID }
+                self.persistActiveMessages()
+            }
+            if self.botStatuses[bot.id] == "speaking" || hadMessage {
+                self.botStatuses[bot.id] = "idle"
+                self.revision &+= 1
+            }
             return nil
         }
         
@@ -349,9 +361,9 @@ extension ButlerMeetingRoomManager {
             rawReply: rawReply,
             bot: bot,
             context: context,
+            makeCompletedMessage: { makeMessage($0, "done") },
             candidates: candidates,
             allowStickerOnly: allowStickerOnly,
-            hadReceipts: !receipts.isEmpty,
             stickerOnlyCount: &stickerOnlyCount,
             stickersUsedInTurn: &stickersUsedInTurn,
             botStore: botStore
@@ -384,9 +396,9 @@ extension ButlerMeetingRoomManager {
         rawReply: String,
         bot: UnifiedBotDescriptor,
         context: MeetingTurnContext,
+        makeCompletedMessage: (String) -> MeetingRoomMessage,
         candidates: [StickerAsset],
         allowStickerOnly: Bool,
-        hadReceipts: Bool,
         stickerOnlyCount: inout Int,
         stickersUsedInTurn: inout Int,
         botStore: AIBotStore
@@ -418,9 +430,12 @@ extension ButlerMeetingRoomManager {
         var finalText = parsed.text
         if finalText.isEmpty && resolvedSticker == nil {
             if !context.isMentioned && !context.isButlerSynthesis {
-                self.messages.removeAll { $0.id == msgID }
+                let hadMessage = self.messages.contains { $0.id == msgID }
+                if hadMessage {
+                    self.messages.removeAll { $0.id == msgID }
+                    self.persistActiveMessages()
+                }
                 self.botStatuses[bot.id] = "idle"
-                self.persistActiveMessages()
                 self.revision &+= 1
                 return nil
             }
@@ -433,17 +448,22 @@ extension ButlerMeetingRoomManager {
             botReply: finalText,
             explicitMood: parsed.mood
         )
-        let latestMood = botStore.emotionState(for: bot.id).mood.displayLabel
         
         if let idx = self.messages.firstIndex(where: { $0.id == msgID }) {
             self.messages[idx].text = finalText
-            self.messages[idx].botMoodLabel = latestMood
+            self.messages[idx].botMoodLabel = nil
             self.messages[idx].stickerID = resolvedSticker?.id
             self.messages[idx].stickerURL = resolvedSticker.map { CotMediaSchemeHandler.stickerURLString(id: $0.id) }
             self.messages[idx].stickerCaption = resolvedSticker?.searchableSummary
             self.messages[idx].status = "done"
+        } else {
+            var completed = makeCompletedMessage(finalText)
+            completed.stickerID = resolvedSticker?.id
+            completed.stickerURL = resolvedSticker.map { CotMediaSchemeHandler.stickerURLString(id: $0.id) }
+            completed.stickerCaption = resolvedSticker?.searchableSummary
+            self.messages.append(completed)
         }
-        self.botStatuses[bot.id] = hadReceipts ? "updated" : "done"
+        self.botStatuses[bot.id] = "idle"
         self.persistActiveMessages()
         self.revision &+= 1
         return (bot.id, msgID, bot.name, finalText.isEmpty ? (resolvedSticker?.searchableSummary ?? "[表情包]") : finalText)
@@ -456,6 +476,7 @@ extension ButlerMeetingRoomManager {
         telemetry: MeetingBotDailyTelemetry?,
         receipts: [String],
         placeholderID: String,
+        makeStreamingMessage: @escaping (String) -> MeetingRoomMessage,
         stickerCandidates: [StickerAsset],
         allowStickerOnly: Bool,
         botStore: AIBotStore
@@ -520,8 +541,13 @@ extension ButlerMeetingRoomManager {
                 guard now.timeIntervalSince(lastStreamPush) >= 0.08 else { return }
                 lastStreamPush = now
                 let sanitized = BotReplyDirectiveParser.stripDirectivesForLiveDisplay(partial)
+                guard !sanitized.isEmpty else { return }
                 if let idx = self.messages.firstIndex(where: { $0.id == placeholderID }) {
                     self.messages[idx].text = sanitized
+                    self.revision &+= 1
+                } else {
+                    self.messages.append(makeStreamingMessage(sanitized))
+                    self.botStatuses[bot.id] = "speaking"
                     self.revision &+= 1
                 }
             }

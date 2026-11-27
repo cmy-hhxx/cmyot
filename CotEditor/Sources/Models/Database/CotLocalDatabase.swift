@@ -2012,15 +2012,48 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     
     // MARK: Import & Export API
     
-    /// Exports the entire SQLite database (with current AI profiles, API keys, user avatar/profile & settings synced into `configs`)
+    /// Backfills all disk-backed Media Library, Sticker, Wallpaper, App Icon, and untitled inline image assets
+    /// into the local database's `media_blobs` table before export or profile switch.
+    func syncAllLocalMediaBlobsToDatabase() {
+        guard self === Self.shared else { return }
+        UserMediaLibraryStore.shared.syncBlobsToDatabase()
+        CotStickerLibraryStore.shared.syncBlobsToDatabase()
+        WallpaperManager.shared.syncBlobsToDatabase()
+        AppIconManager.shared.syncBlobsToDatabase()
+        self.syncReferencedInlineImagesToDatabase()
+    }
+    
+    
+    /// Reloads all shared stores and materializes all SQLite-backed media blobs onto disk after DB import or user switch.
+    func reloadAllSharedStoresAfterMigration() {
+        guard self === Self.shared else { return }
+        UserMediaLibraryStore.shared.reloadFromDatabase(overwriteMismatchedBlobs: true)
+        CotStickerLibraryStore.shared.reloadFromDatabase(overwriteMismatchedBlobs: true)
+        WallpaperManager.shared.reloadFromDatabase(overwriteMismatchedBlobs: true)
+        AppIconManager.shared.reloadFromDatabase(overwriteMismatchedBlobs: true)
+        self.restoreInlineImagesFromDatabase(overwriteMismatched: true)
+        StudioPaletteManager.shared.reloadFromDatabase()
+        DashboardHeroCoverStore.shared.reloadFromDatabase()
+        ThemeManager.shared.validateOrRepairActiveThemePreference()
+        AIBotStore.shared.reloadFromDatabase()
+        CotButlerManager.shared.reloadFromDatabase()
+        ButlerMeetingRoomManager.shared.reloadFromDatabase()
+        UserHabitPredictor.shared.reloadFromDatabase()
+        AINextTokenPredictor.shared.reloadForActiveUser()
+        AnalyticsManager.shared.reloadFromDatabase()
+    }
+    
+    
+    /// Exports the entire SQLite database (with current AI profiles, API keys, user avatar/profile, media blobs & settings synced)
     /// to the destination URL using `VACUUM INTO` or atomic file copy.
     func exportDatabase(to destinationURL: URL) throws {
         
-        // Snapshot current stats, AI endpoint profiles + keys, user profile/avatar & user preferences into configs
+        // Snapshot current stats, AI endpoint profiles + keys, user profile/avatar, media blobs & user preferences into SQLite
         if self === Self.shared {
             AnalyticsManager.shared.flushPendingStats()
             self.syncAIEndpointsToDatabase()
             self.syncUserProfileToDatabase()
+            self.syncAllLocalMediaBlobsToDatabase()
         }
         self.syncUserPreferencesToDatabase()
         
@@ -2038,7 +2071,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     }
     
     
-    /// Imports another Cot SQLite database file, replacing/merging documents, AI endpoints+keys, user avatar/profile, and configurations.
+    /// Imports another Cot SQLite database file, replacing/merging documents, media blobs, AI endpoints+keys, user avatar/profile, and configurations.
     func importDatabase(from sourceURL: URL) throws {
         
         // Validate that the source is a readable SQLite database with our tables
@@ -2072,14 +2105,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         self.applySyncedDefaultsToUserDefaults()
         
         if self === Self.shared {
-            StudioPaletteManager.shared.reloadFromDatabase()
-            WallpaperManager.shared.reloadFromDatabase()
-            UserMediaLibraryStore.shared.reloadFromDatabase()
-            ThemeManager.shared.validateOrRepairActiveThemePreference()
-            AIBotStore.shared.reloadFromDatabase()
-            UserHabitPredictor.shared.reloadFromDatabase()
-            AINextTokenPredictor.shared.reloadForActiveUser()
-            AnalyticsManager.shared.reloadFromDatabase()
+            self.reloadAllSharedStoresAfterMigration()
             NotificationCenter.default.post(name: Self.structuredAssetsDidChangeNotification, object: self)
             NotificationCenter.default.post(name: UserProfileManager.activeProfileDidChangeNotification, object: UserProfileManager.shared)
         }

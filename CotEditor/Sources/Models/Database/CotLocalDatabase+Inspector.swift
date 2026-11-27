@@ -83,6 +83,12 @@ nonisolated enum DatabaseCategoryKind: String, CaseIterable, Identifiable, Senda
             case "workspace_live_state": AppLanguage.text("工作区快照", en: "Workspace State")
             case "agent_command_queue": AppLanguage.text("Agent 指令队列", en: "Agent Queue")
             case "ai_conversation_logs": AppLanguage.text("AI 对话日志", en: "AI Conversation Logs")
+            case "media_blobs": AppLanguage.text("素材二进制库", en: "Media Blobs")
+            case "user_stickers": AppLanguage.text("表情包索引", en: "Stickers")
+            case "custom_bots": AppLanguage.text("自定义 Bot", en: "Custom Bots")
+            case "bot_emotion_states": AppLanguage.text("Bot 情绪状态", en: "Bot Emotions")
+            case "meeting_room_sessions": AppLanguage.text("会议室会话", en: "Meeting Sessions")
+            case "meeting_room_messages": AppLanguage.text("会议室消息", en: "Meeting Messages")
             default: tableName
         }
     }

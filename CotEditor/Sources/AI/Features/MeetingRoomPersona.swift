@@ -377,9 +377,6 @@ nonisolated enum MeetingRoomPersona {
             parts.append(self.voice(for: builtIn))
         } else {
             parts.append("你是群聊里的成员「\(bot.name)」。")
-            if !bot.personaPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                parts.append("你的性格与说话风格：\(bot.personaPrompt)")
-            }
         }
         
         if !isButlerSynthesis {
@@ -396,18 +393,18 @@ nonisolated enum MeetingRoomPersona {
             }
         }
         
-        parts.append("你的底色与当下状态（仅轻微影响措辞，绝不影响讲清事实，也禁止借此发牢骚或尬聊）：\(bot.emotion.baseline.promptDirective) 当前心境「\(bot.emotion.mood.displayLabel)」，\(bot.emotion.mood.toneDirective)")
+        let trimmedCustom = bot.personaPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedCustom.isEmpty {
+            parts.append("你的性格与情绪风格（严格遵循）：\(trimmedCustom)")
+        } else {
+            parts.append("你的底色与当下状态（仅轻微影响措辞，绝不影响讲清事实，也禁止借此发牢骚或尬聊）：\(bot.emotion.baseline.promptDirective) 当前心境「\(bot.emotion.mood.displayLabel)」，\(bot.emotion.mood.toneDirective)")
+        }
         parts.append(Self.buildStickerProtocolBlock(
             candidates: stickerCandidates,
             allowStickerOnly: allowStickerOnly,
             allowOnlineSearch: allowOnlineSearch
         ))
         parts.append(self.sharedRules)
-        
-        let trimmedCustom = bot.personaPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        if bot.isBuiltIn && !trimmedCustom.isEmpty {
-            parts.append("用户给你的额外性格设定：\(trimmedCustom)")
-        }
         
         return parts.joined(separator: "\n\n")
     }

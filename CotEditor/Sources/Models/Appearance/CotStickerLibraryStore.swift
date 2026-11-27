@@ -73,8 +73,27 @@ final class CotStickerLibraryStore {
     }
     
     
-    func reloadFromDatabase() {
+    func reloadFromDatabase(overwriteMismatchedBlobs: Bool = false) {
+        let fetched = self.database.fetchAllStickers()
+        if !fetched.isEmpty {
+            _ = self.database.restoreMediaBlobsToDisk(
+                namespace: .sticker,
+                rootDirectory: self.stickersDirectory,
+                allowedRelativePaths: Set(fetched.map(\.fileName)),
+                overwriteMismatched: overwriteMismatchedBlobs
+            )
+        }
         self.syncWithDiskAndDatabase(forceRevisionBump: true)
+    }
+    
+    
+    func syncBlobsToDatabase() {
+        self.database.syncDiskFilesToMediaBlobs(
+            namespace: .sticker,
+            rootDirectory: self.stickersDirectory,
+            expectedRelativePaths: self.stickers.map(\.fileName),
+            pruneUnreferenced: true
+        )
     }
     
     
@@ -92,6 +111,7 @@ final class CotStickerLibraryStore {
                 valid.append(asset)
             } else {
                 self.database.deleteSticker(id: asset.id)
+                self.database.deleteMediaBlob(namespace: .sticker, relativePath: asset.fileName)
                 prunedAny = true
             }
         }
@@ -137,8 +157,13 @@ final class CotStickerLibraryStore {
     func imageData(for stickerID: String) -> (data: Data, mimeType: String)? {
         guard let sticker = self.idIndex[stickerID] else { return nil }
         let url = self.fileURL(for: sticker)
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return (data, Self.mimeType(for: sticker.format))
+        if let data = try? Data(contentsOf: url), !data.isEmpty {
+            return (data, Self.mimeType(for: sticker.format))
+        }
+        if let blobData = self.database.fetchMediaBlobData(namespace: .sticker, relativePath: sticker.fileName) {
+            return (blobData, Self.mimeType(for: sticker.format))
+        }
+        return nil
     }
     
     
@@ -274,6 +299,7 @@ final class CotStickerLibraryStore {
         let fileURL = self.fileURL(for: target)
         try? FileManager.default.removeItem(at: fileURL)
         self.database.deleteSticker(id: id)
+        self.database.deleteMediaBlob(namespace: .sticker, relativePath: target.fileName)
         self.stickers.removeAll { $0.id == id }
         self.rebuildIndexes()
         self.thumbnailCache.removeAllObjects()
@@ -290,13 +316,12 @@ final class CotStickerLibraryStore {
         
         let discovered = Self.collectImportCandidates(from: urls, defaultCategory: defaultCategory)
         var result = StickerImportResult()
-        var pendingAssets: [StickerAsset] = []
         let rootDir = self.stickersDirectory
         let existingSHAs = Set(self.shaIndex.keys)
         var batchSHAs: Set<String> = []
         
         let processed = await Task.detached(priority: .userInitiated) {
-            var localAdded: [StickerAsset] = []
+            var localAdded: [(asset: StickerAsset, data: Data)] = []
             var dupes = 0
             var failed = 0
             let fm = FileManager.default
@@ -349,19 +374,30 @@ final class CotStickerLibraryStore {
                     lastUsedAt: nil,
                     createdAt: Date().timeIntervalSince1970
                 )
-                localAdded.append(asset)
+                localAdded.append((asset, data))
             }
             return (localAdded, dupes, failed)
         }.value
         
-        pendingAssets = processed.0
+        let pendingPairs = processed.0
+        let pendingAssets = pendingPairs.map(\.asset)
         result.addedCount = pendingAssets.count
         result.skippedDuplicates = processed.1
         result.failedCount = processed.2
         result.firstAddedID = pendingAssets.first?.id
         
-        if !pendingAssets.isEmpty {
-            self.database.upsertStickers(pendingAssets)
+        if !pendingPairs.isEmpty {
+            self.database.withTransaction {
+                self.database.upsertStickers(pendingAssets)
+                for pair in pendingPairs {
+                    self.database.upsertMediaBlob(
+                        namespace: .sticker,
+                        relativePath: pair.asset.fileName,
+                        data: pair.data,
+                        sha256: pair.asset.sha256
+                    )
+                }
+            }
             self.reloadFromDatabase()
             NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
         }
@@ -426,7 +462,15 @@ final class CotStickerLibraryStore {
         }.value
         
         guard let built else { return nil }
-        self.database.upsertSticker(built)
+        self.database.withTransaction {
+            self.database.upsertSticker(built)
+            self.database.upsertMediaBlob(
+                namespace: .sticker,
+                relativePath: built.fileName,
+                data: data,
+                sha256: built.sha256
+            )
+        }
         self.reloadFromDatabase()
         NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
         return self.sticker(id: built.id) ?? built

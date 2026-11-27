@@ -369,6 +369,17 @@ final class ButlerMeetingRoomManager {
     }
     
     
+    func reloadFromDatabase() {
+        self.abortMeeting()
+        self.cachedRosterKey = nil
+        if self.database === CotLocalDatabase.shared {
+            self.knownCustomBotIDs = Set(AIBotStore.shared.customBots.map(\.id))
+        }
+        self.bootstrapSessionsAndMessages()
+        self.revision &+= 1
+    }
+    
+    
     private func syncNewlyAddedCustomBotsToActiveSession() {
         let enabledCustomIDs = AIBotStore.shared.customBots.filter(\.isEnabled).map(\.id)
         let brandNewIDs = enabledCustomIDs.filter { !self.knownCustomBotIDs.contains($0) }
@@ -556,11 +567,13 @@ final class ButlerMeetingRoomManager {
         self.activeTask?.cancel()
         self.activeTask = nil
         self.isConvening = false
+        self.messages.removeAll { msg in
+            msg.status == "speaking"
+                && msg.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && msg.stickerID == nil
+        }
         for idx in self.messages.indices where self.messages[idx].status == "speaking" {
             self.messages[idx].status = "done"
-            if self.messages[idx].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && self.messages[idx].stickerID == nil {
-                self.messages[idx].text = AppLanguage.text("已中止发言。", en: "Stopped.")
-            }
         }
         for key in self.botStatuses.keys where self.botStatuses[key] == "speaking" {
             self.botStatuses[key] = "idle"
@@ -578,7 +591,7 @@ final class ButlerMeetingRoomManager {
         let identityKey = unified.map { bot in
             let status = self.botStatuses[bot.id] ?? "idle"
             let sel = selectedSet.contains(bot.id) ? "1" : "0"
-            return "\(bot.id):\(bot.name):\(bot.nickname):\(bot.emotion.mood.rawValue):\(status):\(sel)"
+            return "\(bot.id):\(bot.name):\(bot.nickname):\(status):\(sel)"
         }.joined(separator: "|")
         let cacheKey = "\(self.revision)|\(avatarRev)|\(self.activeSessionID)|\(todayKey)|\(identityKey)"
         let now = Date()
@@ -598,7 +611,7 @@ final class ButlerMeetingRoomManager {
                 accentHex: bot.accentHex,
                 status: self.botStatuses[bot.id] ?? "idle",
                 todayBadge: telemetry?.badgeText ?? "",
-                moodLabel: bot.emotion.mood.displayLabel,
+                moodLabel: nil,
                 avatarURL: CotMediaSchemeHandler.botAvatarURLString(botID: bot.id, revision: avatarRev),
                 isSelected: selectedSet.contains(bot.id),
                 isCustom: !bot.isBuiltIn

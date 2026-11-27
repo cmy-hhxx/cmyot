@@ -2506,6 +2506,7 @@ final class DashboardHeroCoverStore {
     @ObservationIgnored private var initialToneSample: (
         focalX: Double, focalY: Double, fitMode: HeroCoverFitMode, aspect: CGFloat, fallback: HeroRegionTone, result: HeroBackdropToneSnapshot
     )?
+    @ObservationIgnored private var isReloading = false
     
     var focalX: Double {
         didSet {
@@ -2514,7 +2515,7 @@ final class DashboardHeroCoverStore {
                 self.focalX = clamped
                 return
             }
-            guard abs(oldValue - clamped) > 0.0001 else { return }
+            guard !self.isReloading, abs(oldValue - clamped) > 0.0001 else { return }
             self.database.set(String(format: "%.2f", clamped), forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverFocalX)
         }
     }
@@ -2526,21 +2527,21 @@ final class DashboardHeroCoverStore {
                 self.focalY = clamped
                 return
             }
-            guard abs(oldValue - clamped) > 0.0001 else { return }
+            guard !self.isReloading, abs(oldValue - clamped) > 0.0001 else { return }
             self.database.set(String(format: "%.2f", clamped), forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverFocalY)
         }
     }
     
     var fitMode: HeroCoverFitMode {
         didSet {
-            guard self.fitMode != oldValue else { return }
+            guard !self.isReloading, self.fitMode != oldValue else { return }
             self.database.set(self.fitMode.rawValue, forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverFitMode)
         }
     }
     
     var blurStyle: HeroCoverBlurStyle {
         didSet {
-            guard self.blurStyle != oldValue else { return }
+            guard !self.isReloading, self.blurStyle != oldValue else { return }
             self.database.set(self.blurStyle.rawValue, forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverBlurStyle)
         }
     }
@@ -2561,6 +2562,17 @@ final class DashboardHeroCoverStore {
     
     
     func reloadFromDatabase() {
+        self.isReloading = true
+        let rawFocalX = Double(self.database.string(forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverFocalX))
+        let rawFocalY = Double(self.database.string(forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverFocalY))
+        let rawMode = self.database.string(forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverFitMode)
+        let rawBlur = self.database.string(forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverBlurStyle)
+        self.focalX = max(0.0, min(1.0, rawFocalX ?? 0.50))
+        self.focalY = max(0.0, min(1.0, rawFocalY ?? 0.42))
+        self.fitMode = HeroCoverFitMode(rawValue: rawMode) ?? .fill
+        self.blurStyle = HeroCoverBlurStyle(rawValue: rawBlur) ?? .crisp
+        self.isReloading = false
+        
         let b64 = self.database.string(forKey: CotLocalDatabase.ConfigKey.dashboardHeroCoverImageBase64)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !b64.isEmpty,

@@ -212,6 +212,13 @@ extension Logger {
         ButlerDailyReportService.shared.startBackgroundScheduler()
         AppIconManager.shared.applySavedAppIconOnLaunch()
         
+        if !CotLocalDatabase.isRunningUnitTests {
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(1))
+                CotLocalDatabase.shared.syncAllLocalMediaBlobsToDatabase()
+            }
+        }
+        
         #if DEBUG
         self.scheduleTerminalDemoIfRequested()
         self.scheduleAISettingsDemoIfRequested()

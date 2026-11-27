@@ -3159,12 +3159,15 @@ private struct AIBotInlineInspectorView: View {
     @State private var botStore = AIBotStore.shared
     @State private var butlerManager = CotButlerManager.shared
     @State private var config: AIBotConfig = AIBotConfig()
-    @State private var customNameDraft: String = ""
-    @State private var customNicknameDraft: String = ""
+    @State private var nicknameDraft: String = ""
+    @State private var personaDraft: String = ""
+    @State private var pendingAvatarData: Data? = nil
+    @State private var pendingAvatarSourceURL: URL? = nil
+    @State private var pendingResetAvatar = false
     @State private var gatewayGroups: [AIBotStore.SelectableGatewayGroup] = []
     @State private var isRefreshingModels = false
     @State private var isShowingAvatarLibraryPicker = false
-    
+    @State private var savedBannerVisible = false
     
     private var activeGatewayGroup: AIBotStore.SelectableGatewayGroup? {
         self.gatewayGroups.first(where: \.isActive) ?? self.gatewayGroups.first
@@ -3189,313 +3192,53 @@ private struct AIBotInlineInspectorView: View {
         )
     }
     
+    private var displayedNickname: String {
+        let trimmed = self.nicknameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+        return self.botID == .butler ? "曜" : self.botID.displayName
+    }
+    
+    private var displayedPortrait: NSImage? {
+        if let data = self.pendingAvatarData, let img = NSImage(data: data) {
+            return img
+        }
+        if self.pendingResetAvatar {
+            return nil
+        }
+        return self.botStore.resolvedPortraitImage(for: self.botID, pointWidth: 72, pointHeight: 72)
+    }
+    
+    private var selectedModelLabel: String {
+        let defaultModel = self.activeGatewayGroup?.profile.displayModel ?? AIProvider.openCodeGo.defaultModel
+        let trimmedOverride = self.config.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedOverride.isEmpty {
+            return AppLanguage.text("跟随当前默认 (\(defaultModel))", en: "Default (\(defaultModel))")
+        }
+        if let epID = self.config.endpointID,
+           let group = self.gatewayGroups.first(where: { $0.profile.id == epID }),
+           self.gatewayGroups.count > 1
+        {
+            return "\(group.title) · \(trimmedOverride)"
+        }
+        return trimmedOverride
+    }
+    
+    private var hasEffectiveCustomAvatar: Bool {
+        if self.pendingAvatarData != nil { return true }
+        if self.pendingResetAvatar { return false }
+        return self.botStore.customAvatarImage(for: self.botID) != nil
+    }
     
     var body: some View {
-        let activeGroup = self.activeGatewayGroup
-        let character = self.resolvedCharacter
-        let artwork = character?.artwork(for: self.botID, variantOverride: self.config.artworkVariantIndex)
-        let accent = Color(hexString: character?.accentHex ?? self.botID.accentHex)
-        let portrait = self.botStore.resolvedPortraitImage(for: self.botID, pointWidth: 80, pointHeight: 80)
-        let shownName = self.botID == .butler
-            ? (self.butlerManager.name.isEmpty ? "曜" : self.butlerManager.name)
-            : (self.customNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? self.botID.displayName : self.customNameDraft)
-        let shownNick = self.botID == .butler
-            ? (self.butlerManager.nickname.isEmpty ? "总管" : self.butlerManager.nickname)
-            : (self.customNicknameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? self.botID.defaultNickname : self.customNicknameDraft)
-        let defaultModel = activeGroup?.profile.displayModel ?? AIProvider.openCodeGo.defaultModel
-        let activeGatewayTitle = activeGroup?.title ?? "API 网关"
-        let selectedModelLabel: String = {
-            let trimmedOverride = self.config.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmedOverride.isEmpty {
-                return AppLanguage.text("跟随当前默认 (\(defaultModel))", en: "Default (\(defaultModel))")
-            }
-            if let epID = self.config.endpointID,
-               let group = self.gatewayGroups.first(where: { $0.profile.id == epID }),
-               self.gatewayGroups.count > 1
-            {
-                return "\(group.title) · \(trimmedOverride)"
-            }
-            return trimmedOverride
-        }()
-        let hasCustomAvatar = self.botStore.customAvatarImage(for: self.botID) != nil
-        
         VStack(alignment: .leading, spacing: 14) {
-            // Identity Header with 1:1 Square Avatar Frame
-            HStack(spacing: 14) {
-                ZStack {
-                    Color(red: 0.965, green: 0.969, blue: 0.980)
-                    if let portrait {
-                        Image(nsImage: portrait)
-                            .resizable()
-                            .interpolation(.high)
-                            .scaledToFill()
-                            .frame(width: 80, height: 80, alignment: .center)
-                            .opacity(self.config.isEnabled ? 1.0 : 0.48)
-                    } else {
-                        Text(String(shownName.prefix(1)))
-                            .font(.system(size: 24, weight: .semibold))
-                            .foregroundStyle(accent)
-                    }
-                }
-                .frame(width: 80, height: 80)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .strokeBorder(accent.opacity(0.32), lineWidth: 0.85)
-                )
-                
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text(shownName)
-                            .font(.system(size: 15, weight: .semibold))
-                        Text("@\(shownNick)")
-                            .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
-                    Text(selectedModelLabel)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                
-                Spacer()
-                
-                Toggle(AppLanguage.text("启用", en: "Enabled"), isOn: self.$config.isEnabled)
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .onChange(of: self.config.isEnabled) { _, _ in
-                        self.saveBotConfig()
-                    }
-            }
-            
+            self.headerSummaryRow
             Divider()
-            
-            // Row 1: Avatar
-            HStack(spacing: 10) {
-                Text(AppLanguage.text("头像", en: "Avatar"))
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 64, alignment: .leading)
-                
-                Button(AppLanguage.text("上传头像", en: "Upload Avatar")) {
-                    self.pickCustomAvatar()
-                }
-                .controlSize(.small)
-                
-                Button {
-                    self.isShowingAvatarLibraryPicker.toggle()
-                } label: {
-                    Label(AppLanguage.text("头像库", en: "Library"), systemImage: "photo.stack")
-                }
-                .controlSize(.small)
-                .popover(isPresented: self.$isShowingAvatarLibraryPicker, arrowEdge: .bottom) {
-                    AvatarLibraryPickerPopover { asset in
-                        _ = UserMediaLibraryStore.shared.applyAvatar(assetID: asset.id, to: self.botID, botStore: self.botStore)
-                        self.isShowingAvatarLibraryPicker = false
-                    }
-                }
-                
-                if let character, character.artworks.count > 1 {
-                    Menu {
-                        Button(self.config.artworkVariantIndex == nil && !hasCustomAvatar ? "✓  自动分配形象" : "自动分配形象") {
-                            self.botStore.setCustomAvatarData(nil, for: self.botID)
-                            self.config.artworkVariantIndex = nil
-                            self.saveBotConfig()
-                            if self.botID == .butler {
-                                self.butlerManager.syncArtworkVariant(nil)
-                            }
-                        }
-                        Divider()
-                        ForEach(Array(character.artworks.enumerated()), id: \.element.id) { idx, item in
-                            let selected = (artwork?.id == item.id && self.config.artworkVariantIndex != nil && !hasCustomAvatar)
-                            Button(selected ? "✓  \(item.title)" : item.title) {
-                                self.botStore.setCustomAvatarData(nil, for: self.botID)
-                                self.config.artworkVariantIndex = idx
-                                self.saveBotConfig()
-                                if self.botID == .butler {
-                                    self.butlerManager.syncArtworkVariant(idx)
-                                }
-                            }
-                        }
-                    } label: {
-                        Text("\(artwork?.title ?? AppLanguage.text("切换形象", en: "Preset Art")) ▾")
-                            .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(.primary)
-                            .padding(.horizontal, 9)
-                            .frame(height: 24)
-                            .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
-                    .fixedSize()
-                }
-                
-                if hasCustomAvatar {
-                    Button(AppLanguage.text("恢复默认头像", en: "Reset Avatar")) {
-                        self.botStore.setCustomAvatarData(nil, for: self.botID)
-                    }
-                    .controlSize(.small)
-                }
-                
-                Spacer(minLength: 0)
-            }
-            
-            // Row 2: Name
-            HStack(spacing: 10) {
-                Text(AppLanguage.text("名称", en: "Name"))
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 64, alignment: .leading)
-                
-                if self.botID == .butler {
-                    TextField("曜", text: self.$butlerManager.name)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12.5))
-                } else {
-                    TextField(self.botID.displayName, text: self.$customNameDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12.5))
-                        .onChange(of: self.customNameDraft) { _, newValue in
-                            self.config.customName = newValue
-                            self.saveBotConfig()
-                        }
-                }
-            }
-            
-            // Row 3: Nickname
-            HStack(spacing: 10) {
-                Text(AppLanguage.text("昵称", en: "Nickname"))
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 64, alignment: .leading)
-                
-                if self.botID == .butler {
-                    TextField("总管", text: self.$butlerManager.nickname)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12.5))
-                } else {
-                    TextField(self.botID.defaultNickname, text: self.$customNicknameDraft)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12.5))
-                        .onChange(of: self.customNicknameDraft) { _, newValue in
-                            self.config.customNickname = newValue
-                            self.saveBotConfig()
-                        }
-                }
-            }
-            
-            // Row 4: Model Selection across Configured Subscriptions
-            HStack(spacing: 10) {
-                Text(AppLanguage.text("模型", en: "Model"))
-                    .font(.system(size: 12.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 64, alignment: .leading)
-                
-                Menu {
-                    let isFollowingDefault = (self.config.endpointID == nil && self.config.modelOverride.isEmpty)
-                    Button {
-                        let previousBrand = self.resolvedCharacter?.id
-                        self.config.endpointID = nil
-                        self.config.modelOverride = ""
-                        if self.resolvedCharacter?.id != previousBrand {
-                            self.config.artworkVariantIndex = nil
-                        }
-                        self.saveBotConfig()
-                    } label: {
-                        Text(isFollowingDefault
-                             ? "✓  跟随 \(activeGatewayTitle) 默认 (\(defaultModel))"
-                             : "跟随 \(activeGatewayTitle) 默认 (\(defaultModel))")
-                    }
-                    
-                    ForEach(self.gatewayGroups) { group in
-                        if !group.models.isEmpty {
-                            Divider()
-                            Section(group.isActive ? "\(group.title)（当前）" : group.title) {
-                                ForEach(group.models, id: \.self) { modelID in
-                                    let picked = (self.config.modelOverride == modelID
-                                                  && (self.config.endpointID == group.profile.id || (self.config.endpointID == nil && group.isActive)))
-                                    Button(picked ? "✓  \(modelID)" : modelID) {
-                                        let previousBrand = self.resolvedCharacter?.id
-                                        self.config.endpointID = group.profile.id
-                                        self.config.modelOverride = modelID
-                                        if self.resolvedCharacter?.id != previousBrand {
-                                            self.config.artworkVariantIndex = nil
-                                        }
-                                        self.saveBotConfig()
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    
-                    Divider()
-                    Button(self.isRefreshingModels ? "正在刷新模型…" : "刷新模型列表") {
-                        Task { await self.refreshModels() }
-                    }
-                    .disabled(self.isRefreshingModels)
-                } label: {
-                    HStack(spacing: 6) {
-                        Text(selectedModelLabel)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                        Spacer(minLength: 4)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 9.5, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.horizontal, 10)
-                    .frame(minHeight: 28)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .strokeBorder(self.cardBorder, lineWidth: 0.75)
-                    )
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                
-                Button {
-                    Task { await self.refreshModels() }
-                } label: {
-                    HStack(spacing: 4) {
-                        if self.isRefreshingModels {
-                            ProgressView()
-                                .controlSize(.small)
-                                .scaleEffect(0.7)
-                                .frame(width: 12, height: 12)
-                        }
-                        Text(self.isRefreshingModels
-                             ? AppLanguage.text("刷新中", en: "Fetching")
-                             : AppLanguage.text("刷新模型", en: "Refresh"))
-                            .font(.system(size: 11))
-                    }
-                }
-                .controlSize(.small)
-                .disabled(self.isRefreshingModels)
-            }
-            
+            self.avatarPickerRow
+            self.nicknameRow
+            self.modelPickerRow
+            self.personaEditorSection
             Divider()
-            
-            BotEmotionInspectorRow(botID: self.botID.rawValue)
-            
-            Divider()
-            
-            HStack {
-                Button(AppLanguage.text("恢复默认", en: "Reset Defaults"), role: .destructive) {
-                    self.botStore.resetBotToDefaults(self.botID)
-                    if self.botID == .butler {
-                        self.butlerManager.name = "曜"
-                        self.butlerManager.nickname = "总管"
-                        self.butlerManager.syncArtworkVariant(nil)
-                    }
-                    self.loadInitialState()
-                }
-                .controlSize(.small)
-                
-                Spacer()
-            }
+            self.actionBar
         }
         .padding(14)
         .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -3505,6 +3248,251 @@ private struct AIBotInlineInspectorView: View {
         }
     }
     
+    private var headerSummaryRow: some View {
+        let accent = Color(hexString: self.resolvedCharacter?.accentHex ?? self.botID.accentHex)
+        let shownName = self.displayedNickname
+        return HStack(spacing: 14) {
+            ZStack {
+                Color(red: 0.965, green: 0.969, blue: 0.980)
+                if let portrait = self.displayedPortrait {
+                    Image(nsImage: portrait)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFill()
+                        .frame(width: 72, height: 72, alignment: .center)
+                } else {
+                    Text(String(shownName.prefix(1)))
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(accent)
+                }
+            }
+            .frame(width: 72, height: 72)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(accent.opacity(0.32), lineWidth: 0.85)
+            )
+            
+            VStack(alignment: .leading, spacing: 4) {
+                Text(shownName)
+                    .font(.system(size: 15, weight: .semibold))
+                Text(self.selectedModelLabel)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+        }
+    }
+    
+    private var avatarPickerRow: some View {
+        HStack(spacing: 10) {
+            Text(AppLanguage.text("头像", en: "Avatar"))
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 74, alignment: .leading)
+            
+            Button(AppLanguage.text("上传头像", en: "Upload Avatar")) {
+                self.pickCustomAvatar()
+            }
+            .controlSize(.small)
+            
+            Button {
+                self.isShowingAvatarLibraryPicker.toggle()
+            } label: {
+                Label(AppLanguage.text("头像库", en: "Library"), systemImage: "photo.stack")
+            }
+            .controlSize(.small)
+            .popover(isPresented: self.$isShowingAvatarLibraryPicker, arrowEdge: .bottom) {
+                AvatarLibraryPickerPopover { asset in
+                    let url = UserMediaLibraryStore.shared.fileURL(for: asset)
+                    if let data = try? Data(contentsOf: url), !data.isEmpty {
+                        self.pendingAvatarData = data
+                        self.pendingAvatarSourceURL = nil
+                        self.pendingResetAvatar = false
+                        self.savedBannerVisible = false
+                    }
+                    self.isShowingAvatarLibraryPicker = false
+                }
+            }
+            
+            if self.hasEffectiveCustomAvatar {
+                Button(AppLanguage.text("恢复默认", en: "Reset")) {
+                    self.pendingAvatarData = nil
+                    self.pendingAvatarSourceURL = nil
+                    self.pendingResetAvatar = true
+                    self.savedBannerVisible = false
+                }
+                .controlSize(.small)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+    
+    private var nicknameRow: some View {
+        HStack(spacing: 10) {
+            Text(AppLanguage.text("昵称", en: "Nickname"))
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 74, alignment: .leading)
+            
+            TextField(
+                self.botID == .butler ? "曜" : self.botID.displayName,
+                text: self.$nicknameDraft
+            )
+            .textFieldStyle(.roundedBorder)
+            .font(.system(size: 12.5))
+            .onChange(of: self.nicknameDraft) { _, _ in
+                self.savedBannerVisible = false
+            }
+        }
+    }
+    
+    private var modelPickerRow: some View {
+        let activeGatewayTitle = self.activeGatewayGroup?.title ?? "API 网关"
+        let defaultModel = self.activeGatewayGroup?.profile.displayModel ?? AIProvider.openCodeGo.defaultModel
+        return HStack(spacing: 10) {
+            Text(AppLanguage.text("后端模型", en: "Model"))
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 74, alignment: .leading)
+            
+            Menu {
+                let isFollowingDefault = (self.config.endpointID == nil && self.config.modelOverride.isEmpty)
+                Button {
+                    self.config.endpointID = nil
+                    self.config.modelOverride = ""
+                    self.savedBannerVisible = false
+                } label: {
+                    Text(isFollowingDefault
+                         ? "✓  跟随 \(activeGatewayTitle) 默认 (\(defaultModel))"
+                         : "跟随 \(activeGatewayTitle) 默认 (\(defaultModel))")
+                }
+                
+                ForEach(self.gatewayGroups) { group in
+                    if !group.models.isEmpty {
+                        Divider()
+                        Section(group.title) {
+                            ForEach(group.models, id: \.self) { modelID in
+                                let picked = (self.config.modelOverride == modelID
+                                              && (self.config.endpointID == group.profile.id || (self.config.endpointID == nil && group.isActive)))
+                                Button(picked ? "✓  \(modelID)" : modelID) {
+                                    self.config.endpointID = group.profile.id
+                                    self.config.modelOverride = modelID
+                                    self.savedBannerVisible = false
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                Divider()
+                Button(self.isRefreshingModels ? "正在刷新模型…" : "刷新模型列表") {
+                    Task { await self.refreshModels() }
+                }
+                .disabled(self.isRefreshingModels)
+            } label: {
+                HStack(spacing: 6) {
+                    Text(self.selectedModelLabel)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 10)
+                .frame(minHeight: 28)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(self.cardBorder, lineWidth: 0.75)
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            
+            Button {
+                Task { await self.refreshModels() }
+            } label: {
+                HStack(spacing: 4) {
+                    if self.isRefreshingModels {
+                        ProgressView()
+                            .controlSize(.small)
+                            .scaleEffect(0.7)
+                            .frame(width: 12, height: 12)
+                    }
+                    Text(self.isRefreshingModels
+                         ? AppLanguage.text("刷新中", en: "Fetching")
+                         : AppLanguage.text("刷新模型", en: "Refresh"))
+                        .font(.system(size: 11.5))
+                }
+            }
+            .controlSize(.small)
+            .disabled(self.isRefreshingModels)
+        }
+    }
+    
+    private var personaEditorSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(AppLanguage.text("性格与情绪", en: "Personality"))
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(.secondary)
+            
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: self.$personaDraft)
+                    .font(.system(size: 12.5))
+                    .scrollContentBackground(.hidden)
+                    .padding(6)
+                    .onChange(of: self.personaDraft) { _, _ in
+                        self.savedBannerVisible = false
+                    }
+                if self.personaDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(AppLanguage.text("输入性格、语气与情绪", en: "Describe personality and mood"))
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 8)
+                        .allowsHitTesting(false)
+                }
+            }
+            .frame(height: 88)
+            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 0.8))
+        }
+    }
+    
+    private var actionBar: some View {
+        HStack(spacing: 10) {
+            Button(AppLanguage.text("恢复默认", en: "Reset"), role: .destructive) {
+                self.botStore.resetBotToDefaults(self.botID)
+                if self.botID == .butler {
+                    self.butlerManager.name = "曜"
+                    self.butlerManager.nickname = "总管"
+                    self.butlerManager.syncArtworkVariant(nil)
+                }
+                self.loadInitialState()
+            }
+            .controlSize(.small)
+            
+            Spacer()
+            
+            if self.savedBannerVisible {
+                Text(AppLanguage.text("已保存", en: "Saved"))
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .transition(.opacity)
+            }
+            
+            Button(AppLanguage.text("保存", en: "Save")) {
+                self.commitChanges()
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        }
+    }
     
     private func pickCustomAvatar() {
         let panel = NSOpenPanel()
@@ -3518,26 +3506,69 @@ private struct AIBotInlineInspectorView: View {
                   let data = try? Data(contentsOf: url)
             else { return }
             Task { @MainActor in
-                _ = UserMediaLibraryStore.shared.importURLs([url], preferredKind: .avatar)
-                self.botStore.setCustomAvatarData(data, for: self.botID)
+                self.pendingAvatarData = data
+                self.pendingAvatarSourceURL = url
+                self.pendingResetAvatar = false
+                self.savedBannerVisible = false
             }
         }
     }
     
-    
     private func loadInitialState() {
         let loaded = self.botStore.config(for: self.botID)
         self.config = loaded
-        self.customNameDraft = loaded.customName
-        self.customNicknameDraft = loaded.customNickname
+        if self.botID == .butler {
+            self.nicknameDraft = self.butlerManager.name
+        } else {
+            let preferred = loaded.customName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let fallbackNick = loaded.customNickname.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.nicknameDraft = preferred.isEmpty ? fallbackNick : preferred
+        }
+        self.personaDraft = loaded.customPersona
+        self.pendingAvatarData = nil
+        self.pendingAvatarSourceURL = nil
+        self.pendingResetAvatar = false
+        self.savedBannerVisible = false
         self.gatewayGroups = self.botStore.selectableGatewayGroups()
     }
     
-    
-    private func saveBotConfig() {
+    private func commitChanges() {
+        if self.pendingResetAvatar {
+            self.botStore.setCustomAvatarData(nil, for: self.botID)
+        } else if let avatarData = self.pendingAvatarData {
+            if let sourceURL = self.pendingAvatarSourceURL {
+                _ = UserMediaLibraryStore.shared.importURLs([sourceURL], preferredKind: .avatar)
+            }
+            self.botStore.setCustomAvatarData(avatarData, for: self.botID)
+        }
+        self.pendingAvatarData = nil
+        self.pendingAvatarSourceURL = nil
+        self.pendingResetAvatar = false
+        
+        let cleanNick = self.nicknameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if self.botID == .butler {
+            self.butlerManager.name = cleanNick.isEmpty ? "曜" : cleanNick
+            self.butlerManager.nickname = cleanNick.isEmpty ? "总管" : cleanNick
+        } else {
+            self.config.customName = cleanNick
+            self.config.customNickname = cleanNick
+        }
+        self.config.customPersona = self.personaDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         self.botStore.updateConfig(self.config, for: self.botID)
+        self.onEndpointsUpdated()
+        
+        withAnimation(.easeOut(duration: 0.15)) {
+            self.savedBannerVisible = true
+        }
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            await MainActor.run {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    self.savedBannerVisible = false
+                }
+            }
+        }
     }
-    
     
     private func refreshModels() async {
         self.isRefreshingModels = true

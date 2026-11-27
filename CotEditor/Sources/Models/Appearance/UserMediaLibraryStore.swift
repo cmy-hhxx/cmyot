@@ -341,7 +341,7 @@ final class UserMediaLibraryStore {
     }
     
     
-    func reloadFromDatabase() {
+    func reloadFromDatabase(overwriteMismatchedBlobs: Bool = false) {
         let decoder = JSONDecoder()
         
         let rawAvatars = self.database.string(forKey: CotLocalDatabase.ConfigKey.userAvatarLibraryJSON)
@@ -371,10 +371,40 @@ final class UserMediaLibraryStore {
             self.boardAssignments = [:]
         }
         
+        _ = self.database.restoreMediaBlobsToDisk(
+            namespace: .mediaAvatar,
+            rootDirectory: self.directory(for: .avatar),
+            allowedRelativePaths: Set(self.expectedRelativePaths(for: .avatar)),
+            overwriteMismatched: overwriteMismatchedBlobs
+        )
+        _ = self.database.restoreMediaBlobsToDisk(
+            namespace: .mediaBackground,
+            rootDirectory: self.directory(for: .background),
+            allowedRelativePaths: Set(self.expectedRelativePaths(for: .background)),
+            overwriteMismatched: overwriteMismatchedBlobs
+        )
+        
         self.thumbnailCache.removeAllObjects()
         self.fullImageCache.removeAllObjects()
         self.revision &+= 1
         NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+    }
+    
+    
+    /// Backfills any existing disk-backed avatar/background files (and originals) into SQLite `media_blobs`.
+    func syncBlobsToDatabase() {
+        self.database.syncDiskFilesToMediaBlobs(
+            namespace: .mediaAvatar,
+            rootDirectory: self.directory(for: .avatar),
+            expectedRelativePaths: self.expectedRelativePaths(for: .avatar),
+            pruneUnreferenced: true
+        )
+        self.database.syncDiskFilesToMediaBlobs(
+            namespace: .mediaBackground,
+            rootDirectory: self.directory(for: .background),
+            expectedRelativePaths: self.expectedRelativePaths(for: .background),
+            pruneUnreferenced: true
+        )
     }
     
     
@@ -405,12 +435,14 @@ final class UserMediaLibraryStore {
     }
     
     func originalFileURL(for asset: UserMediaAsset) -> URL {
+        self.ensureOriginalFileOnDisk(asset)
         if let orig = asset.originalFilename {
             let candidate = self.originalsDirectory(for: asset.kind).appending(path: orig)
             if FileManager.default.fileExists(atPath: candidate.path(percentEncoded: false)) {
                 return candidate
             }
         }
+        self.ensureAssetFileOnDisk(asset)
         return self.fileURL(for: asset)
     }
     
@@ -428,6 +460,7 @@ final class UserMediaLibraryStore {
         if let cached = self.thumbnailCache.object(forKey: key) {
             return cached
         }
+        self.ensureAssetFileOnDisk(asset)
         let url = self.fileURL(for: asset)
         guard let cg = Self.normalizedCGImage(fromURL: url, maxDimension: maxPixelSize) else {
             return nil
@@ -442,6 +475,7 @@ final class UserMediaLibraryStore {
         if let cached = self.fullImageCache.object(forKey: key) {
             return cached
         }
+        self.ensureAssetFileOnDisk(asset)
         let url = self.fileURL(for: asset)
         let maxDim: CGFloat = (asset.kind == .avatar) ? 512 : 2400
         if let cg = Self.normalizedCGImage(fromURL: url, maxDimension: maxDim) {
@@ -625,6 +659,13 @@ final class UserMediaLibraryStore {
         if let originalURL {
             try? FileManager.default.removeItem(at: originalURL)
         }
+        let ns = self.blobNamespace(for: kind)
+        if let filename = url?.lastPathComponent {
+            self.database.deleteMediaBlob(namespace: ns, relativePath: filename)
+        }
+        if let origName = originalURL?.lastPathComponent {
+            self.database.deleteMediaBlob(namespace: ns, relativePath: "originals/\(origName)")
+        }
         self.fullImageCache.removeObject(forKey: id as NSString)
         self.thumbnailCache.removeAllObjects()
         self.notifyChanged()
@@ -644,7 +685,10 @@ final class UserMediaLibraryStore {
     ) -> UserMediaAsset? {
         guard let existing = self.asset(id: id, kind: kind) else { return nil }
         let clampedSpec = editSpec.clamped()
+        self.ensureAssetFileOnDisk(existing)
+        self.ensureOriginalFileOnDisk(existing)
         let activeURL = self.fileURL(for: existing)
+        let ns = self.blobNamespace(for: kind)
         
         // Preserve untouched original master once before baking edits.
         var preservedOriginalName = existing.originalFilename
@@ -659,6 +703,12 @@ final class UserMediaLibraryStore {
                 preservedOriginalName = existing.filename
             }
         }
+        if let origName = preservedOriginalName {
+            let origURL = self.originalsDirectory(for: kind).appending(path: origName)
+            if let origData = try? Data(contentsOf: origURL), !origData.isEmpty {
+                self.database.upsertMediaBlob(namespace: ns, relativePath: "originals/\(origName)", data: origData)
+            }
+        }
         
         let masterURL = preservedOriginalName.map { self.originalsDirectory(for: kind).appending(path: $0) } ?? activeURL
         let maxDim: CGFloat = (kind == .avatar) ? 640 : 2400
@@ -669,6 +719,7 @@ final class UserMediaLibraryStore {
         
         do {
             try encoded.data.write(to: activeURL, options: .atomic)
+            self.database.upsertMediaBlob(namespace: ns, relativePath: existing.filename, data: encoded.data)
         } catch {
             return nil
         }
@@ -833,6 +884,7 @@ final class UserMediaLibraryStore {
     @discardableResult
     func applyAvatar(assetID: String, to botID: AIBotID, botStore: AIBotStore = .shared) -> Bool {
         guard let asset = self.asset(id: assetID, kind: .avatar) else { return false }
+        self.ensureAssetFileOnDisk(asset)
         let url = self.fileURL(for: asset)
         guard let data = try? Data(contentsOf: url), !data.isEmpty else { return false }
         botStore.setCustomAvatarData(data, for: botID)
@@ -854,6 +906,7 @@ final class UserMediaLibraryStore {
     @discardableResult
     func applyBackgroundToEditorWallpaper(assetID: String, wallpaperManager: WallpaperManager = .shared) -> Bool {
         guard let asset = self.asset(id: assetID, kind: .background) else { return false }
+        self.ensureAssetFileOnDisk(asset)
         let url = self.fileURL(for: asset)
         return wallpaperManager.selectMediaLibraryBackground(assetID: asset.id, title: asset.title, fileURL: url) != nil
     }
@@ -862,6 +915,7 @@ final class UserMediaLibraryStore {
     @discardableResult
     func applyBackgroundToDashboardHero(assetID: String, heroStore: DashboardHeroCoverStore = .shared) -> Bool {
         guard let asset = self.asset(id: assetID, kind: .background) else { return false }
+        self.ensureAssetFileOnDisk(asset)
         let url = self.fileURL(for: asset)
         return heroStore.setCoverImage(from: url)
     }
@@ -952,6 +1006,12 @@ final class UserMediaLibraryStore {
             return nil
         }
         
+        self.database.upsertMediaBlob(
+            namespace: self.blobNamespace(for: kind),
+            relativePath: filename,
+            data: data
+        )
+        
         let asset = UserMediaAsset(
             id: id,
             kind: kind,
@@ -972,6 +1032,45 @@ final class UserMediaLibraryStore {
         self.persistCatalog(for: kind)
         self.notifyChanged()
         return asset
+    }
+    
+    
+    private func blobNamespace(for kind: UserMediaKind) -> MediaBlobNamespace {
+        switch kind {
+            case .avatar: .mediaAvatar
+            case .background: .mediaBackground
+        }
+    }
+    
+    
+    private func expectedRelativePaths(for kind: UserMediaKind) -> [String] {
+        var paths: [String] = []
+        for asset in self.assets(for: kind) {
+            paths.append(asset.filename)
+            if let orig = asset.originalFilename {
+                paths.append("originals/\(orig)")
+            }
+        }
+        return paths
+    }
+    
+    
+    private func ensureAssetFileOnDisk(_ asset: UserMediaAsset) {
+        _ = self.database.ensureDiskFileFromMediaBlob(
+            namespace: self.blobNamespace(for: asset.kind),
+            relativePath: asset.filename,
+            rootDirectory: self.directory(for: asset.kind)
+        )
+    }
+    
+    
+    private func ensureOriginalFileOnDisk(_ asset: UserMediaAsset) {
+        guard let orig = asset.originalFilename else { return }
+        _ = self.database.ensureDiskFileFromMediaBlob(
+            namespace: self.blobNamespace(for: asset.kind),
+            relativePath: "originals/\(orig)",
+            rootDirectory: self.directory(for: asset.kind)
+        )
     }
     
     
