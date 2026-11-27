@@ -172,6 +172,15 @@ const MeetingMembersDrawer = memo(function MeetingMembersDrawer({
               >
                 <div className="flex items-center gap-1.5">
                   <span className="truncate text-[13px] font-medium text-ink">{bot.name}</span>
+                  {(bot.status === "thinking" || bot.status === "speaking") && (
+                    <span
+                      className="size-1.5 shrink-0 rounded-full"
+                      style={{
+                        backgroundColor: bot.accentHex || "var(--accent)",
+                        animation: "pixel-on 900ms ease-in-out infinite",
+                      }}
+                    />
+                  )}
                 </div>
                 {bot.roleLabel && (
                   <div className="truncate text-[12px] text-ink-3">

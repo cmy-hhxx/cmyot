@@ -170,7 +170,7 @@ export type MeetingRoomParticipant = {
   handle: string;
   roleLabel: string;
   accentHex: string;
-  status: "idle" | "speaking" | "done" | "updated";
+  status: "idle" | "thinking" | "speaking" | "done" | "updated";
   todayBadge: string;
   moodLabel?: string | null;
   avatarURL?: string | null;

@@ -1165,19 +1165,28 @@ export default function App() {
                 }`}
               >
                 <span className="flex items-center -space-x-1.5">
-                  {activeMeetingParticipants.slice(0, 4).map((bot) => (
-                    <span
-                      key={bot.id}
-                      className="flex size-5 items-center justify-center overflow-hidden rounded-[5px] bg-surface ring-[1.5px] ring-page"
-                      style={!bot.avatarURL ? { backgroundColor: `${bot.accentHex}24`, color: bot.accentHex } : undefined}
-                    >
-                      {bot.avatarURL ? (
-                        <img src={bot.avatarURL} alt={bot.name} className="size-full object-cover" />
-                      ) : (
-                        <span className="text-[10px] font-semibold">{bot.name.slice(0, 1)}</span>
-                      )}
-                    </span>
-                  ))}
+                  {activeMeetingParticipants.slice(0, 4).map((bot) => {
+                    const isActiveBot = bot.status === "thinking" || bot.status === "speaking";
+                    return (
+                      <span
+                        key={bot.id}
+                        className="relative flex size-5 items-center justify-center overflow-hidden rounded-[5px] bg-surface ring-[1.5px] ring-page"
+                        style={
+                          !bot.avatarURL
+                            ? { backgroundColor: `${bot.accentHex}24`, color: bot.accentHex }
+                            : isActiveBot
+                              ? { boxShadow: `0 0 0 1.5px ${bot.accentHex || "var(--accent)"}` }
+                              : undefined
+                        }
+                      >
+                        {bot.avatarURL ? (
+                          <img src={bot.avatarURL} alt={bot.name} className="size-full object-cover" />
+                        ) : (
+                          <span className="text-[10px] font-semibold">{bot.name.slice(0, 1)}</span>
+                        )}
+                      </span>
+                    );
+                  })}
                 </span>
                 <span className="tabular-nums">{activeMeetingParticipants.length}</span>
               </button>
@@ -1290,6 +1299,20 @@ export default function App() {
                 <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.604.852.997 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
               </svg>
             </button>
+
+            {!isNews && !state.isDockedPane && (
+              <button
+                type="button"
+                onClick={() => postToNative("dismissPanel")}
+                title={state.locale === "zh" ? "关闭悬浮窗" : "Close window"}
+                aria-label={state.locale === "zh" ? "关闭悬浮窗" : "Close window"}
+                className="flex size-7.5 items-center justify-center rounded-[7px] text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round">
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+              </button>
+            )}
           </div>
         </header>
 
@@ -1347,6 +1370,7 @@ export default function App() {
         {isMeetingRoom ? (
           <MeetingRoomView
             locale={state.locale}
+            activeSessionID={state.activeMeetingSessionID}
             messages={state.meetingRoomMessages ?? []}
             participants={state.meetingRoomBots ?? []}
             isConvening={Boolean(state.meetingRoomIsConvening)}

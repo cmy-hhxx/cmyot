@@ -268,4 +268,97 @@ struct MeetingRoomQualityTests {
         #expect(kept?.status == "done")
         #expect(kept?.text == "已经输出的部分结论")
     }
+    
+    
+    @Test
+    func stickerTurnBypassesStandupAndPrioritizesResponsiveBots() {
+        #expect(!MeetingRoomRouter.isProgressCheckIntent("", userSentSticker: true))
+        #expect(MeetingRoomRouter.isProgressCheckIntent("", userSentSticker: false))
+        
+        let stickerPlan = MeetingRoomRouter.parsePrompt(
+            "",
+            availableBots: AIBotID.allCases,
+            userSentSticker: true
+        )
+        #expect(stickerPlan.cleanedPrompt.isEmpty)
+        
+        let customBot = UnifiedBotDescriptor(
+            id: "custom_warm_friend",
+            isBuiltIn: false,
+            builtInID: nil,
+            customProfile: nil,
+            name: "暖心搭子",
+            nickname: "暖心",
+            handle: "@暖心",
+            roleLabel: "情绪搭子",
+            accentHex: "#F97316",
+            personaPrompt: "温柔会安慰人，反应快",
+            preferredStickerCategories: ["cat"],
+            emotion: BotEmotionEngine.initialState(botID: "custom_warm_friend", baseline: .warm),
+            isEnabled: true
+        )
+        let organizeBot = UnifiedBotDescriptor(
+            id: AIBotID.organizeAndMerge.rawValue,
+            isBuiltIn: true,
+            builtInID: .organizeAndMerge,
+            customProfile: nil,
+            name: "工作区整理师",
+            nickname: "整理",
+            handle: "@整理",
+            roleLabel: "整理",
+            accentHex: "#64748B",
+            personaPrompt: "",
+            preferredStickerCategories: [],
+            emotion: BotEmotionEngine.initialState(botID: AIBotID.organizeAndMerge.rawValue, baseline: .calm),
+            isEnabled: true
+        )
+        let ranked = MeetingWorkEvidenceBuilder.selectResponsiveChatBots(
+            for: "忧伤 猫 委屈",
+            candidates: [organizeBot, customBot],
+            isStickerTurn: true
+        )
+        #expect(ranked.first?.id == customBot.id)
+        
+        let stickerPrompt = MeetingRoomPersona.systemPrompt(
+            bot: customBot,
+            isMentioned: false,
+            isButlerSynthesis: false,
+            isProgressCheck: false,
+            userSentSticker: true,
+            mustRespond: true
+        )
+        #expect(stickerPrompt.contains("用户需求永远第一"))
+        #expect(stickerPrompt.contains("不是让你汇报工作"))
+        #expect(stickerPrompt.contains("严禁回复 PASS"))
+        #expect(!stickerPrompt.contains("只回复 [PASS]"))
+    }
+    
+    
+    @MainActor
+    @Test
+    func meetingRoomPersistsActiveStateSessionAndRespondsToStickers() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appending(path: "cot_mr_persist_\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        
+        let db = CotLocalDatabase(customURL: tempDir.appending(path: "persist.sqlite3"))
+        let botStore = AIBotStore(database: db)
+        let manager = ButlerMeetingRoomManager(database: db)
+        let second = manager.createSession(title: "表情互动测试", botStore: botStore)
+        manager.setActive(true)
+        
+        let reloaded = ButlerMeetingRoomManager(database: db)
+        #expect(reloaded.isActive == true)
+        #expect(reloaded.activeSessionID == second.id)
+        
+        // Verify WebUI bundle ships distinct per-bot waiting animations without banned copy
+        let html = BeautifulAgentUIBundle.htmlDocument()
+        #expect(html.contains("bot-bar-wave"))
+        #expect(html.contains("bot-ink-line"))
+        #expect(html.contains("bot-ripple-ring"))
+        #expect(html.contains("bot-stack-slide"))
+        #expect(html.contains("bot-scan-beam"))
+        #expect(!html.contains("正在输入"))
+    }
 }

@@ -26,6 +26,7 @@ nonisolated enum BotEmotionEngine {
     
     private static let praiseKeywords = ["厉害", "不错", "棒", "谢", "好评", "稳", "牛", "赞", "nice", "good", "great", "爱了", "辛苦"]
     private static let complaintKeywords = ["又改", "重做", "错了", "卡死", "崩溃", "离谱", "无语", "烦", "不行", "bug", "报错", "返工", "垃圾"]
+    private static let sadKeywords = ["忧伤", "伤心", "悲伤", "难过", "emo", "委屈", "心累", "叹气", "郁闷", "哭", "丧"]
     private static let tiredKeywords = ["好累", "困", "摸鱼", "下班", "不想干", "摆烂", "熬夜", "太晚"]
     private static let workKeywords = ["评测", "梳理", "进展", "周报", "整理", "分析", "代码", "数据", "总结", "方案"]
     
@@ -91,6 +92,10 @@ nonisolated enum BotEmotionEngine {
             next.mood = explicitMoodTag
             next.energy = Self.adjustedEnergy(current: next.energy, for: explicitMoodTag)
             next.lastReason = "对话氛围触发"
+        } else if Self.sadKeywords.contains(where: { combined.contains($0) }) {
+            next.mood = (next.baseline == .warm || next.baseline == .optimistic) ? .aggrieved : .calm
+            next.energy = max(28, next.energy - 6)
+            next.lastReason = "感受到用户低落情绪"
         } else if Self.complaintKeywords.contains(where: { combined.contains($0) }) {
             next.mood = (next.baseline == .warm) ? .aggrieved : .speechless
             next.energy = max(18, next.energy - 10)

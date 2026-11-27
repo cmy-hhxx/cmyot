@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { copyTextWithFallback } from "../bridge";
 import MarkdownProse from "./MarkdownProse";
+import MeetingBotThinkingCard from "./MeetingBotThinkingCard";
 import MeetingMembersDrawer from "./MeetingMembersDrawer";
 import { renderTextWithMentions } from "./MentionText";
 import PromptBar, { type PromptBarHandle } from "./PromptBar";
@@ -14,6 +15,7 @@ import type {
 
 type MeetingRoomViewProps = {
   locale: "zh" | "en";
+  activeSessionID?: string;
   messages: MeetingRoomMessage[];
   participants: MeetingRoomParticipant[];
   isConvening: boolean;
@@ -304,56 +306,9 @@ const ChatMessageBubbleRow = memo(function ChatMessageBubbleRow({
   );
 });
 
-const MeetingTypingBubble = memo(function MeetingTypingBubble({
-  speakingBots,
-}: {
-  speakingBots: MeetingRoomParticipant[];
-}) {
-  return (
-    <div className="flex items-center justify-start" style={{ animation: "fade-in 160ms ease-out both" }}>
-      <div className="inline-flex items-center gap-2 rounded-full border border-line bg-surface px-3 py-1.5 shadow-hairline">
-        {speakingBots.length > 0 && (
-          <div className="flex items-center gap-1.5">
-            {speakingBots.slice(0, 3).map((bot) => (
-              <span key={bot.id} className="inline-flex items-center gap-1">
-                {bot.avatarURL ? (
-                  <img
-                    src={bot.avatarURL}
-                    alt={bot.name}
-                    className="size-[18px] shrink-0 rounded-[5px] border border-line object-cover"
-                  />
-                ) : (
-                  <span
-                    className="flex size-[18px] shrink-0 items-center justify-center rounded-[5px] text-[10px] font-semibold"
-                    style={{
-                      backgroundColor: `${bot.accentHex || "var(--accent)"}20`,
-                      color: bot.accentHex || "var(--accent)",
-                    }}
-                  >
-                    {bot.name.slice(0, 1)}
-                  </span>
-                )}
-                <span className="text-[12px] font-medium text-ink-2">{bot.name}</span>
-              </span>
-            ))}
-          </div>
-        )}
-        <span aria-hidden className="flex items-center gap-1">
-          {[0, 160, 320].map((delay) => (
-            <span
-              key={delay}
-              className="size-[5px] rounded-full bg-ink-3"
-              style={{ animation: `pixel-on 900ms ease-in-out ${delay}ms infinite` }}
-            />
-          ))}
-        </span>
-      </div>
-    </div>
-  );
-});
-
 const MeetingRoomView = memo(function MeetingRoomView({
   locale,
+  activeSessionID,
   messages,
   participants,
   isConvening,
@@ -378,6 +333,7 @@ const MeetingRoomView = memo(function MeetingRoomView({
 }: MeetingRoomViewProps) {
   const promptBarRef = useRef<PromptBarHandle>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
   const composerRef = useRef<HTMLDivElement>(null);
   const [composerH, setComposerH] = useState(112);
   const [previewSticker, setPreviewSticker] = useState<{ url: string; caption?: string | null } | null>(null);
@@ -387,11 +343,19 @@ const MeetingRoomView = memo(function MeetingRoomView({
     () => messages.some((m) => m.role === "bot" && m.status === "speaking" && m.text.trim().length > 0),
     [messages],
   );
-  const activeSpeakingBots = useMemo(
-    () => participants.filter((p) => p.status === "speaking"),
+  const activeThinkingBots = useMemo(
+    () => participants.filter((p) => p.status === "thinking" || p.status === "speaking"),
     [participants],
   );
+  const lastUserMessage = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      if (messages[i].role === "user") return messages[i];
+    }
+    return null;
+  }, [messages]);
+  const isStickerContext = Boolean(lastUserMessage?.stickerURL && !lastUserMessage.text.trim());
   const showTypingBubble = isConvening && !hasActiveTextStream;
+  const draftStorageKey = activeSessionID ? `cot.meetingDraft.${activeSessionID}` : "cot.meetingDraft.default";
   const favoriteStickerIDs = useMemo(
     () => new Set(stickers.filter((s) => s.isFavorite).map((s) => s.id)),
     [stickers],
@@ -432,13 +396,27 @@ const MeetingRoomView = memo(function MeetingRoomView({
   }, [hasMessages]);
 
   useEffect(() => {
+    stickToBottomRef.current = true;
+  }, [activeSessionID]);
+
+  useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+    const onScroll = () => {
+      stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [hasMessages, activeSessionID]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !stickToBottomRef.current) return;
     const raf = requestAnimationFrame(() => {
       el.scrollTop = el.scrollHeight;
     });
     return () => cancelAnimationFrame(raf);
-  }, [messages]);
+  }, [messages, showTypingBubble, activeThinkingBots]);
 
   const insertBotMention = useCallback((label: string) => {
     const clean = label.replace(/^@+/, "").trim();
@@ -462,6 +440,7 @@ const MeetingRoomView = memo(function MeetingRoomView({
                 ref={promptBarRef}
                 tall
                 inlineBotMentions
+                draftStorageKey={draftStorageKey}
                 placeholder={locale === "zh" ? "输入议题或 @ 指定 Bots" : "Ask all bots or @mention one"}
                 locale={locale}
                 isStreaming={isConvening}
@@ -505,7 +484,13 @@ const MeetingRoomView = memo(function MeetingRoomView({
                     onToggleFavoriteSticker={onToggleFavoriteSticker}
                   />
                 ))}
-                {showTypingBubble && <MeetingTypingBubble speakingBots={activeSpeakingBots} />}
+                {showTypingBubble && (
+                  <MeetingBotThinkingCard
+                    thinkingBots={activeThinkingBots}
+                    locale={locale}
+                    isStickerContext={isStickerContext}
+                  />
+                )}
               </div>
             </div>
 
@@ -519,6 +504,7 @@ const MeetingRoomView = memo(function MeetingRoomView({
                 <PromptBar
                   ref={promptBarRef}
                   inlineBotMentions
+                  draftStorageKey={draftStorageKey}
                   placeholder={locale === "zh" ? "发言，或 @ 指定成员" : "Reply or @mention"}
                   locale={locale}
                   isStreaming={isConvening}

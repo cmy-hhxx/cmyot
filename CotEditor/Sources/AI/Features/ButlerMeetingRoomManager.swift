@@ -199,10 +199,10 @@ nonisolated enum MeetingRoomRouter {
     ]
     
     
-    static func isProgressCheckIntent(_ rawPrompt: String) -> Bool {
+    static func isProgressCheckIntent(_ rawPrompt: String, userSentSticker: Bool = false) -> Bool {
         let trimmed = rawPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            return true
+            return !userSentSticker
         }
         let lower = trimmed.lowercased()
         return Self.progressCheckKeywords.contains { lower.contains($0) }
@@ -215,7 +215,8 @@ nonisolated enum MeetingRoomRouter {
         butlerAliases: [String] = ["总管", "Butler"],
         availableBots: [AIBotID],
         activeTodayBots: Set<AIBotID> = [],
-        customBotAliases: [AIBotID: [String]] = [:]
+        customBotAliases: [AIBotID: [String]] = [:],
+        userSentSticker: Bool = false
     ) -> MeetingDispatchPlan {
         let trimmed = rawPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = trimmed.lowercased()
@@ -281,7 +282,7 @@ nonisolated enum MeetingRoomRouter {
         return MeetingDispatchPlan(
             mode: .allHandsStandup(participants: defaultStandupParticipants),
             cleanedPrompt: trimmed.isEmpty
-                ? AppLanguage.text("聊聊今天各自手里有什么新进展。", en: "Share anything new on your plate today.")
+                ? (userSentSticker ? "" : AppLanguage.text("聊聊今天各自手里有什么新进展。", en: "Share anything new on your plate today."))
                 : trimmed,
             mentionedBots: []
         )
@@ -427,7 +428,13 @@ final class ButlerMeetingRoomManager {
             loaded = [initial]
         }
         self.sessions = loaded
-        self.activeSessionID = loaded.first?.id ?? ""
+        let savedSessionID = self.database.string(forKey: CotLocalDatabase.ConfigKey.butlerMeetingRoomActiveSessionID, default: "")
+        if !savedSessionID.isEmpty, loaded.contains(where: { $0.id == savedSessionID }) {
+            self.activeSessionID = savedSessionID
+        } else {
+            self.activeSessionID = loaded.first?.id ?? ""
+        }
+        self.isActive = self.database.bool(forKey: CotLocalDatabase.ConfigKey.butlerMeetingRoomIsActive, default: false)
         self.loadMessagesForActiveSession()
     }
     
@@ -455,6 +462,7 @@ final class ButlerMeetingRoomManager {
     func setActive(_ active: Bool) {
         if self.isActive != active {
             self.isActive = active
+            self.database.set(active, forKey: CotLocalDatabase.ConfigKey.butlerMeetingRoomIsActive)
             self.revision &+= 1
         }
     }
@@ -479,6 +487,8 @@ final class ButlerMeetingRoomManager {
         self.messages = []
         self.botStatuses = [:]
         self.isActive = true
+        self.database.set(session.id, forKey: CotLocalDatabase.ConfigKey.butlerMeetingRoomActiveSessionID)
+        self.database.set(true, forKey: CotLocalDatabase.ConfigKey.butlerMeetingRoomIsActive)
         self.revision &+= 1
         return session
     }
@@ -493,6 +503,8 @@ final class ButlerMeetingRoomManager {
             self.loadMessagesForActiveSession()
         }
         self.isActive = true
+        self.database.set(self.activeSessionID, forKey: CotLocalDatabase.ConfigKey.butlerMeetingRoomActiveSessionID)
+        self.database.set(true, forKey: CotLocalDatabase.ConfigKey.butlerMeetingRoomIsActive)
         self.revision &+= 1
     }
     
@@ -531,6 +543,7 @@ final class ButlerMeetingRoomManager {
         self.sessions = remaining
         if self.activeSessionID == sessionID || !remaining.contains(where: { $0.id == self.activeSessionID }) {
             self.activeSessionID = remaining.first?.id ?? ""
+            self.database.set(self.activeSessionID, forKey: CotLocalDatabase.ConfigKey.butlerMeetingRoomActiveSessionID)
             self.loadMessagesForActiveSession()
         }
         self.revision &+= 1
@@ -575,7 +588,7 @@ final class ButlerMeetingRoomManager {
         for idx in self.messages.indices where self.messages[idx].status == "speaking" {
             self.messages[idx].status = "done"
         }
-        for key in self.botStatuses.keys where self.botStatuses[key] == "speaking" {
+        for key in self.botStatuses.keys where self.botStatuses[key] == "speaking" || self.botStatuses[key] == "thinking" {
             self.botStatuses[key] = "idle"
         }
         self.persistActiveMessages()
@@ -675,10 +688,10 @@ final class ButlerMeetingRoomManager {
         
         let effectivePromptForLLM: String = {
             if !displayText.isEmpty, let sticker {
-                return "\(displayText)（附带表情包：\(sticker.searchableSummary)）"
+                return "\(displayText)（同时发了一张表情包：\(sticker.promptDescription)）"
             }
             if let sticker {
-                return "用户发了一张表情包（\(sticker.promptDescription)）"
+                return "用户刚在群里发了一张表情包（\(sticker.promptDescription)），没有配文字。请读懂表情包的情绪和意思，像熟人搭档一样直接接住并回应用户！"
             }
             return displayText
         }()
@@ -714,6 +727,7 @@ final class ButlerMeetingRoomManager {
                 llmPrompt: effectivePromptForLLM,
                 userMessageID: userMsg.id,
                 userSentSticker: sticker != nil,
+                userSticker: sticker,
                 explicitBotID: explicitBotID,
                 generation: generation,
                 allowRemoteAI: allowRemoteAI,
@@ -769,7 +783,7 @@ final class ButlerMeetingRoomManager {
     
     
     private func persistMessages(_ list: [MeetingRoomMessage], for sessionID: String) {
-        let capped = Array(list.suffix(100))
+        let capped = Array(list.suffix(200))
         let entries: [(id: String, json: String, createdAtMs: Double)] = capped.compactMap { msg in
             guard let data = try? Self.encoder.encode(msg),
                   let json = String(data: data, encoding: .utf8)

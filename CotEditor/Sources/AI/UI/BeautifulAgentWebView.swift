@@ -313,6 +313,7 @@ struct BeautifulAgentWebActionCallbacks {
     var onOpenSettings: (String) -> Void = { _ in }
     var onTogglePinPanel: () -> Void = { }
     var onDockToPane: () -> Void = { }
+    var onDismissPanel: (() -> Void)? = nil
     var onQuickAction: (String) -> Void = { _ in }
     var onDismissProactiveCard: ((String) -> Void)? = nil
     var onOpenWorkerAction: ((String, String?) -> Void)? = nil
@@ -828,6 +829,9 @@ struct BeautifulAgentWebView: NSViewRepresentable, Equatable {
                 case "toggleMeetingRoom":
                     let active = (dict["active"] as? Bool) ?? true
                     self.callbacks.onToggleMeetingRoom?(active)
+                    
+                case "dismissPanel":
+                    self.callbacks.onDismissPanel?()
                     
                 case "sendMeetingPrompt":
                     let text = (dict["text"] as? String) ?? ""

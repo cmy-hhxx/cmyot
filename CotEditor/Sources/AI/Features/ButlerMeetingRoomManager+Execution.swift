@@ -29,8 +29,10 @@ extension ButlerMeetingRoomManager {
         let llmPrompt: String
         let currentUserMessageID: String
         let userSentSticker: Bool
+        let userSticker: StickerAsset?
         let isProgressCheck: Bool
         let isMentioned: Bool
+        let mustRespond: Bool
         let isButlerSynthesis: Bool
         let delegatedFromButler: Bool
         let shouldRefresh: Bool
@@ -46,6 +48,7 @@ extension ButlerMeetingRoomManager {
         llmPrompt: String,
         userMessageID: String,
         userSentSticker: Bool,
+        userSticker: StickerAsset? = nil,
         explicitBotID: String?,
         generation: UInt64,
         allowRemoteAI: Bool,
@@ -74,10 +77,11 @@ extension ButlerMeetingRoomManager {
             butlerAliases: [CotButlerManager.shared.name, CotButlerManager.shared.nickname, "总管", "Butler"],
             availableBots: enabledBuiltIns,
             activeTodayBots: activeTodayBots,
-            customBotAliases: customAliases
+            customBotAliases: customAliases,
+            userSentSticker: userSentSticker
         )
         
-        let isProgress = MeetingRoomRouter.isProgressCheckIntent(rawPrompt)
+        let isProgress = MeetingRoomRouter.isProgressCheckIntent(rawPrompt, userSentSticker: userSentSticker)
         let selectedSet = Set(self.activeParticipantIDs)
         var stickerOnlyCount = 0
         var stickersUsedInTurn = 0
@@ -87,8 +91,8 @@ extension ButlerMeetingRoomManager {
                 guard self.activeGeneration == generation, !Task.isCancelled else { return }
                 let ctx = MeetingTurnContext(
                     rawPrompt: rawPrompt, llmPrompt: llmPrompt, currentUserMessageID: userMessageID,
-                    userSentSticker: userSentSticker, isProgressCheck: isProgress,
-                    isMentioned: true, isButlerSynthesis: false, delegatedFromButler: false,
+                    userSentSticker: userSentSticker, userSticker: userSticker, isProgressCheck: isProgress,
+                    isMentioned: true, mustRespond: true, isButlerSynthesis: false, delegatedFromButler: false,
                     shouldRefresh: false, generation: generation, allowRemoteAI: allowRemoteAI,
                     telemetryMap: telemetryMap, subordinateReports: []
                 )
@@ -103,34 +107,174 @@ extension ButlerMeetingRoomManager {
             return
         }
         
-        await self.dispatchByMode(
-            plan: plan,
-            rawPrompt: rawPrompt,
-            llmPrompt: llmPrompt,
-            userMessageID: userMessageID,
-            userSentSticker: userSentSticker,
-            isProgress: isProgress,
-            selectedSet: selectedSet,
-            allUnified: allUnified,
-            customMentions: customMentions,
-            telemetryMap: telemetryMap,
-            generation: generation,
-            allowRemoteAI: allowRemoteAI,
-            stickerOnlyCount: &stickerOnlyCount,
-            stickersUsedInTurn: &stickersUsedInTurn,
-            botStore: botStore
-        )
+        switch plan.mode {
+            case .allHandsStandup(let participants):
+                await self.runAllHandsTurn(
+                    participants: participants,
+                    rawPrompt: rawPrompt,
+                    llmPrompt: llmPrompt,
+                    userMessageID: userMessageID,
+                    userSentSticker: userSentSticker,
+                    userSticker: userSticker,
+                    isProgress: isProgress,
+                    selectedSet: selectedSet,
+                    allUnified: allUnified,
+                    telemetryMap: telemetryMap,
+                    generation: generation,
+                    allowRemoteAI: allowRemoteAI,
+                    stickerOnlyCount: &stickerOnlyCount,
+                    stickersUsedInTurn: &stickersUsedInTurn,
+                    botStore: botStore
+                )
+            case .directCallout(let targets, let shouldRefresh):
+                await self.runDirectCalloutTurn(
+                    targets: targets,
+                    shouldRefresh: shouldRefresh,
+                    rawPrompt: rawPrompt,
+                    llmPrompt: llmPrompt,
+                    userMessageID: userMessageID,
+                    userSentSticker: userSentSticker,
+                    userSticker: userSticker,
+                    isProgress: isProgress,
+                    allUnified: allUnified,
+                    customMentions: customMentions,
+                    telemetryMap: telemetryMap,
+                    generation: generation,
+                    allowRemoteAI: allowRemoteAI,
+                    stickerOnlyCount: &stickerOnlyCount,
+                    stickersUsedInTurn: &stickersUsedInTurn,
+                    botStore: botStore
+                )
+            case .butlerGoverned(let subordinates, let shouldRefresh):
+                await self.runButlerGovernedTurn(
+                    subordinates: subordinates,
+                    shouldRefresh: shouldRefresh,
+                    plan: plan,
+                    rawPrompt: rawPrompt,
+                    llmPrompt: llmPrompt,
+                    userMessageID: userMessageID,
+                    userSentSticker: userSentSticker,
+                    userSticker: userSticker,
+                    allUnified: allUnified,
+                    telemetryMap: telemetryMap,
+                    generation: generation,
+                    allowRemoteAI: allowRemoteAI,
+                    stickerOnlyCount: &stickerOnlyCount,
+                    stickersUsedInTurn: &stickersUsedInTurn,
+                    botStore: botStore
+                )
+        }
     }
     
     
-    private func dispatchByMode(
-        plan: MeetingDispatchPlan,
+    private func runAllHandsTurn(
+        participants: [AIBotID],
         rawPrompt: String,
         llmPrompt: String,
         userMessageID: String,
         userSentSticker: Bool,
+        userSticker: StickerAsset?,
         isProgress: Bool,
         selectedSet: Set<String>,
+        allUnified: [UnifiedBotDescriptor],
+        telemetryMap: [AIBotID: MeetingBotDailyTelemetry],
+        generation: UInt64,
+        allowRemoteAI: Bool,
+        stickerOnlyCount: inout Int,
+        stickersUsedInTurn: inout Int,
+        botStore: AIBotStore
+    ) async {
+        let butlerConfig = botStore.resolvedConfiguration(for: .butler)
+        let remoteEnabled = allowRemoteAI && AIService.shared.isConfigured
+            && !butlerConfig.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        
+        var builtInSelected: [UnifiedBotDescriptor] = participants.compactMap { bid in
+            guard selectedSet.contains(bid.rawValue) else { return nil }
+            return allUnified.first { $0.id == bid.rawValue }
+        }
+        let customSelected = allUnified.filter { !$0.isBuiltIn && selectedSet.contains($0.id) }
+        let lowerPrompt = rawPrompt.lowercased()
+        let isExplicitAllHands = ["所有", "各位", "大家", "挨个", "每个", "/meeting", "开会"]
+            .contains { lowerPrompt.contains($0) }
+        
+        let candidateBots: [UnifiedBotDescriptor]
+        if !isProgress {
+            let combined = customSelected + builtInSelected
+            let topicSeed = [rawPrompt, userSticker?.stickerSearchTerms ?? ""].joined(separator: " ")
+            candidateBots = MeetingWorkEvidenceBuilder.selectResponsiveChatBots(
+                for: topicSeed,
+                candidates: combined,
+                isStickerTurn: userSentSticker
+            )
+        } else if remoteEnabled && !isExplicitAllHands {
+            builtInSelected = MeetingWorkEvidenceBuilder.selectCapableStandupBots(
+                for: rawPrompt,
+                candidates: builtInSelected,
+                telemetryMap: telemetryMap,
+                isProgressCheck: true
+            )
+            candidateBots = builtInSelected + customSelected
+        } else {
+            candidateBots = builtInSelected + customSelected
+        }
+        
+        let maxSubordinateSpeakers = isExplicitAllHands ? candidateBots.count : 3
+        let guaranteedActiveCount = (!isProgress && (remoteEnabled || userSentSticker)) ? 2 : 0
+        var reports: [(botID: String, messageID: String, name: String, text: String)] = []
+        
+        for (index, bot) in candidateBots.enumerated() {
+            guard self.activeGeneration == generation, !Task.isCancelled else { return }
+            if remoteEnabled && !isExplicitAllHands && reports.count >= maxSubordinateSpeakers { break }
+            if !remoteEnabled && !isProgress && reports.count >= 2 { break }
+            let mustReply = index < guaranteedActiveCount && reports.count < guaranteedActiveCount
+            let ctx = MeetingTurnContext(
+                rawPrompt: rawPrompt, llmPrompt: llmPrompt, currentUserMessageID: userMessageID,
+                userSentSticker: userSentSticker, userSticker: userSticker, isProgressCheck: isProgress,
+                isMentioned: false, mustRespond: mustReply, isButlerSynthesis: false, delegatedFromButler: false,
+                shouldRefresh: false, generation: generation, allowRemoteAI: allowRemoteAI,
+                telemetryMap: telemetryMap, subordinateReports: reports
+            )
+            if let rep = await self.runUnifiedBotTurn(
+                bot: bot,
+                context: ctx,
+                stickerOnlyCount: &stickerOnlyCount,
+                stickersUsedInTurn: &stickersUsedInTurn,
+                botStore: botStore
+            ) {
+                reports.append(rep)
+            }
+        }
+        
+        guard self.activeGeneration == generation, !Task.isCancelled else { return }
+        if let butler = allUnified.first(where: { $0.id == AIBotID.butler.rawValue }) {
+            let mustWrapUp = !remoteEnabled || reports.isEmpty || isExplicitAllHands || (userSentSticker && reports.count < 2)
+            let ctx = MeetingTurnContext(
+                rawPrompt: rawPrompt, llmPrompt: llmPrompt, currentUserMessageID: userMessageID,
+                userSentSticker: userSentSticker, userSticker: userSticker, isProgressCheck: isProgress,
+                isMentioned: mustWrapUp, mustRespond: mustWrapUp, isButlerSynthesis: true, delegatedFromButler: false,
+                shouldRefresh: false, generation: generation, allowRemoteAI: allowRemoteAI,
+                telemetryMap: telemetryMap, subordinateReports: reports
+            )
+            _ = await self.runUnifiedBotTurn(
+                bot: butler,
+                context: ctx,
+                stickerOnlyCount: &stickerOnlyCount,
+                stickersUsedInTurn: &stickersUsedInTurn,
+                botStore: botStore
+            )
+        }
+    }
+    
+    
+    private func runDirectCalloutTurn(
+        targets: [AIBotID],
+        shouldRefresh: Bool,
+        rawPrompt: String,
+        llmPrompt: String,
+        userMessageID: String,
+        userSentSticker: Bool,
+        userSticker: StickerAsset?,
+        isProgress: Bool,
         allUnified: [UnifiedBotDescriptor],
         customMentions: [UnifiedBotDescriptor],
         telemetryMap: [AIBotID: MeetingBotDailyTelemetry],
@@ -140,134 +284,84 @@ extension ButlerMeetingRoomManager {
         stickersUsedInTurn: inout Int,
         botStore: AIBotStore
     ) async {
-        switch plan.mode {
-            case .allHandsStandup(let participants):
-                let butlerConfig = botStore.resolvedConfiguration(for: .butler)
-                let remoteEnabled = allowRemoteAI && AIService.shared.isConfigured
-                    && !butlerConfig.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                
-                var candidateBots: [UnifiedBotDescriptor] = participants.compactMap { bid in
-                    guard selectedSet.contains(bid.rawValue) else { return nil }
-                    return allUnified.first { $0.id == bid.rawValue }
-                }
-                let lowerPrompt = rawPrompt.lowercased()
-                let isExplicitAllHands = ["所有", "各位", "大家", "挨个", "每个", "/meeting", "开会"]
-                    .contains { lowerPrompt.contains($0) }
-                if remoteEnabled && !isExplicitAllHands {
-                    candidateBots = MeetingWorkEvidenceBuilder.selectCapableStandupBots(
-                        for: rawPrompt,
-                        candidates: candidateBots,
-                        telemetryMap: telemetryMap,
-                        isProgressCheck: isProgress
-                    )
-                } else {
-                    for custom in allUnified where !custom.isBuiltIn && selectedSet.contains(custom.id) {
-                        candidateBots.append(custom)
-                    }
-                }
-                
-                var reports: [(botID: String, messageID: String, name: String, text: String)] = []
-                for bot in candidateBots {
-                    guard self.activeGeneration == generation, !Task.isCancelled else { return }
-                    if remoteEnabled && !isExplicitAllHands && reports.count >= 2 { break }
-                    let ctx = MeetingTurnContext(
-                        rawPrompt: rawPrompt, llmPrompt: llmPrompt, currentUserMessageID: userMessageID,
-                        userSentSticker: userSentSticker, isProgressCheck: isProgress,
-                        isMentioned: false, isButlerSynthesis: false, delegatedFromButler: false,
-                        shouldRefresh: false, generation: generation, allowRemoteAI: allowRemoteAI,
-                        telemetryMap: telemetryMap, subordinateReports: reports
-                    )
-                    if let rep = await self.runUnifiedBotTurn(
-                        bot: bot,
-                        context: ctx,
-                        stickerOnlyCount: &stickerOnlyCount,
-                        stickersUsedInTurn: &stickersUsedInTurn,
-                        botStore: botStore
-                    ) {
-                        reports.append(rep)
-                    }
-                }
-                guard self.activeGeneration == generation, !Task.isCancelled else { return }
-                if let butler = allUnified.first(where: { $0.id == AIBotID.butler.rawValue }) {
-                    let mustWrapUp = !remoteEnabled || reports.isEmpty || isExplicitAllHands
-                    let ctx = MeetingTurnContext(
-                        rawPrompt: rawPrompt, llmPrompt: llmPrompt, currentUserMessageID: userMessageID,
-                        userSentSticker: userSentSticker, isProgressCheck: isProgress,
-                        isMentioned: mustWrapUp, isButlerSynthesis: true, delegatedFromButler: false,
-                        shouldRefresh: false, generation: generation, allowRemoteAI: allowRemoteAI,
-                        telemetryMap: telemetryMap, subordinateReports: reports
-                    )
-                    _ = await self.runUnifiedBotTurn(
-                        bot: butler,
-                        context: ctx,
-                        stickerOnlyCount: &stickerOnlyCount,
-                        stickersUsedInTurn: &stickersUsedInTurn,
-                        botStore: botStore
-                    )
-                }
-                
-            case .directCallout(let targets, let shouldRefresh):
-                var bots: [UnifiedBotDescriptor] = targets.compactMap { bid in allUnified.first { $0.id == bid.rawValue } }
-                for c in customMentions where !bots.contains(where: { $0.id == c.id }) { bots.append(c) }
-                for bot in bots {
-                    guard self.activeGeneration == generation, !Task.isCancelled else { return }
-                    let ctx = MeetingTurnContext(
-                        rawPrompt: rawPrompt, llmPrompt: llmPrompt, currentUserMessageID: userMessageID,
-                        userSentSticker: userSentSticker, isProgressCheck: shouldRefresh || isProgress,
-                        isMentioned: true, isButlerSynthesis: false, delegatedFromButler: false,
-                        shouldRefresh: shouldRefresh, generation: generation, allowRemoteAI: allowRemoteAI,
-                        telemetryMap: telemetryMap, subordinateReports: []
-                    )
-                    _ = await self.runUnifiedBotTurn(
-                        bot: bot,
-                        context: ctx,
-                        stickerOnlyCount: &stickerOnlyCount,
-                        stickersUsedInTurn: &stickersUsedInTurn,
-                        botStore: botStore
-                    )
-                }
-                
-            case .butlerGoverned(let subordinates, let shouldRefresh):
-                var reports: [(botID: String, messageID: String, name: String, text: String)] = []
-                let explicitlyTargeted = subordinates.count <= 3
-                for bid in subordinates {
-                    guard self.activeGeneration == generation, !Task.isCancelled else { return }
-                    guard let bot = allUnified.first(where: { $0.id == bid.rawValue }) else { continue }
-                    let mustReply = plan.mentionedBots.contains(bid) || explicitlyTargeted
-                    let ctx = MeetingTurnContext(
-                        rawPrompt: rawPrompt, llmPrompt: llmPrompt, currentUserMessageID: userMessageID,
-                        userSentSticker: userSentSticker, isProgressCheck: true,
-                        isMentioned: mustReply, isButlerSynthesis: false, delegatedFromButler: true,
-                        shouldRefresh: shouldRefresh, generation: generation, allowRemoteAI: allowRemoteAI,
-                        telemetryMap: telemetryMap, subordinateReports: []
-                    )
-                    if let rep = await self.runUnifiedBotTurn(
-                        bot: bot,
-                        context: ctx,
-                        stickerOnlyCount: &stickerOnlyCount,
-                        stickersUsedInTurn: &stickersUsedInTurn,
-                        botStore: botStore
-                    ) {
-                        reports.append(rep)
-                    }
-                }
-                guard self.activeGeneration == generation, !Task.isCancelled else { return }
-                if let butler = allUnified.first(where: { $0.id == AIBotID.butler.rawValue }) {
-                    let ctx = MeetingTurnContext(
-                        rawPrompt: rawPrompt, llmPrompt: llmPrompt, currentUserMessageID: userMessageID,
-                        userSentSticker: userSentSticker, isProgressCheck: true,
-                        isMentioned: true, isButlerSynthesis: true, delegatedFromButler: false,
-                        shouldRefresh: shouldRefresh, generation: generation, allowRemoteAI: allowRemoteAI,
-                        telemetryMap: telemetryMap, subordinateReports: reports
-                    )
-                    _ = await self.runUnifiedBotTurn(
-                        bot: butler,
-                        context: ctx,
-                        stickerOnlyCount: &stickerOnlyCount,
-                        stickersUsedInTurn: &stickersUsedInTurn,
-                        botStore: botStore
-                    )
-                }
+        var bots: [UnifiedBotDescriptor] = targets.compactMap { bid in allUnified.first { $0.id == bid.rawValue } }
+        for c in customMentions where !bots.contains(where: { $0.id == c.id }) { bots.append(c) }
+        for bot in bots {
+            guard self.activeGeneration == generation, !Task.isCancelled else { return }
+            let ctx = MeetingTurnContext(
+                rawPrompt: rawPrompt, llmPrompt: llmPrompt, currentUserMessageID: userMessageID,
+                userSentSticker: userSentSticker, userSticker: userSticker, isProgressCheck: shouldRefresh || isProgress,
+                isMentioned: true, mustRespond: true, isButlerSynthesis: false, delegatedFromButler: false,
+                shouldRefresh: shouldRefresh, generation: generation, allowRemoteAI: allowRemoteAI,
+                telemetryMap: telemetryMap, subordinateReports: []
+            )
+            _ = await self.runUnifiedBotTurn(
+                bot: bot,
+                context: ctx,
+                stickerOnlyCount: &stickerOnlyCount,
+                stickersUsedInTurn: &stickersUsedInTurn,
+                botStore: botStore
+            )
+        }
+    }
+    
+    
+    private func runButlerGovernedTurn(
+        subordinates: [AIBotID],
+        shouldRefresh: Bool,
+        plan: MeetingDispatchPlan,
+        rawPrompt: String,
+        llmPrompt: String,
+        userMessageID: String,
+        userSentSticker: Bool,
+        userSticker: StickerAsset?,
+        allUnified: [UnifiedBotDescriptor],
+        telemetryMap: [AIBotID: MeetingBotDailyTelemetry],
+        generation: UInt64,
+        allowRemoteAI: Bool,
+        stickerOnlyCount: inout Int,
+        stickersUsedInTurn: inout Int,
+        botStore: AIBotStore
+    ) async {
+        var reports: [(botID: String, messageID: String, name: String, text: String)] = []
+        let explicitlyTargeted = subordinates.count <= 3
+        for bid in subordinates {
+            guard self.activeGeneration == generation, !Task.isCancelled else { return }
+            guard let bot = allUnified.first(where: { $0.id == bid.rawValue }) else { continue }
+            let mustReply = plan.mentionedBots.contains(bid) || explicitlyTargeted
+            let ctx = MeetingTurnContext(
+                rawPrompt: rawPrompt, llmPrompt: llmPrompt, currentUserMessageID: userMessageID,
+                userSentSticker: userSentSticker, userSticker: userSticker, isProgressCheck: true,
+                isMentioned: mustReply, mustRespond: mustReply, isButlerSynthesis: false, delegatedFromButler: true,
+                shouldRefresh: shouldRefresh, generation: generation, allowRemoteAI: allowRemoteAI,
+                telemetryMap: telemetryMap, subordinateReports: []
+            )
+            if let rep = await self.runUnifiedBotTurn(
+                bot: bot,
+                context: ctx,
+                stickerOnlyCount: &stickerOnlyCount,
+                stickersUsedInTurn: &stickersUsedInTurn,
+                botStore: botStore
+            ) {
+                reports.append(rep)
+            }
+        }
+        guard self.activeGeneration == generation, !Task.isCancelled else { return }
+        if let butler = allUnified.first(where: { $0.id == AIBotID.butler.rawValue }) {
+            let ctx = MeetingTurnContext(
+                rawPrompt: rawPrompt, llmPrompt: llmPrompt, currentUserMessageID: userMessageID,
+                userSentSticker: userSentSticker, userSticker: userSticker, isProgressCheck: true,
+                isMentioned: true, mustRespond: true, isButlerSynthesis: true, delegatedFromButler: false,
+                shouldRefresh: shouldRefresh, generation: generation, allowRemoteAI: allowRemoteAI,
+                telemetryMap: telemetryMap, subordinateReports: reports
+            )
+            _ = await self.runUnifiedBotTurn(
+                bot: butler,
+                context: ctx,
+                stickerOnlyCount: &stickerOnlyCount,
+                stickersUsedInTurn: &stickersUsedInTurn,
+                botStore: botStore
+            )
         }
     }
     
@@ -292,7 +386,7 @@ extension ButlerMeetingRoomManager {
         let canCallRemote = context.allowRemoteAI && AIService.shared.isConfigured
             && !config.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         
-        if !canCallRemote && !context.isMentioned && !context.isButlerSynthesis && !(telemetry?.hasTodayActivity ?? false) && receipts.isEmpty {
+        if !canCallRemote && !context.isMentioned && !context.mustRespond && !context.isButlerSynthesis && !(telemetry?.hasTodayActivity ?? false) && receipts.isEmpty {
             return nil
         }
         
@@ -319,10 +413,8 @@ extension ButlerMeetingRoomManager {
             )
         }
         
-        if context.isMentioned {
-            self.botStatuses[bot.id] = "speaking"
-            self.revision &+= 1
-        }
+        self.botStatuses[bot.id] = "thinking"
+        self.revision &+= 1
         
         let candidates = self.stickerCandidatesForTurn(
             bot: bot,
@@ -341,15 +433,18 @@ extension ButlerMeetingRoomManager {
             allowStickerOnly: allowStickerOnly,
             botStore: botStore
         )
-        guard self.activeGeneration == context.generation else { return nil }
+        guard self.activeGeneration == context.generation else {
+            self.botStatuses[bot.id] = "idle"
+            return nil
+        }
         
-        if !context.isMentioned && MeetingRoomPersona.isPass(rawReply) {
+        if !context.isMentioned && !context.mustRespond && MeetingRoomPersona.isPass(rawReply) {
             let hadMessage = self.messages.contains { $0.id == msgID }
             if hadMessage {
                 self.messages.removeAll { $0.id == msgID }
                 self.persistActiveMessages()
             }
-            if self.botStatuses[bot.id] == "speaking" || hadMessage {
+            if self.botStatuses[bot.id] != "idle" || hadMessage {
                 self.botStatuses[bot.id] = "idle"
                 self.revision &+= 1
             }
@@ -376,18 +471,38 @@ extension ButlerMeetingRoomManager {
         context: MeetingTurnContext,
         stickersUsedInTurn: Int
     ) -> [StickerAsset] {
-        guard stickersUsedInTurn < 2 else { return [] }
+        let maxStickers = context.userSentSticker ? 3 : 2
+        guard stickersUsedInTurn < maxStickers else { return [] }
         let lastFromThisBot = self.messages.last { $0.role == "bot" && $0.botID == bot.id && $0.status == "done" }
         if !context.userSentSticker, lastFromThisBot?.stickerID != nil {
             // Cooldown: prevent any single Bot from sending stickers in back-to-back replies
             return []
         }
-        return CotStickerLibraryStore.shared.searchRelevantForReply(
-            query: context.rawPrompt,
+        let combinedQuery = [context.rawPrompt, context.userSticker?.stickerSearchTerms ?? ""]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        var matches = CotStickerLibraryStore.shared.searchRelevantForReply(
+            query: combinedQuery,
             mood: bot.emotion.mood.displayLabel,
             preferredCategories: bot.preferredStickerCategories,
-            limit: 5
+            limit: 6
         )
+        if matches.isEmpty, context.userSentSticker {
+            matches = CotStickerLibraryStore.shared.search(
+                query: combinedQuery,
+                mood: context.userSticker?.moods.first ?? bot.emotion.mood.displayLabel,
+                preferredCategories: bot.preferredStickerCategories,
+                limit: 6
+            )
+        }
+        if let userStickerID = context.userSticker?.id {
+            let distinct = matches.filter { $0.id != userStickerID }
+            if !distinct.isEmpty {
+                matches = distinct
+            }
+        }
+        return Array(matches.prefix(5))
     }
     
     
@@ -403,7 +518,8 @@ extension ButlerMeetingRoomManager {
         stickersUsedInTurn: inout Int,
         botStore: AIBotStore
     ) async -> (botID: String, messageID: String, name: String, text: String)? {
-        let allowStickerBudget = stickersUsedInTurn < 2
+        let maxStickers = context.userSentSticker ? 3 : 2
+        let allowStickerBudget = stickersUsedInTurn < maxStickers
         let parsed = BotReplyDirectiveParser.parse(
             raw: rawReply,
             allowedStickerIDs: allowStickerBudget ? Set(candidates.map(\.id)) : [],
@@ -429,7 +545,7 @@ extension ButlerMeetingRoomManager {
         
         var finalText = parsed.text
         if finalText.isEmpty && resolvedSticker == nil {
-            if !context.isMentioned && !context.isButlerSynthesis {
+            if !context.isMentioned && !context.mustRespond && !context.isButlerSynthesis {
                 let hadMessage = self.messages.contains { $0.id == msgID }
                 if hadMessage {
                     self.messages.removeAll { $0.id == msgID }
@@ -439,12 +555,14 @@ extension ButlerMeetingRoomManager {
                 self.revision &+= 1
                 return nil
             }
-            finalText = AppLanguage.text("收到，先看着。", en: "Noted.")
+            finalText = context.userSentSticker
+                ? AppLanguage.text("怎么啦？来抱抱，有啥事儿直接丢给我分担。", en: "Hey, what's up? I'm right here if you want to vent or hand something off.")
+                : AppLanguage.text("在的，你说，我这边随时帮你接手。", en: "I'm here—tell me what you need.")
         }
         
         botStore.updateEmotion(
             for: bot.id,
-            userPrompt: context.rawPrompt,
+            userPrompt: context.llmPrompt,
             botReply: finalText,
             explicitMood: parsed.mood
         )
@@ -493,8 +611,7 @@ extension ButlerMeetingRoomManager {
             return Self.buildOfflineFallbackReport(
                 bot: bot,
                 evidence: evidence,
-                isButlerSynthesis: context.isButlerSynthesis,
-                subordinateReports: context.subordinateReports,
+                context: context,
                 receipts: receipts
             )
         }
@@ -504,6 +621,8 @@ extension ButlerMeetingRoomManager {
             isMentioned: context.isMentioned,
             isButlerSynthesis: context.isButlerSynthesis,
             isProgressCheck: context.isProgressCheck,
+            userSentSticker: context.userSentSticker,
+            mustRespond: context.mustRespond,
             stickerCandidates: stickerCandidates,
             allowStickerOnly: allowStickerOnly,
             allowOnlineSearch: !stickerCandidates.isEmpty && OnlineStickerSearchService.isAutoExpansionEnabled
@@ -513,19 +632,19 @@ extension ButlerMeetingRoomManager {
             excludedIDs.insert(rep.messageID)
         }
         let recentChat = self.recentGroupChatContext(excludingMessageIDs: excludedIDs, limit: 10)
-        var contextLines = ["【用户刚说】\(context.llmPrompt)"]
-        if !evidence.isEmpty {
-            if context.isProgressCheck {
-                contextLines.append("【今日真实工作记录（严格依据内容用大白话讲清干了啥，绝不要提系统自动生成的趣味文件名）】\n\(evidence)")
-            } else if context.rawPrompt.count > 8 {
-                contextLines.append("【静默背景（仅当话题直接相关时参考，严禁主动报数字或提趣味文件名）】\n\(evidence)")
-            }
+        var contextLines = ["【用户刚发的内容（最优先回应）】\(context.llmPrompt)"]
+        if !evidence.isEmpty && context.isProgressCheck {
+            contextLines.append("【今日真实工作记录（站在用户视角挑关键进展、风险或下一步用大白话讲清，绝不要提系统临时趣味名）】\n\(evidence)")
         }
         if !recentChat.isEmpty { contextLines.append("【群聊最近消息】\n\(recentChat)") }
         if !receipts.isEmpty { contextLines.append("【刚完成的动作】\(receipts.joined(separator: "；"))") }
         if !context.subordinateReports.isEmpty {
             let merged = context.subordinateReports.map { "\($0.name)：\($0.text)" }.joined(separator: "\n")
-            contextLines.append("【群里同事刚刚已经回答的内容（如果已经把问题讲清楚了，直接只回复 [PASS]；严禁复读、捧哏或尬聊）】\n\(merged)")
+            if context.isProgressCheck {
+                contextLines.append("【群里同事刚刚已经说过的（严禁重复原话；若有新视角、风险提醒或下一步建议再补充，否则只回复 [PASS]）】\n\(merged)")
+            } else {
+                contextLines.append("【群里同事刚刚已经回应的（请换你自己的性格或专长角度直接回应用户，不要复读同事原话）】\n\(merged)")
+            }
         }
         let userContext = contextLines.joined(separator: "\n\n")
         
@@ -552,9 +671,12 @@ extension ButlerMeetingRoomManager {
                 }
             }
             let clean = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            if context.isMentioned && MeetingRoomPersona.isPass(clean) {
+            if (context.isMentioned || context.mustRespond) && MeetingRoomPersona.isPass(clean) {
+                let retryNote = context.userSentSticker
+                    ? "注意：用户刚发了表情包，请直接看懂画面情绪并自然回应（或回一张贴切表情包），禁止回复 [PASS]，也不要汇报工作。"
+                    : "注意：请站在用户视角直接给出自然、有帮助的答复，禁止回复 [PASS]。"
                 let retryRaw = try await AIService.shared.chat(
-                    [.system(systemPrompt), .user(userContext + "\n\n注意：用户明确点名了你，必须给出自然答复，禁止回复 [PASS]。")],
+                    [.system(systemPrompt), .user(userContext + "\n\n" + retryNote)],
                     configuration: config,
                     analyticsFeature: "meeting_\(bot.id)"
                 )
@@ -570,8 +692,7 @@ extension ButlerMeetingRoomManager {
         return Self.buildOfflineFallbackReport(
             bot: bot,
             evidence: evidence,
-            isButlerSynthesis: context.isButlerSynthesis,
-            subordinateReports: context.subordinateReports,
+            context: context,
             receipts: receipts
         )
     }
@@ -620,18 +741,34 @@ extension ButlerMeetingRoomManager {
     private static func buildOfflineFallbackReport(
         bot: UnifiedBotDescriptor,
         evidence: String,
-        isButlerSynthesis: Bool,
-        subordinateReports: [(botID: String, messageID: String, name: String, text: String)],
+        context: MeetingTurnContext,
         receipts: [String]
     ) -> String {
-        if bot.builtInID == .butler && isButlerSynthesis {
-            if subordinateReports.isEmpty {
+        if context.userSentSticker && !context.isProgressCheck {
+            let caption = context.userSticker?.searchableSummary ?? ""
+            if bot.builtInID == .butler {
+                return caption.isEmpty
+                    ? AppLanguage.text("看到你发的图啦，先歇口气，有啥事儿尽管跟我说。", en: "Saw your sticker—take a breather and tell me what's on your mind.")
+                    : AppLanguage.text("看你发了「\(caption)」，怎么啦？有啥烦心事直接丢给我帮着分担。", en: "Saw your \"\(caption)\" sticker—what's up? I'm right here.")
+            }
+            return caption.isEmpty
+                ? AppLanguage.text("怎么啦，感觉你有点小情绪，先歇会儿，需要我搭把手随时喊。", en: "Hey, take it easy—I'm here whenever you want a hand.")
+                : AppLanguage.text("拍拍你，「\(caption)」看着有点累，先喘口气，有事儿直接交给我。", en: "Pat pat—\"\(caption)\" looks rough. Take a breather and let me help.")
+        }
+        if !context.isProgressCheck {
+            if bot.builtInID == .butler {
+                return AppLanguage.text("明白你的意思了，我先盯着，需要我直接动手推进哪一步？", en: "Got it—which part should I tackle first?")
+            }
+            return AppLanguage.text("收到你的想法了，我这边随时待命配合。", en: "Got your point—ready to jump in whenever you need.")
+        }
+        if bot.builtInID == .butler && context.isButlerSynthesis {
+            if context.subordinateReports.isEmpty {
                 return AppLanguage.text(
                     "大家手头都挺稳，有什么需要直接点名就好。",
                     en: "All quiet across the team—ping any of us whenever needed."
                 )
             }
-            let names = subordinateReports.map(\.name).joined(separator: "、")
+            let names = context.subordinateReports.map(\.name).joined(separator: "、")
             var summary = AppLanguage.text("刚听完 \(names) 冒泡，重点已经对齐。", en: "Synced up with \(names).")
             if !receipts.isEmpty { summary += " " + receipts.joined(separator: "、") + "。" }
             return summary
@@ -639,7 +776,7 @@ extension ButlerMeetingRoomManager {
         if !evidence.isEmpty {
             return evidence.replacingOccurrences(of: "\n", with: " ")
         }
-        return AppLanguage.text("收到，先看着。", en: "Noted.")
+        return AppLanguage.text("在的，随时听你安排。", en: "Ready whenever you need.")
     }
     
     

@@ -274,6 +274,86 @@ nonisolated enum MeetingWorkEvidenceBuilder {
     }
     
     
+    /// Selects and ranks active Bots (including user-created custom Bots) for non-standup user requests
+    /// and sticker/emotional turns so responsive, personality-matched Bots answer the user first.
+    static func selectResponsiveChatBots(
+        for prompt: String,
+        candidates: [UnifiedBotDescriptor],
+        isStickerTurn: Bool
+    ) -> [UnifiedBotDescriptor] {
+        let lower = prompt.lowercased()
+        let wantsTranslation = ["翻译", "英文", "english", "translate", "措辞"].contains { lower.contains($0) }
+        let wantsWriting = ["写", "润色", "续写", "改写", "文案", "开头", "段落"].contains { lower.contains($0) }
+        let wantsDocs = ["文档", "笔记", "整理", "归档", "合并", "文件", "架构"].contains { lower.contains($0) }
+        let wantsReading = ["新闻", "资讯", "股票", "播客", "行情", "文章", "news"].contains { lower.contains($0) }
+        let wantsExplain = ["为什么", "怎么", "原理", "报错", "bug", "方案", "建议", "帮我", "分析", "怎么选"].contains { lower.contains($0) }
+        let isEmotional = isStickerTurn || ["忧伤", "伤心", "难过", "累", "emo", "委屈", "开心", "哈哈", "摸鱼", "烦", "崩溃", "躺平"].contains { lower.contains($0) }
+        
+        return candidates.sorted { lhs, rhs in
+            let ls = Self.responsivenessScore(
+                for: lhs,
+                isEmotional: isEmotional,
+                wantsTranslation: wantsTranslation,
+                wantsWriting: wantsWriting,
+                wantsDocs: wantsDocs,
+                wantsReading: wantsReading,
+                wantsExplain: wantsExplain
+            )
+            let rs = Self.responsivenessScore(
+                for: rhs,
+                isEmotional: isEmotional,
+                wantsTranslation: wantsTranslation,
+                wantsWriting: wantsWriting,
+                wantsDocs: wantsDocs,
+                wantsReading: wantsReading,
+                wantsExplain: wantsExplain
+            )
+            if ls != rs { return ls > rs }
+            return lhs.id < rhs.id
+        }
+    }
+    
+    
+    private static func responsivenessScore(
+        for bot: UnifiedBotDescriptor,
+        isEmotional: Bool,
+        wantsTranslation: Bool,
+        wantsWriting: Bool,
+        wantsDocs: Bool,
+        wantsReading: Bool,
+        wantsExplain: Bool
+    ) -> Int {
+        var score = bot.isBuiltIn ? 10 : 28
+        if isEmotional {
+            switch bot.emotion.baseline {
+                case .warm: score += 22
+                case .optimistic: score += 18
+                case .sharpTongued: score += 14
+                case .chill: score += 12
+                case .calm: score += 6
+            }
+            if bot.builtInID == .persona { score += 18 }
+            if bot.builtInID == .weeklyReport { score += 10 }
+            if bot.builtInID == .ghost { score += 8 }
+        }
+        switch bot.builtInID {
+            case .translate where wantsTranslation: score += 35
+            case .ghost where wantsWriting: score += 30
+            case .organizeAndMerge where wantsDocs: score += 28
+            case .readingCompanion where wantsReading: score += 30
+            case .explain where wantsExplain: score += 28
+            case .summarize where wantsExplain: score += 22
+            case .weeklyReport where wantsExplain: score += 14
+            case .persona where wantsExplain: score += 12
+            default: break
+        }
+        if !bot.personaPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            score += 10
+        }
+        return score
+    }
+    
+    
     private static func extractTopic(from content: String, lines: [String]) -> String {
         if let derived = DocumentCenterAgentOrganizer.deriveTitleFromExcerpt(String(content.prefix(320))),
            !derived.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -305,11 +385,11 @@ nonisolated enum MeetingRoomPersona {
     
     static let sharedRules: String = """
     群聊说话铁律：
-    - 像熟人同事在微信小群正常聊天，直接回应用户刚问的话，语气自然、平实、有分寸，不要端着也别刻意耍宝。
+    - 【用户需求永远第一，绝不自顾自汇报】优先读懂用户此刻真正想表达什么（提问、求助、吐槽、情绪、表情包、想法），第一时间站在用户视角直接接住并回应用户本人！除非用户明确追问“今天干了啥 / 进展 / 复盘”，否则严禁自顾自汇报后台工作量、归档流水或统计数字；哪怕是在做复盘，也只讲对用户有用的结论、风险和下一步，严禁“我贡献不大”“纯打下手”“方案以XX说的为准”这类无信息量的自我表态。
+    - 【看懂并接住用户的表情包与情绪】当用户发了表情包（比如“忧伤”“累”“摸鱼”“开心”“无语”等），必须先体察画面的情绪和文字，像真熟人一样主动关心、接梗、安慰、调侃或回一张贴切的表情包，绝不能视而不见或冷冰冰转去汇报工作。
+    - 【积极主动、有温度、有帮手劲】像熟人搭档在微信小群里聊正事或唠嗑，语气自然平实有分寸；轮到你开口时尽量给出真正帮得上忙的观点、建议、情绪价值或可落地的下一步（日常互动/表情包接梗 12～45 字自然利落；回答正经需求或分析问题 50～160 字讲透干货）。
     - 【严禁提及系统临时趣味名】如“雀跃的风铃”“喝茶的睡袋”“啃瓜的小浣熊”等随机占位标题，用户对这些自动名字毫无印象；必须只讲文档里的真实内容、模块、步骤或用户自己起的正经标题。
-    - 【有能力、有干货再回答，绝不凑数尬聊】没参与这件事或没有一手事实就不要硬挤；严禁当“气氛组”，严禁复读或捧哏前面同事的话，严禁“笑死”“手速比脑子快”“瞅着都手痒”这类生硬段子腔。
-    - 【讲事实不假大空】用户问“今天干了啥 / 进展 / 分析 / 总结”时，要把手头掌握的具体事项、改动内容、关键结论或未完待办按大白话讲清楚（可自然说 60～160 字，别空洞敷衍）；日常随口聊天则保持 15～50 字简短自然。
-    - 严禁集体排队复读「嗨」「你好」开头；严禁客服式反问收尾（不要问“需要我帮你做什么吗？”）。
+    - 严禁复读前面同事的原话；严禁集体排队复读「嗨」「你好」开头；严禁客服式反问收尾（不要问“需要我帮你做什么吗？”）。
     - 严禁用标题（#）、加粗（**）、编号列表（1. 2. 3.）、八股总结、机械腔（「综上所述」「节奏挺稳」「作为AI」）或 emoji。
     """
     
@@ -349,6 +429,8 @@ nonisolated enum MeetingRoomPersona {
         isMentioned: Bool,
         isButlerSynthesis: Bool,
         isProgressCheck: Bool = true,
+        userSentSticker: Bool = false,
+        mustRespond: Bool = false,
         stickerCandidates: [StickerAsset] = [],
         allowStickerOnly: Bool = true,
         allowOnlineSearch: Bool = true
@@ -358,11 +440,24 @@ nonisolated enum MeetingRoomPersona {
         if isButlerSynthesis {
             parts.append("你是群里的总管「\(bot.name)」。")
             parts.append(self.voice(for: .butler))
-            if isMentioned {
+            if userSentSticker && !isProgressCheck {
+                parts.append("""
+                本次发言要求：
+                - 用户刚发了表情包表达当下心情，这不是让你汇报工作！
+                - 请像靠谱老搭档一样直接接住用户的情绪（关心、安慰、轻松接梗或顺手提一句可以帮着分担），自然简短，严禁转去背诵工作汇报。
+                - 如果前面同事已经说得挺暖心、你只想补充一句贴心话或一张合适表情包，保持简洁自然。
+                """)
+            } else if !isProgressCheck {
+                parts.append("""
+                本次发言要求：
+                - 优先站在用户视角回应用户刚刚的真实需求或话题，严禁复述同事原话，也不要自顾自汇报后台状态。
+                - 如果前面同事已经把用户要的答案或回应给到位、你没有新的补充价值，请只回复 \(self.passToken)；如果有更实用的下一步建议、关键提醒或能直接帮用户推进的动作，简洁干脆地说出来。
+                """)
+            } else if isMentioned {
                 parts.append("""
                 本次发言要求：
                 - 严禁复述前面同事已经说过的原话或细节，用户已经看过了。
-                - 结合今天真实做过的事情和刚才群里的结论，用实在的人话收个尾，或者点出眼下最值得先动手的一件事，自然简洁。
+                - 结合今天真实做过的事情和刚才群里的结论，站在用户视角用实在的人话点出眼下最值得先动手的一件事或需要留意的风险，自然简洁。
                 - 如果大家前面都没拿出实锤内容，直接基于你掌握的今日工作记录，把今天主要干了啥诚实讲清楚。
                 """)
             } else {
@@ -382,14 +477,24 @@ nonisolated enum MeetingRoomPersona {
         if !isButlerSynthesis {
             if isMentioned {
                 if allowStickerOnly {
-                    parts.append("用户点名了你，必须回应，不能 PASS。直接针对用户的话，用你自己的口吻自然回应（若候选表情包已精准表达你的态度，也允许只回该表情包）。")
+                    parts.append("用户点名了你，必须回答，不能 PASS。直接针对用户的话或表情包，用你自己的口吻自然回应（若候选表情包已精准表达你的态度，也允许只回该表情包）。")
                 } else {
                     parts.append("用户点名了你，必须回答，不能 PASS。直接针对用户的话，用你自己的口吻把事情讲清楚。")
                 }
+            } else if userSentSticker && !isProgressCheck {
+                if mustRespond {
+                    parts.append("群聊规则：用户刚发了表情包，不是让你汇报工作！你必须积极接住这张表情包的情绪和意思（严禁回复 PASS），像真搭档一样用你自己的性格关心、安慰、调侃或回一张贴切的表情包，绝不要提工作归档或统计数据。")
+                } else {
+                    parts.append("群聊规则：用户刚发了表情包，不是让你汇报工作！结合你的性格从不同角度自然接住用户的情绪（或回一张贴切的表情包）；只有当前面已经非常热闹且你实在插不上新意时，才回复 \(self.passToken)。")
+                }
             } else if !isProgressCheck {
-                parts.append("群聊规则：用户现在只是随口打招呼或聊天，不是让你汇报工作！绝对不要背诵后台数字或流水账。如果前面已经有人接过话了、或者这话题跟你没啥关系，只回复 \(self.passToken)，不要多写一个字。")
+                if mustRespond {
+                    parts.append("群聊规则：用户现在在直接跟你和大家交流需求或想法，不是让你汇报工作！请积极回应用户本人的需求、提问或情绪（严禁回复 PASS），从你的视角给出直接有帮助的回答、建议或自然接话，绝不要背诵后台数字或自顾自汇报。")
+                } else {
+                    parts.append("群聊规则：用户现在在交流需求或聊天，不是让你汇报工作！优先响应用户刚说的话，从你自己的专长或性格提供新视角、实用建议或情绪回应；只有当前面同事已经把你的角度完全说透、你确实补充不了新价值时，才回复 \(self.passToken)。")
+                }
             } else {
-                parts.append("群聊规则：用户想了解今天实际做了什么。只有当你手里有具体工作内容或待办能把事情讲清楚、而且前面同事还没说完时，才用平常说话的大白话讲清楚具体干了啥；如果你没参与、没有实质内容，或前面已经有人答全了，只回复 \(self.passToken)，不要多写任何字，绝不硬凑。")
+                parts.append("群聊规则：用户想了解今天实际做了什么。请站在用户视角直接说清楚今天推进的关键成果、卡点或能帮上忙的地方；严禁说「我贡献不大」「纯打下手」「以XX说的为准」这类无价值自报家门。如果你手里没实质内容，或前面已经讲透，只回复 \(self.passToken)，不要硬凑。")
             }
         }
         

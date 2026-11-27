@@ -137,6 +137,20 @@ nonisolated struct StickerAsset: Identifiable, Codable, Equatable, Sendable, Has
         }
         return parts.joined(separator: " | ")
     }
+    
+    var stickerSearchTerms: String {
+        var parts: [String] = []
+        let ocr = self.ocrText.replacingOccurrences(of: "\n", with: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !ocr.isEmpty { parts.append(ocr) }
+        let mean = self.meaning.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !mean.isEmpty { parts.append(mean) }
+        if !self.moods.isEmpty { parts.append(self.moods.joined(separator: " ")) }
+        if !self.tags.isEmpty { parts.append(self.tags.prefix(4).joined(separator: " ")) }
+        if parts.isEmpty, let catTitle = StickerCategory(rawValue: self.category)?.displayName {
+            parts.append(catTitle)
+        }
+        return parts.joined(separator: " ")
+    }
 }
 
 
@@ -169,10 +183,10 @@ nonisolated struct StickerImportResult: Equatable, Sendable {
 nonisolated enum StickerSearchEngine {
     
     private static let moodKeywordRules: [(mood: String, keywords: [String])] = [
-        ("开心", ["开心", "哈哈", "笑", "nice", "good", "棒", "爽", "快乐", "耶", "赞", "喜欢", "爱", "可爱", "冲"]),
+        ("开心", ["开心", "哈哈", "笑", "nice", "good", "棒", "爽", "快乐", "耶", "赞", "喜欢", "爱", "可爱", "冲", "抱抱", "摸头", "贴贴", "加油", "鼓励", "干杯"]),
         ("兴奋", ["冲", "牛", "厉害", "起飞", "震惊", "卧槽", "绝了", "稳", "太强", "nb", "666"]),
         ("无语", ["无语", "汗", "裂开", "服了", "啊？", "什么", "离谱", "不懂", "呆", "沉默", "算了", "?", "？"]),
-        ("委屈", ["哭", "泪", "难受", "委屈", "求", "救命", "崩", "累", "痛", "困", "惨", "寄"]),
+        ("委屈", ["哭", "泪", "难受", "委屈", "求", "救命", "崩", "累", "痛", "困", "惨", "寄", "忧伤", "伤心", "悲伤", "难过", "emo", "心累", "叹气", "郁闷", "丧", "安慰", "拍拍"]),
         ("摸鱼", ["摸鱼", "躺", "睡", "困", "下班", "咖啡", "摸", "发呆", "摆烂", "算了"]),
         ("专注", ["思考", "想", "研究", "看", "写", "代码", "工作", "盯", "查", "认真", "学习"]),
         ("平静", ["好", "行", "ok", "嗯", "收到", "明白", "喝茶", "淡定"]),

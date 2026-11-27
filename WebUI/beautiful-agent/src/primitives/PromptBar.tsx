@@ -130,6 +130,7 @@ type PromptBarProps = {
   effort?: EffortLevel;
   showEffort?: boolean;
   inlineBotMentions?: boolean;
+  draftStorageKey?: string;
   onClearQuote?: () => void;
   onSelectModel: (model: ModelOption) => void;
   onSelectEffort?: (effort: EffortLevel) => void;
@@ -160,6 +161,7 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
     effort = "balanced",
     showEffort = false,
     inlineBotMentions = false,
+    draftStorageKey,
     onClearQuote,
     onSelectModel,
     onSelectEffort,
@@ -173,7 +175,34 @@ const PromptBar = forwardRef<PromptBarHandle, PromptBarProps>(function PromptBar
   },
   ref,
 ) {
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(() => {
+    if (!draftStorageKey) return "";
+    try {
+      return window.localStorage.getItem(draftStorageKey) ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const prevStorageKeyRef = useRef<string | undefined>(draftStorageKey);
+  useEffect(() => {
+    if (prevStorageKeyRef.current === draftStorageKey) return;
+    prevStorageKeyRef.current = draftStorageKey;
+    if (!draftStorageKey) return;
+    try {
+      setDraft(window.localStorage.getItem(draftStorageKey) ?? "");
+    } catch {
+      // Ignore storage access errors
+    }
+  }, [draftStorageKey]);
+  useEffect(() => {
+    if (!draftStorageKey) return;
+    try {
+      if (draft) window.localStorage.setItem(draftStorageKey, draft);
+      else window.localStorage.removeItem(draftStorageKey);
+    } catch {
+      // Ignore storage quota/access errors
+    }
+  }, [draft, draftStorageKey]);
   const [attachedDocs, setAttachedDocs] = useState<AttachedDocumentRef[]>([]);
   const [selectedBot, setSelectedBot] = useState<BotMentionItem | null>(null);
   const [selectedSticker, setSelectedSticker] = useState<StickerItem | null>(null);

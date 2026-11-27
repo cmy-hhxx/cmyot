@@ -44,7 +44,10 @@ final class ToolbarButlerBotButtonView: NSView {
     private let clickButton = ToolbarClickButton()
     private var panel: ButlerFloatingPanel?
     private var panelHosting: NSHostingController<AnyView>?
-    private var isPinnedPanel: Bool = false
+    private var isPinnedPanel: Bool = CotLocalDatabase.shared.bool(
+        forKey: CotLocalDatabase.ConfigKey.butlerFloatingPanelPinned,
+        default: true
+    )
     private var suppressAutoDismiss: Bool = false
     private var identityObserver: (any NSObjectProtocol)?
     private var openHubObserver: (any NSObjectProtocol)?
@@ -52,6 +55,16 @@ final class ToolbarButlerBotButtonView: NSView {
     private var globalMouseMonitor: Any?
     private var keyMonitor: Any?
     private var windowCloseObserver: (any NSObjectProtocol)?
+    private var panelResizeObserver: (any NSObjectProtocol)?
+    private var panelMoveObserver: (any NSObjectProtocol)?
+    
+    private var shouldProtectFromOutsideDismiss: Bool {
+        self.isPinnedPanel
+            || self.suppressAutoDismiss
+            || ButlerMeetingRoomManager.shared.isActive
+            || ButlerMeetingRoomManager.shared.isConvening
+            || CotButlerManager.shared.isStreaming
+    }
     
     
     override init(frame frameRect: NSRect) {
@@ -251,9 +264,10 @@ final class ToolbarButlerBotButtonView: NSView {
         _ = CotAgentCoordinator.shared.captureWorkspaceSnapshot()
         
         let pinnedBinding = Binding<Bool>(
-            get: { [weak self] in self?.isPinnedPanel ?? false },
+            get: { [weak self] in self?.isPinnedPanel ?? true },
             set: { [weak self] newValue in
                 self?.isPinnedPanel = newValue
+                CotLocalDatabase.shared.set(newValue, forKey: CotLocalDatabase.ConfigKey.butlerFloatingPanelPinned)
                 self?.panel?.level = newValue ? .floating : .popUpMenu
             }
         )
@@ -321,11 +335,12 @@ final class ToolbarButlerBotButtonView: NSView {
         
         let btnInWindow = self.convert(self.bounds, to: nil)
         let btnScreen = hostWindow.convertToScreen(btnInWindow)
-        let frame = UserAvatarToolbarButtonView.anchoredPanelFrame(
+        let defaultFrame = UserAvatarToolbarButtonView.anchoredPanelFrame(
             buttonScreenRect: btnScreen,
             panelSize: panelSize,
             visibleScreenFrame: screenFrame
         )
+        let frame = Self.restoredPanelFrame(in: screenFrame) ?? defaultFrame
         
         let panel = ButlerFloatingPanel(
             contentRect: frame,
@@ -364,7 +379,7 @@ final class ToolbarButlerBotButtonView: NSView {
     private func installMonitors(hostWindow: NSWindow, panel: ButlerFloatingPanel) {
         self.localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self, weak panel] event in
             guard let self, let panel, panel.isVisible else { return event }
-            if self.isPinnedPanel || self.suppressAutoDismiss { return event }
+            if self.shouldProtectFromOutsideDismiss { return event }
             if event.window === panel { return event }
             if event.window === self.window {
                 let locInSelf = self.convert(event.locationInWindow, from: nil)
@@ -376,14 +391,14 @@ final class ToolbarButlerBotButtonView: NSView {
         
         self.globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
             Task { @MainActor in
-                guard let self, !self.isPinnedPanel, !self.suppressAutoDismiss else { return }
+                guard let self, !self.shouldProtectFromOutsideDismiss else { return }
                 self.closeFloatingPanel()
             }
         }
         
         self.keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak panel] event in
             guard let self, let panel, panel.isVisible, event.keyCode == 53 else { return event }
-            if self.isPinnedPanel || self.suppressAutoDismiss { return event }
+            if self.shouldProtectFromOutsideDismiss { return event }
             // Allow Escape inside WebView menus/popovers; only close if panel is key and user presses Escape
             if panel.firstResponder is NSTextView {
                 return event
@@ -401,6 +416,54 @@ final class ToolbarButlerBotButtonView: NSView {
                 self?.closeFloatingPanel()
             }
         }
+        
+        self.panelResizeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didEndLiveResizeNotification,
+            object: panel,
+            queue: .main
+        ) { [weak panel] _ in
+            MainActor.assumeIsolated {
+                guard let panel else { return }
+                Self.persistPanelFrame(panel.frame)
+            }
+        }
+        
+        self.panelMoveObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didMoveNotification,
+            object: panel,
+            queue: .main
+        ) { [weak panel] _ in
+            MainActor.assumeIsolated {
+                guard let panel, panel.isVisible else { return }
+                Self.persistPanelFrame(panel.frame)
+            }
+        }
+    }
+    
+    
+    private static func persistPanelFrame(_ frame: NSRect) {
+        let payload: [Double] = [frame.origin.x, frame.origin.y, frame.size.width, frame.size.height]
+        guard let data = try? JSONEncoder().encode(payload),
+              let json = String(data: data, encoding: .utf8)
+        else { return }
+        CotLocalDatabase.shared.set(json, forKey: CotLocalDatabase.ConfigKey.butlerFloatingPanelFrameJSON)
+    }
+    
+    
+    private static func restoredPanelFrame(in visibleScreenFrame: NSRect) -> NSRect? {
+        let raw = CotLocalDatabase.shared.string(forKey: CotLocalDatabase.ConfigKey.butlerFloatingPanelFrameJSON, default: "")
+        guard !raw.isEmpty,
+              let data = raw.data(using: .utf8),
+              let vals = try? JSONDecoder().decode([Double].self, from: data),
+              vals.count == 4
+        else { return nil }
+        let width = min(1120, max(500, vals[2]))
+        let height = min(860, max(420, vals[3]))
+        let clampedW = min(width, max(500, visibleScreenFrame.width - 24))
+        let clampedH = min(height, max(420, visibleScreenFrame.height - 24))
+        let clampedX = min(max(vals[0], visibleScreenFrame.minX + 12), visibleScreenFrame.maxX - clampedW - 12)
+        let clampedY = min(max(vals[1], visibleScreenFrame.minY + 12), visibleScreenFrame.maxY - clampedH - 12)
+        return NSRect(x: clampedX, y: clampedY, width: clampedW, height: clampedH)
     }
     
     
@@ -421,7 +484,16 @@ final class ToolbarButlerBotButtonView: NSView {
             NotificationCenter.default.removeObserver(windowCloseObserver)
             self.windowCloseObserver = nil
         }
+        if let panelResizeObserver {
+            NotificationCenter.default.removeObserver(panelResizeObserver)
+            self.panelResizeObserver = nil
+        }
+        if let panelMoveObserver {
+            NotificationCenter.default.removeObserver(panelMoveObserver)
+            self.panelMoveObserver = nil
+        }
         if let panel = self.panel {
+            Self.persistPanelFrame(panel.frame)
             panel.parent?.removeChildWindow(panel)
             panel.orderOut(nil)
             self.panel = nil
@@ -1229,9 +1301,13 @@ struct ButlerCommandHubView: View {
         }
         cb.onTogglePinPanel = {
             self.isPinnedPanel.wrappedValue.toggle()
+            self.webController.syncState(self.buildHostState(), force: true)
         }
         cb.onDockToPane = {
             self.onDockToPane?()
+        }
+        cb.onDismissPanel = {
+            self.onDismiss()
         }
         cb.onDismissProactiveCard = { id in
             self.proactiveEngine.dismissCard(id: id)

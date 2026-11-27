@@ -288,6 +288,88 @@ select:focus-visible {
   }
 }
 
+/* Per-Bot distinctive waiting effects in Meeting Room */
+@keyframes bot-avatar-halo {
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px var(--line);
+  }
+  50% {
+    box-shadow: 0 0 0 1.75px color-mix(in srgb, var(--bot-accent, var(--accent)) 46%, transparent);
+  }
+}
+
+@keyframes bot-bar-wave {
+  0%,
+  100% {
+    transform: scaleY(0.32);
+    opacity: 0.4;
+  }
+  45% {
+    transform: scaleY(1);
+    opacity: 0.95;
+  }
+}
+
+@keyframes bot-ink-line {
+  0%,
+  100% {
+    transform: scaleX(0.35);
+    opacity: 0.45;
+  }
+  50% {
+    transform: scaleX(1);
+    opacity: 0.95;
+  }
+}
+
+@keyframes bot-stack-slide {
+  0%,
+  100% {
+    transform: translateX(0);
+    opacity: 0.45;
+  }
+  45% {
+    transform: translateX(2.5px);
+    opacity: 0.95;
+  }
+}
+
+@keyframes bot-ripple-ring {
+  0% {
+    transform: scale(0.42);
+    opacity: 0.72;
+  }
+  100% {
+    transform: scale(1.15);
+    opacity: 0;
+  }
+}
+
+@keyframes bot-scan-beam {
+  0%,
+  100% {
+    transform: translateX(-2px);
+    opacity: 0.55;
+  }
+  50% {
+    transform: translateX(10px);
+    opacity: 1;
+  }
+}
+
+@keyframes bot-dot-hop {
+  0%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.35;
+  }
+  40% {
+    transform: translateY(-2.5px);
+    opacity: 0.95;
+  }
+}
+
 .stream-caret {
   display: inline-block;
   width: 2px;
