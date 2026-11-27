@@ -1020,7 +1020,7 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
         }
         switch self {
             case .butler:
-                return "用自然、清楚、好懂的日常中文和用户交流，问什么答什么，不说生硬的系统黑话或内部代号；用户明确要求记住偏好或操作文档/看板时再执行对应操作。"
+                return "像熟络靠谱的真人搭档一样交流：直奔重点、不啰嗦、去 AI 客套腔；多要点时主动用 `- ` 短分点，不说生硬的系统黑话或内部代号；用户明确要求记住偏好或操作文档/看板时再执行对应操作。"
             case .ghost:
                 return "你是嵌入编辑器光标处的续写幽灵。只接续光标后最自然的半句或短词，不重复前文，不加引号与解释。"
             case .readingCompanion:

@@ -36,6 +36,7 @@ final class CotPodcastService {
     private(set) var currentEpisode: PodcastEpisodeItem?
     private(set) var currentTime: TimeInterval = 0
     private(set) var duration: TimeInterval = 0
+    private(set) var bufferedProgress: Double = 0
     private(set) var rate: Double = 1.0
     private(set) var volume: Double = 1.0
     
@@ -53,16 +54,19 @@ final class CotPodcastService {
     private let memoryStore: CotMemoryStore
     private let downloadsDirectory: URL
     
-    private var player: AVPlayer?
-    private var timeObserver: Any?
-    private var statusObservation: NSKeyValueObservation?
-    private var durationObservation: NSKeyValueObservation?
-    private var timeControlObservation: NSKeyValueObservation?
-    private var endObserver: NSObjectProtocol?
-    private var dbObserver: (any NSObjectProtocol)?
-    private var sleepTimerTask: Task<Void, Never>?
-    private var shouldAutoplayWhenReady = false
-    private var lastPersistedSecond = -1
+    @ObservationIgnored private var player: AVPlayer?
+    @ObservationIgnored private var timeObserver: Any?
+    @ObservationIgnored private var statusObservation: NSKeyValueObservation?
+    @ObservationIgnored private var durationObservation: NSKeyValueObservation?
+    @ObservationIgnored private var timeControlObservation: NSKeyValueObservation?
+    @ObservationIgnored private var endObserver: NSObjectProtocol?
+    @ObservationIgnored private var dbObserver: (any NSObjectProtocol)?
+    @ObservationIgnored private var sleepTimerTask: Task<Void, Never>?
+    @ObservationIgnored private var shouldAutoplayWhenReady = false
+    @ObservationIgnored private var isLocalPlayback = false
+    @ObservationIgnored private var isSeeking = false
+    @ObservationIgnored private var seekGeneration: UInt64 = 0
+    @ObservationIgnored private var lastPersistedSecond = -1
     
     
     init(
@@ -390,13 +394,19 @@ final class CotPodcastService {
             ?? self.savedEpisodes.first(where: { $0.id == episode.id })?.playbackPositionSec
             ?? 0
         let keepSaved = self.isSaved(episode.id)
-        self.database.upsertStoredPodcast(episode.toStoredRecord(positionSec: existingPos, isSaved: keepSaved))
-        self.reloadFromDatabase()
+        let record = episode.toStoredRecord(positionSec: existingPos, isSaved: keepSaved)
+        self.database.upsertStoredPodcast(record)
+        self.historyEpisodes.removeAll { $0.id == episode.id }
+        self.historyEpisodes.insert(record, at: 0)
         
         self.currentEpisode = episode
         self.currentTime = existingPos
         self.duration = episode.duration
-        self.phase = .loading
+        self.bufferedProgress = localURL != nil ? 1.0 : 0
+        self.isLocalPlayback = (localURL != nil)
+        self.isSeeking = false
+        self.seekGeneration &+= 1
+        self.phase = localURL != nil && autoplay ? .playing : .loading
         self.lastPersistedSecond = -1
         self.shouldAutoplayWhenReady = autoplay
         
@@ -406,7 +416,9 @@ final class CotPodcastService {
             AVURLAsset(url: playbackURL, options: ["AVURLAssetHTTPHeaderFieldsKey": episode.headers])
         }
         let item = AVPlayerItem(asset: asset)
+        item.preferredForwardBufferDuration = 12
         let player = AVPlayer(playerItem: item)
+        player.automaticallyWaitsToMinimizeStalling = true
         player.volume = Float(self.volume)
         self.player = player
         let episodeID = episode.id
@@ -468,14 +480,28 @@ final class CotPodcastService {
         }
         
         self.timeObserver = player.addPeriodicTimeObserver(
-            forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
+            forInterval: CMTime(seconds: 0.1, preferredTimescale: 600),
             queue: .main
-        ) { [weak self, weak player] time in
+        ) { [weak self, weak player, weak item] time in
             MainActor.assumeIsolated {
                 guard let self, let player, self.player === player, self.currentEpisode?.id == episodeID else { return }
+                if let item, self.duration > 0 {
+                    if self.isLocalPlayback {
+                        self.bufferedProgress = 1.0
+                    } else if let range = item.loadedTimeRanges.first?.timeRangeValue {
+                        let loadedEnd = CMTimeGetSeconds(CMTimeAdd(range.start, range.duration))
+                        if loadedEnd.isFinite && loadedEnd >= 0 {
+                            let ratio = min(1.0, max(0.0, loadedEnd / self.duration))
+                            if abs(ratio - self.bufferedProgress) >= 0.01 {
+                                self.bufferedProgress = ratio
+                            }
+                        }
+                    }
+                }
+                guard !self.isSeeking else { return }
                 let secs = time.seconds
                 if secs.isFinite && secs >= 0 {
-                    if abs(secs - self.currentTime) >= 0.25 || secs == 0 {
+                    if abs(secs - self.currentTime) >= 0.06 || secs == 0 {
                         self.currentTime = secs
                     }
                     let secInt = Int(secs.rounded(.down))
@@ -511,7 +537,9 @@ final class CotPodcastService {
             return
         }
         self.shouldAutoplayWhenReady = true
-        self.phase = .buffering
+        let readyImmediate = player.currentItem?.status == .readyToPlay
+            && (self.isLocalPlayback || player.currentItem?.isPlaybackLikelyToKeepUp == true)
+        self.phase = readyImmediate ? .playing : .buffering
         player.playImmediately(atRate: Float(self.rate))
     }
     
@@ -550,14 +578,21 @@ final class CotPodcastService {
         guard let player = self.player else { return }
         let clamped = max(0, self.duration > 0 ? min(target, self.duration) : target)
         let shouldResume = autoplayAfterSeek ?? self.phase.hasPlaybackIntent
+        self.currentTime = clamped
+        self.isSeeking = true
+        self.seekGeneration &+= 1
+        let gen = self.seekGeneration
         let cmTarget = CMTime(seconds: clamped, preferredTimescale: 600)
-        player.seek(to: cmTarget, toleranceBefore: .zero, toleranceAfter: CMTime(seconds: 0.25, preferredTimescale: 600)) { [weak self, weak player] finished in
+        player.seek(to: cmTarget, toleranceBefore: .zero, toleranceAfter: CMTime(seconds: 0.1, preferredTimescale: 600)) { [weak self, weak player] finished in
             Task { @MainActor [weak self] in
-                guard let self, let player, self.player === player, finished else { return }
+                guard let self, let player, self.player === player, self.seekGeneration == gen else { return }
+                self.isSeeking = false
+                guard finished else { return }
                 self.currentTime = clamped
                 self.persistPosition(force: true)
                 if shouldResume && self.shouldAutoplayWhenReady {
                     player.playImmediately(atRate: Float(self.rate))
+                    self.phase = .playing
                 } else {
                     self.phase = .paused
                 }
@@ -699,5 +734,8 @@ final class CotPodcastService {
         self.player?.pause()
         self.player = nil
         self.shouldAutoplayWhenReady = false
+        self.isLocalPlayback = false
+        self.isSeeking = false
+        self.bufferedProgress = 0
     }
 }

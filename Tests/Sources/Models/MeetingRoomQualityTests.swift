@@ -360,5 +360,15 @@ struct MeetingRoomQualityTests {
         #expect(html.contains("bot-stack-slide"))
         #expect(html.contains("bot-scan-beam"))
         #expect(!html.contains("正在输入"))
+        
+        // Verify Bot human voice rules allow clean short bullets and reject AI clichés
+        #expect(MeetingRoomPersona.sharedRules.contains("短分点"))
+        #expect(MeetingRoomPersona.sharedRules.contains("严禁 AI 腔"))
+        #expect(!MeetingRoomPersona.sharedRules.contains("编号列表"))
+        
+        // Verify Stocks chart ships kinetic inertia scrolling and preserves user zoom on live refreshes
+        let chartHTML = TradingViewLightweightChartView.chartHTMLDocument()
+        #expect(chartHTML.contains("kineticScroll"))
+        #expect(chartHTML.contains("didChangeSeriesContext"))
     }
 }

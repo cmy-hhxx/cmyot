@@ -284,24 +284,41 @@ struct TradingViewLightweightChartView: NSViewRepresentable, Equatable {
             #chart {
               width: 100%;
               height: 100%;
+              opacity: 0;
+              transition: opacity 180ms cubic-bezier(0.22, 1, 0.36, 1);
+            }
+            #chart.ready {
+              opacity: 1;
+            }
+            #chart.switching {
+              opacity: 0.42;
             }
             #legend {
               position: absolute;
               top: 6px;
               left: 10px;
-              right: 72px;
+              max-width: calc(100% - 86px);
               z-index: 10;
               pointer-events: none;
-              display: flex;
+              display: inline-flex;
               flex-wrap: wrap;
               align-items: center;
-              gap: 10px;
+              gap: 9px;
+              padding: 3px 8px;
+              border-radius: 6px;
+              background: rgba(255, 255, 255, 0.68);
+              border: 0.5px solid rgba(15, 23, 42, 0.08);
+              -webkit-backdrop-filter: blur(8px);
+              backdrop-filter: blur(8px);
               font-size: 11px;
               font-variant-numeric: tabular-nums;
-              color: rgba(30, 35, 45, 0.78);
+              color: rgba(30, 35, 45, 0.84);
+              transition: opacity 160ms ease-out;
             }
             body.dark #legend {
-              color: rgba(226, 232, 240, 0.80);
+              background: rgba(24, 27, 34, 0.64);
+              border-color: rgba(255, 255, 255, 0.09);
+              color: rgba(226, 232, 240, 0.86);
             }
             .tag { font-weight: 600; opacity: 0.65; margin-right: 2px; }
             .ma5 { color: #F5AD29; font-weight: 500; }
@@ -348,6 +365,7 @@ struct TradingViewLightweightChartView: NSViewRepresentable, Equatable {
                 },
                 handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
                 handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+                kineticScroll: { mouse: true, touch: true },
               });
 
               const candleSeries = chart.addSeries(LWC.CandlestickSeries, {
@@ -394,6 +412,8 @@ struct TradingViewLightweightChartView: NSViewRepresentable, Equatable {
         """
               let prevCloseLine = null;
               let currentPayload = null;
+              let lastChartKey = null;
+              let switchRaf = 0;
 
               function fmtPrice(val, prec) {
                 if (typeof val !== 'number' || !isFinite(val)) return '—';
@@ -554,6 +574,14 @@ struct TradingViewLightweightChartView: NSViewRepresentable, Equatable {
                     });
                   }
 
+                  const nextChartKey = `${payload.symbol || ''}|${payload.mode || ''}`;
+                  const didChangeSeriesContext = lastChartKey !== nextChartKey;
+                  lastChartKey = nextChartKey;
+
+                  if (didChangeSeriesContext && container.classList.contains('ready')) {
+                    container.classList.add('switching');
+                  }
+
                   candleSeries.setData(isIntraday ? [] : (payload.candles || []));
                   ma5Series.setData(!isIntraday ? (payload.ma5 || []) : []);
                   ma10Series.setData(!isIntraday ? (payload.ma10 || []) : []);
@@ -562,8 +590,16 @@ struct TradingViewLightweightChartView: NSViewRepresentable, Equatable {
                   vwapSeries.setData(isIntraday ? (payload.ma5 || []) : []);
                   volumeSeries.setData(payload.volume || []);
 
-                  chart.timeScale().fitContent();
+                  if (didChangeSeriesContext) {
+                    chart.timeScale().fitContent();
+                  }
                   showLatestLegend();
+
+                  cancelAnimationFrame(switchRaf);
+                  switchRaf = requestAnimationFrame(() => {
+                    container.classList.add('ready');
+                    container.classList.remove('switching');
+                  });
                 }
               };
         """

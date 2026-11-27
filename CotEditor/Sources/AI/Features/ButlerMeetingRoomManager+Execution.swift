@@ -556,8 +556,8 @@ extension ButlerMeetingRoomManager {
                 return nil
             }
             finalText = context.userSentSticker
-                ? AppLanguage.text("怎么啦？来抱抱，有啥事儿直接丢给我分担。", en: "Hey, what's up? I'm right here if you want to vent or hand something off.")
-                : AppLanguage.text("在的，你说，我这边随时帮你接手。", en: "I'm here—tell me what you need.")
+                ? AppLanguage.text("咋了，卡哪儿了？发来看看。", en: "What's up—hit a snag somewhere?")
+                : AppLanguage.text("在的，直接说要处理哪块。", en: "Here—which part are we tackling?")
         }
         
         botStore.updateEmotion(
@@ -602,7 +602,7 @@ extension ButlerMeetingRoomManager {
         let evidence = telemetry?.evidenceSummary ?? ""
         var config = botStore.resolvedConfiguration(forBotID: bot.id)
         if let builtIn = bot.builtInID, botStore.config(for: builtIn).temperature == nil {
-            config.temperature = context.isProgressCheck ? 0.58 : 0.72
+            config.temperature = context.isProgressCheck ? 0.62 : 0.78
         }
         let canCallRemote = context.allowRemoteAI && AIService.shared.isConfigured
             && !config.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -748,18 +748,18 @@ extension ButlerMeetingRoomManager {
             let caption = context.userSticker?.searchableSummary ?? ""
             if bot.builtInID == .butler {
                 return caption.isEmpty
-                    ? AppLanguage.text("看到你发的图啦，先歇口气，有啥事儿尽管跟我说。", en: "Saw your sticker—take a breather and tell me what's on your mind.")
-                    : AppLanguage.text("看你发了「\(caption)」，怎么啦？有啥烦心事直接丢给我帮着分担。", en: "Saw your \"\(caption)\" sticker—what's up? I'm right here.")
+                    ? AppLanguage.text("咋了，出什么岔子了？丢给我看看。", en: "What happened? Send it over.")
+                    : AppLanguage.text("看你发了「\(caption)」，卡哪块了？直接说，我帮你顶上。", en: "Saw \"\(caption)\"—what's stuck? Tell me and I'll handle it.")
             }
             return caption.isEmpty
-                ? AppLanguage.text("怎么啦，感觉你有点小情绪，先歇会儿，需要我搭把手随时喊。", en: "Hey, take it easy—I'm here whenever you want a hand.")
-                : AppLanguage.text("拍拍你，「\(caption)」看着有点累，先喘口气，有事儿直接交给我。", en: "Pat pat—\"\(caption)\" looks rough. Take a breather and let me help.")
+                ? AppLanguage.text("咋了这是，谁又惹你不痛快了？", en: "What's up? Something go sideways?")
+                : AppLanguage.text("「\(caption)」看着有点遭不住，啥事儿发出来一起拆。", en: "\"\(caption)\" looks rough—drop it here and let's untangle it.")
         }
         if !context.isProgressCheck {
             if bot.builtInID == .butler {
-                return AppLanguage.text("明白你的意思了，我先盯着，需要我直接动手推进哪一步？", en: "Got it—which part should I tackle first?")
+                return AppLanguage.text("行，先从哪块下手？", en: "Got it—where do we start?")
             }
-            return AppLanguage.text("收到你的想法了，我这边随时待命配合。", en: "Got your point—ready to jump in whenever you need.")
+            return AppLanguage.text("明白，这块我接着。", en: "On it.")
         }
         if bot.builtInID == .butler && context.isButlerSynthesis {
             if context.subordinateReports.isEmpty {

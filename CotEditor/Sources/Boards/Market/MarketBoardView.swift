@@ -22,6 +22,97 @@
 import AppKit
 import SwiftUI
 
+/// Press-only Apple tactile button style (smooth spring compression on press, zero hover twitch).
+private struct MarketTactileButtonStyle: ButtonStyle {
+    
+    var pressedScale: CGFloat = 0.94
+    
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? self.pressedScale : 1.0)
+            .opacity(configuration.isPressed ? 0.84 : 1.0)
+            .animation(.spring(response: 0.22, dampingFraction: 0.74), value: configuration.isPressed)
+    }
+}
+
+
+/// Crisp Apple Stocks-style miniature trend sparkline drawn directly in SwiftUI Canvas.
+private struct WatchlistSparklineView: View {
+    
+    let closes: [Double]
+    let tone: Color
+    
+    var body: some View {
+        Canvas { context, size in
+            guard self.closes.count >= 2 else { return }
+            let minV = self.closes.min() ?? 0
+            let maxV = self.closes.max() ?? 1
+            let span = max(maxV - minV, max(abs(maxV) * 0.002, 0.0001))
+            let stepX = size.width / CGFloat(self.closes.count - 1)
+            let padY: CGFloat = 1.5
+            let usableH = max(1, size.height - padY * 2)
+            
+            var line = Path()
+            for (idx, val) in self.closes.enumerated() {
+                let x = CGFloat(idx) * stepX
+                let y = padY + (1.0 - CGFloat((val - minV) / span)) * usableH
+                if idx == 0 {
+                    line.move(to: CGPoint(x: x, y: y))
+                } else {
+                    line.addLine(to: CGPoint(x: x, y: y))
+                }
+            }
+            
+            var area = line
+            area.addLine(to: CGPoint(x: size.width, y: size.height))
+            area.addLine(to: CGPoint(x: 0, y: size.height))
+            area.closeSubpath()
+            
+            context.fill(
+                area,
+                with: .linearGradient(
+                    Gradient(colors: [self.tone.opacity(0.22), self.tone.opacity(0.0)]),
+                    startPoint: CGPoint(x: 0, y: 0),
+                    endPoint: CGPoint(x: 0, y: size.height)
+                )
+            )
+            context.stroke(
+                line,
+                with: .color(self.tone),
+                style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round)
+            )
+        }
+        .frame(width: 34, height: 15)
+        .allowsHitTesting(false)
+    }
+}
+
+
+/// Subtle Safari / Apple Stocks-style top hairline loading bar during quote fetches.
+private struct MarketChartLoadingHairline: View {
+    
+    let accentColor: Color
+    @State private var phase: CGFloat = -0.35
+    
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            Capsule()
+                .fill(self.accentColor.opacity(0.75))
+                .frame(width: max(48, w * 0.28), height: 1.8)
+                .offset(x: self.phase * w)
+        }
+        .frame(height: 2)
+        .clipped()
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.05).repeatForever(autoreverses: false)) {
+                self.phase = 1.05
+            }
+        }
+    }
+}
+
+
 /// Compact, precision-crafted Market Watchlist & Real-Time K-Line Board harmonized with CotEditor's editor paper.
 struct MarketBoardView: View {
     
@@ -39,6 +130,7 @@ struct MarketBoardView: View {
     @State private var searchTask: Task<Void, Never>?
     @State private var showMovingAverages: Bool = true
     @State private var hoveredRowID: String?
+    @Namespace private var periodPillNamespace
     
     private var canvasBackground: Color {
         self.surfaceColor ?? self.tokens.canvasTop
@@ -76,7 +168,8 @@ struct MarketBoardView: View {
             HStack(spacing: 0) {
                 if showsRail {
                     self.watchlistRail
-                        .frame(width: 174)
+                        .frame(width: 196)
+                        .transition(.move(edge: .leading).combined(with: .opacity))
                     Rectangle()
                         .fill(self.tokens.hairline)
                         .frame(width: 0.75)
@@ -85,6 +178,7 @@ struct MarketBoardView: View {
                 self.klineStage(showsCompactStrip: !showsRail)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .animation(.spring(response: 0.32, dampingFraction: 0.86), value: showsRail)
             .background(self.hasCustomBackground ? Color.clear : self.canvasBackground)
         }
         .onAppear {
@@ -194,6 +288,8 @@ struct MarketBoardView: View {
         let isSelected = self.activeInstrument?.instrumentID == stock.instrumentID
         let isHovered = self.hoveredRowID == stock.instrumentID
         let tone = MarketTonePalette.directionColor(isRising: (pct ?? 0) >= 0, market: inst.market)
+        let sparkBars = (quote?.barsByPeriod[.intraday] ?? quote?.barsByPeriod[.day] ?? []).suffix(24)
+        let sparkCloses = sparkBars.map(\.close)
         
         return Button {
             self.selectInstrument(inst)
@@ -209,15 +305,22 @@ struct MarketBoardView: View {
                         .foregroundStyle(self.mutedInk)
                         .lineLimit(1)
                 }
+                .frame(minWidth: 50, alignment: .leading)
                 
-                Spacer(minLength: 4)
+                Spacer(minLength: 2)
+                
+                if sparkCloses.count >= 3 {
+                    WatchlistSparklineView(closes: sparkCloses, tone: tone)
+                }
                 
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(price.map { Self.formatPrice($0) } ?? "—")
                         .font(.system(size: 11.5, weight: .semibold).monospacedDigit())
+                        .contentTransition(.numericText(value: price ?? 0))
                         .foregroundStyle(price == nil ? self.mutedInk : self.tokens.primaryInk)
                     Text(pct.map { Self.formatPercent($0) } ?? "—")
                         .font(.system(size: 10, weight: .semibold).monospacedDigit())
+                        .contentTransition(.numericText(value: pct ?? 0))
                         .foregroundStyle(pct == nil ? self.mutedInk : tone)
                         .padding(.horizontal, 4.5)
                         .padding(.vertical, 1)
@@ -228,18 +331,21 @@ struct MarketBoardView: View {
                 }
             }
             .padding(.horizontal, 7)
-            .padding(.vertical, 5)
+            .padding(.vertical, 5.5)
             .background(
                 isSelected ? self.tokens.inset : (isHovered ? self.tokens.inset.opacity(0.55) : Color.clear),
-                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                in: RoundedRectangle(cornerRadius: 6.5, style: .continuous)
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                RoundedRectangle(cornerRadius: 6.5, style: .continuous)
                     .strokeBorder(isSelected ? self.tokens.hairlineStrong : Color.clear, lineWidth: 0.6)
             )
-            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .animation(.easeOut(duration: 0.14), value: isHovered)
+            .animation(.spring(response: 0.28, dampingFraction: 0.86), value: isSelected)
+            .animation(.snappy(duration: 0.28), value: price ?? 0)
+            .contentShape(RoundedRectangle(cornerRadius: 6.5, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MarketTactileButtonStyle(pressedScale: 0.98))
         .pointerStyle(.link)
         .onHover { hovering in
             self.hoveredRowID = hovering ? stock.instrumentID : (self.hoveredRowID == stock.instrumentID ? nil : self.hoveredRowID)
@@ -331,39 +437,48 @@ struct MarketBoardView: View {
     
     
     private var chartViewport: some View {
-        Group {
-            if let inst = self.activeInstrument {
-                let bars = self.displayedBars
-                if bars.isEmpty {
-                    VStack(spacing: 6) {
-                        if self.marketService.loadingInstrumentIDs.contains(inst.instrumentID) || self.boardState.isAnalyzingIntent {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Text(AppLanguage.text("暂无行情数据", en: "No Market Data"))
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(self.mutedInk)
+        let isRefreshing = self.activeInstrument.map { self.marketService.loadingInstrumentIDs.contains($0.instrumentID) } ?? false
+        return ZStack(alignment: .top) {
+            Group {
+                if let inst = self.activeInstrument {
+                    let bars = self.displayedBars
+                    if bars.isEmpty {
+                        VStack(spacing: 6) {
+                            if isRefreshing || self.boardState.isAnalyzingIntent {
+                                ProgressView().controlSize(.small)
+                            } else {
+                                Text(AppLanguage.text("暂无行情数据", en: "No Market Data"))
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(self.mutedInk)
+                            }
                         }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        TradingViewLightweightChartView(
+                            instrument: inst,
+                            period: self.boardState.marketPeriod,
+                            bars: bars,
+                            previousClose: self.activeSnapshot?.previousClose ?? bars.first?.close ?? 0,
+                            isDark: self.tokens.isDark,
+                            showMovingAverages: self.showMovingAverages
+                        )
+                        .equatable()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    TradingViewLightweightChartView(
-                        instrument: inst,
-                        period: self.boardState.marketPeriod,
-                        bars: bars,
-                        previousClose: self.activeSnapshot?.previousClose ?? bars.first?.close ?? 0,
-                        isDark: self.tokens.isDark,
-                        showMovingAverages: self.showMovingAverages
-                    )
-                    .equatable()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    Text(AppLanguage.text("搜索代码或选择自选标的", en: "Select a symbol"))
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(self.mutedInk)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-            } else {
-                Text(AppLanguage.text("搜索代码或选择自选标的", en: "Select a symbol"))
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(self.mutedInk)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            
+            if isRefreshing {
+                MarketChartLoadingHairline(accentColor: self.tokens.accent)
+                    .transition(.opacity)
             }
         }
+        .animation(.easeOut(duration: 0.18), value: isRefreshing)
         .background(
             self.hasCustomBackground
                 ? self.tokens.card.opacity(self.tokens.isDark ? 0.44 : 0.62)
@@ -450,7 +565,7 @@ struct MarketBoardView: View {
         
         return HStack(spacing: 8) {
             Button {
-                withAnimation(.easeOut(duration: 0.16)) {
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
                     self.isWatchlistRailVisible.toggle()
                 }
             } label: {
@@ -459,7 +574,7 @@ struct MarketBoardView: View {
                     .foregroundStyle(self.isWatchlistRailVisible && !showsCompactStrip ? self.tokens.primaryInk : self.mutedInk)
                     .frame(width: 22, height: 22)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(MarketTactileButtonStyle())
             .pointerStyle(.link)
             
             if let inst {
@@ -477,64 +592,102 @@ struct MarketBoardView: View {
                     HStack(alignment: .firstTextBaseline, spacing: 6) {
                         Text("\(inst.market.currencyPrefix)\(Self.formatPrice(snap.lastPrice))")
                             .font(.system(size: 14.5, weight: .bold).monospacedDigit())
+                            .contentTransition(.numericText(value: snap.lastPrice))
                             .foregroundStyle(tone)
                         
                         Text("\(Self.formatSignedAmount(snap.changeAmount)) · \(Self.formatPercent(snap.changePercent))")
                             .font(.system(size: 10.5, weight: .semibold).monospacedDigit())
+                            .contentTransition(.numericText(value: snap.changePercent))
                             .foregroundStyle(tone)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 1.5)
                             .background(tone.opacity(self.tokens.isDark ? 0.16 : 0.10), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
                     }
+                    .animation(.snappy(duration: 0.28), value: snap.lastPrice)
                 }
             }
             
             Spacer(minLength: 6)
             
             if showsCompactStrip {
-                HStack(spacing: 4) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(self.mutedInk)
-                    TextField(AppLanguage.text("搜标的", en: "Symbol"), text: self.$searchText)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 11))
-                        .frame(width: 72)
-                        .onChange(of: self.searchText) { _, val in
-                            self.scheduleSearch(val)
-                        }
-                        .onSubmit {
-                            self.triggerSearch(self.searchText, immediateSelect: true)
-                        }
-                }
-                .padding(.horizontal, 7)
-                .frame(height: 22)
-                .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                self.compactSearchField
             }
             
-            HStack(spacing: 1) {
-                ForEach(MarketChartPeriod.allCases) { period in
-                    let active = (self.boardState.marketPeriod == period)
-                    Button {
+            self.periodSegmentedControl
+            
+            self.headerTrailingActions(inst: inst, snap: snap, watched: watched, isRefreshing: isRefreshing)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 36)
+    }
+    
+    
+    private var compactSearchField: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 10.5))
+                .foregroundStyle(self.mutedInk)
+            TextField(AppLanguage.text("搜标的", en: "Symbol"), text: self.$searchText)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11))
+                .frame(width: 72)
+                .onChange(of: self.searchText) { _, val in
+                    self.scheduleSearch(val)
+                }
+                .onSubmit {
+                    self.triggerSearch(self.searchText, immediateSelect: true)
+                }
+        }
+        .padding(.horizontal, 7)
+        .frame(height: 22)
+        .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+    }
+    
+    
+    private var periodSegmentedControl: some View {
+        HStack(spacing: 1) {
+            ForEach(MarketChartPeriod.allCases) { period in
+                let active = (self.boardState.marketPeriod == period)
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.84)) {
                         self.boardState.marketPeriod = period
-                    } label: {
-                        Text(period.label)
-                            .font(.system(size: 11, weight: active ? .semibold : .regular))
-                            .foregroundStyle(active ? self.tokens.primaryInk : self.secondaryInk)
-                            .padding(.horizontal, 7)
-                            .frame(height: 20)
-                            .background(active ? self.tokens.card : Color.clear, in: RoundedRectangle(cornerRadius: 4.5, style: .continuous))
                     }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
+                } label: {
+                    Text(period.label)
+                        .font(.system(size: 11, weight: active ? .semibold : .regular))
+                        .foregroundStyle(active ? self.tokens.primaryInk : self.secondaryInk)
+                        .padding(.horizontal, 7.5)
+                        .frame(height: 20)
+                        .background {
+                            if active {
+                                RoundedRectangle(cornerRadius: 4.5, style: .continuous)
+                                    .fill(self.tokens.card)
+                                    .shadow(color: Color.black.opacity(self.tokens.isDark ? 0.22 : 0.06), radius: 2, y: 0.5)
+                                    .matchedGeometryEffect(id: "marketPeriodPill", in: self.periodPillNamespace)
+                            }
+                        }
                 }
+                .buttonStyle(.plain)
+                .pointerStyle(.link)
             }
-            .padding(2)
-            .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            
+        }
+        .padding(2)
+        .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 6.5, style: .continuous))
+    }
+    
+    
+    private func headerTrailingActions(
+        inst: MarketInstrument?,
+        snap: MarketQuoteSnapshot?,
+        watched: Bool,
+        isRefreshing: Bool
+    ) -> some View {
+        HStack(spacing: 6) {
             if self.boardState.marketPeriod != .intraday {
                 Button {
-                    self.showMovingAverages.toggle()
+                    withAnimation(.easeOut(duration: 0.16)) {
+                        self.showMovingAverages.toggle()
+                    }
                 } label: {
                     Text("MA")
                         .font(.system(size: 10.5, weight: .semibold))
@@ -543,7 +696,7 @@ struct MarketBoardView: View {
                         .frame(height: 22)
                         .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MarketTactileButtonStyle())
                 .pointerStyle(.link)
             }
             
@@ -558,7 +711,7 @@ struct MarketBoardView: View {
                         .frame(height: 22)
                         .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MarketTactileButtonStyle())
                 .pointerStyle(.link)
                 
                 Button {
@@ -567,9 +720,11 @@ struct MarketBoardView: View {
                     Image(systemName: "arrow.clockwise")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(isRefreshing ? self.tokens.accentText : self.mutedInk)
+                        .rotationEffect(.degrees(isRefreshing ? 360 : 0))
+                        .animation(isRefreshing ? .linear(duration: 0.85).repeatForever(autoreverses: false) : .default, value: isRefreshing)
                         .frame(width: 22, height: 22)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MarketTactileButtonStyle())
                 .pointerStyle(.link)
                 .disabled(isRefreshing)
                 
@@ -588,7 +743,7 @@ struct MarketBoardView: View {
                             .frame(height: 22)
                             .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(MarketTactileButtonStyle())
                     .pointerStyle(.link)
                 }
             }
@@ -602,13 +757,11 @@ struct MarketBoardView: View {
                         .frame(height: 22)
                         .background(self.tokens.inset, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MarketTactileButtonStyle())
                 .pointerStyle(.link)
                 .help(AppLanguage.text("切回文档编辑", en: "Back to Document"))
             }
         }
-        .padding(.horizontal, 10)
-        .frame(height: 36)
     }
     
     
@@ -645,8 +798,10 @@ struct MarketBoardView: View {
                 .foregroundStyle(self.mutedInk)
             Text(value)
                 .font(.system(size: 11, weight: .medium).monospacedDigit())
+                .contentTransition(.numericText())
                 .foregroundStyle(self.tokens.primaryInk)
         }
+        .animation(.snappy(duration: 0.25), value: value)
     }
     
     
