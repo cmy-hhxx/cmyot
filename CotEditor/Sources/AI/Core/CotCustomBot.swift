@@ -167,10 +167,68 @@ nonisolated struct CustomBotProfile: Identifiable, Codable, Equatable, Sendable 
     var accentHex: String
     var isEnabled: Bool
     var createdAt: Double
+    var proactiveLevel: BotProactiveLevel = .off
     
     var handle: String {
         let clean = self.nickname.trimmingCharacters(in: .whitespacesAndNewlines)
         return "@\(clean.isEmpty ? self.name : clean)"
+    }
+    
+    init(
+        id: String,
+        name: String,
+        nickname: String,
+        avatarAssetID: String?,
+        avatarArtworkID: String?,
+        avatarBase64: String?,
+        endpointID: UUID?,
+        modelOverride: String,
+        personaPrompt: String,
+        baseline: BotPersonalityBaseline,
+        preferredStickerCategories: [String],
+        accentHex: String,
+        isEnabled: Bool,
+        createdAt: Double,
+        proactiveLevel: BotProactiveLevel = .off
+    ) {
+        self.id = id
+        self.name = name
+        self.nickname = nickname
+        self.avatarAssetID = avatarAssetID
+        self.avatarArtworkID = avatarArtworkID
+        self.avatarBase64 = avatarBase64
+        self.endpointID = endpointID
+        self.modelOverride = modelOverride
+        self.personaPrompt = personaPrompt
+        self.baseline = baseline
+        self.preferredStickerCategories = preferredStickerCategories
+        self.accentHex = accentHex
+        self.isEnabled = isEnabled
+        self.createdAt = createdAt
+        self.proactiveLevel = proactiveLevel
+    }
+    
+    enum CodingKeys: String, CodingKey {
+        case id, name, nickname, avatarAssetID, avatarArtworkID, avatarBase64, endpointID, modelOverride, personaPrompt, baseline, preferredStickerCategories, accentHex, isEnabled, createdAt, proactiveLevel
+    }
+    
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(String.self, forKey: .id)
+        self.name = try container.decode(String.self, forKey: .name)
+        self.nickname = try container.decodeIfPresent(String.self, forKey: .nickname) ?? ""
+        self.avatarAssetID = try container.decodeIfPresent(String.self, forKey: .avatarAssetID)
+        self.avatarArtworkID = try container.decodeIfPresent(String.self, forKey: .avatarArtworkID)
+        self.avatarBase64 = try container.decodeIfPresent(String.self, forKey: .avatarBase64)
+        self.endpointID = try container.decodeIfPresent(UUID.self, forKey: .endpointID)
+        self.modelOverride = try container.decodeIfPresent(String.self, forKey: .modelOverride) ?? ""
+        self.personaPrompt = try container.decodeIfPresent(String.self, forKey: .personaPrompt) ?? ""
+        self.baseline = try container.decodeIfPresent(BotPersonalityBaseline.self, forKey: .baseline) ?? .calm
+        self.preferredStickerCategories = try container.decodeIfPresent([String].self, forKey: .preferredStickerCategories) ?? []
+        self.accentHex = try container.decodeIfPresent(String.self, forKey: .accentHex) ?? "#2F6BFF"
+        self.isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        self.createdAt = try container.decodeIfPresent(Double.self, forKey: .createdAt) ?? Date().timeIntervalSince1970
+        self.proactiveLevel = try container.decodeIfPresent(BotProactiveLevel.self, forKey: .proactiveLevel) ?? .off
     }
 }
 

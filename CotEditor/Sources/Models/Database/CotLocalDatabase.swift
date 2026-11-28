@@ -243,6 +243,11 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         static let butlerDailyReportLastDayKey = "butler.dailyReportLastDayKey"
         static let onlineStickerExpansionEnabled = "media.onlineStickerExpansionEnabled"
         static let enabledOnlineStickerSourcesJSON = "media.enabledOnlineStickerSourcesJSON"
+        static let proactiveMessagingEnabled = "proactive.messagingEnabled"
+        static let proactiveDndEnabled = "proactive.dndEnabled"
+        static let proactiveDndStartHour = "proactive.dndStartHour"
+        static let proactiveDndEndHour = "proactive.dndEndHour"
+        static let proactiveCooldownStateJSON = "proactive.cooldownStateJSON"
     }
     
     static let weeklyReportsDidChangeNotification = Notification.Name("CotLocalDatabaseWeeklyReportsDidChange")

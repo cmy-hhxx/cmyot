@@ -186,6 +186,8 @@ nonisolated struct ButlerWorkspaceRecord: Identifiable, Codable, Sendable, Equat
     var sortOrder: Int = 0
     var createdAt: Date
     var updatedAt: Date
+    var botID: String? = nil
+    var defaultDocGroup: String? = nil
     
     var isFolderBacked: Bool {
         guard let raw = self.folderPath?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -210,6 +212,10 @@ nonisolated struct ButlerSessionRecord: Identifiable, Codable, Sendable, Equatab
     var workspaceID: String? = nil
     var workspaceDisplayName: String? = nil
     var sortOrder: Int = 0
+    var botID: String = "butler"
+    var unreadCount: Int = 0
+    var lastMessagePreview: String = ""
+    var lastReadAt: Date? = nil
     
     var workspaceName: String? {
         if let custom = self.workspaceDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -397,7 +403,9 @@ extension CotLocalDatabase {
             folder_path TEXT NOT NULL DEFAULT '',
             sort_order INTEGER NOT NULL DEFAULT 0,
             created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
+            updated_at REAL NOT NULL,
+            bot_id TEXT NOT NULL DEFAULT '',
+            default_doc_group TEXT NOT NULL DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS idx_butler_workspaces_sort ON butler_workspaces(sort_order ASC, created_at ASC);
 
@@ -409,7 +417,11 @@ extension CotLocalDatabase {
             workspace_path TEXT NOT NULL DEFAULT '',
             sort_order INTEGER NOT NULL DEFAULT 0,
             created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
+            updated_at REAL NOT NULL,
+            bot_id TEXT NOT NULL DEFAULT 'butler',
+            unread_count INTEGER NOT NULL DEFAULT 0,
+            last_message_preview TEXT NOT NULL DEFAULT '',
+            last_read_at REAL
         );
         CREATE INDEX IF NOT EXISTS idx_butler_sessions_updated ON butler_sessions(is_pinned DESC, updated_at DESC);
 
@@ -457,6 +469,7 @@ extension CotLocalDatabase {
         self.executeSQL(sql)
         
         self.ensureButlerMessageSessionColumnExists()
+        self.ensureButlerWorkspaceColumnsExist()
         self.ensureButlerSessionColumnsExist()
         self.executeSQL("""
         CREATE INDEX IF NOT EXISTS idx_kyc_active_sort ON user_kyc_memories(is_archived, is_pinned DESC, confidence DESC, updated_at DESC);
@@ -464,6 +477,7 @@ extension CotLocalDatabase {
         CREATE INDEX IF NOT EXISTS idx_watchlist_symbol_lower ON user_watchlist_stocks(lower(symbol));
         CREATE INDEX IF NOT EXISTS idx_butler_messages_session ON butler_messages(session_id, created_at ASC);
         CREATE INDEX IF NOT EXISTS idx_butler_sessions_order ON butler_sessions(is_pinned DESC, sort_order ASC, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_butler_sessions_bot_updated ON butler_sessions(bot_id, updated_at DESC);
         """)
         self.migrateLegacyButlerMessagesToSessionIfNeeded()
         self.migrateButlerWorkspacesAndOrderIfNeeded()
@@ -1356,10 +1370,10 @@ extension CotLocalDatabase {
     }
     
     
-    private func ensureButlerSessionColumnsExist() {
+    private func tableColumns(_ tableName: String) -> Set<String> {
         var existing: Set<String> = []
         var stmt: OpaquePointer?
-        if sqlite3_prepare_v2(self.db, "PRAGMA table_info(butler_sessions);", -1, &stmt, nil) == SQLITE_OK {
+        if sqlite3_prepare_v2(self.db, "PRAGMA table_info(\(tableName));", -1, &stmt, nil) == SQLITE_OK {
             while sqlite3_step(stmt) == SQLITE_ROW {
                 if let nameCStr = sqlite3_column_text(stmt, 1) {
                     existing.insert(String(cString: nameCStr))
@@ -1367,6 +1381,23 @@ extension CotLocalDatabase {
             }
         }
         sqlite3_finalize(stmt)
+        return existing
+    }
+    
+    
+    private func ensureButlerWorkspaceColumnsExist() {
+        let existing = self.tableColumns("butler_workspaces")
+        if !existing.contains("bot_id") {
+            self.executeSQL("ALTER TABLE butler_workspaces ADD COLUMN bot_id TEXT NOT NULL DEFAULT '';")
+        }
+        if !existing.contains("default_doc_group") {
+            self.executeSQL("ALTER TABLE butler_workspaces ADD COLUMN default_doc_group TEXT NOT NULL DEFAULT '';")
+        }
+    }
+    
+    
+    private func ensureButlerSessionColumnsExist() {
+        let existing = self.tableColumns("butler_sessions")
         if !existing.contains("workspace_path") {
             self.executeSQL("ALTER TABLE butler_sessions ADD COLUMN workspace_path TEXT NOT NULL DEFAULT '';")
         }
@@ -1375,6 +1406,18 @@ extension CotLocalDatabase {
         }
         if !existing.contains("sort_order") {
             self.executeSQL("ALTER TABLE butler_sessions ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;")
+        }
+        if !existing.contains("bot_id") {
+            self.executeSQL("ALTER TABLE butler_sessions ADD COLUMN bot_id TEXT NOT NULL DEFAULT 'butler';")
+        }
+        if !existing.contains("unread_count") {
+            self.executeSQL("ALTER TABLE butler_sessions ADD COLUMN unread_count INTEGER NOT NULL DEFAULT 0;")
+        }
+        if !existing.contains("last_message_preview") {
+            self.executeSQL("ALTER TABLE butler_sessions ADD COLUMN last_message_preview TEXT NOT NULL DEFAULT '';")
+        }
+        if !existing.contains("last_read_at") {
+            self.executeSQL("ALTER TABLE butler_sessions ADD COLUMN last_read_at REAL;")
         }
     }
     
@@ -1516,9 +1559,31 @@ extension CotLocalDatabase {
     
     // MARK: - Butler Workspaces CRUD
     
+    private func parseButlerWorkspaceRow(_ stmt: OpaquePointer?) -> ButlerWorkspaceRecord? {
+        guard let stmt,
+              let idCStr = sqlite3_column_text(stmt, 0),
+              let nameCStr = sqlite3_column_text(stmt, 1)
+        else { return nil }
+        let rawFolder = sqlite3_column_text(stmt, 2).map { String(cString: $0) }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let rawBotID = sqlite3_column_text(stmt, 6).map { String(cString: $0) }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let rawDocGroup = sqlite3_column_text(stmt, 7).map { String(cString: $0) }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return ButlerWorkspaceRecord(
+            id: String(cString: idCStr),
+            name: String(cString: nameCStr),
+            folderPath: rawFolder.isEmpty ? nil : rawFolder,
+            sortOrder: Int(sqlite3_column_int(stmt, 3)),
+            createdAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 4)),
+            updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 5)),
+            botID: rawBotID.isEmpty ? nil : rawBotID,
+            defaultDocGroup: rawDocGroup.isEmpty ? nil : rawDocGroup
+        )
+    }
+    
+    
     func fetchButlerWorkspaces() -> [ButlerWorkspaceRecord] {
         let sql = """
-        SELECT id, name, COALESCE(folder_path, ''), sort_order, created_at, updated_at
+        SELECT id, name, COALESCE(folder_path, ''), sort_order, created_at, updated_at,
+               COALESCE(bot_id, ''), COALESCE(default_doc_group, '')
         FROM butler_workspaces
         ORDER BY sort_order ASC, created_at ASC;
         """
@@ -1526,19 +1591,9 @@ extension CotLocalDatabase {
         var items: [ButlerWorkspaceRecord] = []
         if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
             while sqlite3_step(stmt) == SQLITE_ROW {
-                guard
-                    let idCStr = sqlite3_column_text(stmt, 0),
-                    let nameCStr = sqlite3_column_text(stmt, 1)
-                else { continue }
-                let rawFolder = sqlite3_column_text(stmt, 2).map { String(cString: $0) }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                items.append(ButlerWorkspaceRecord(
-                    id: String(cString: idCStr),
-                    name: String(cString: nameCStr),
-                    folderPath: rawFolder.isEmpty ? nil : rawFolder,
-                    sortOrder: Int(sqlite3_column_int(stmt, 3)),
-                    createdAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 4)),
-                    updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 5))
-                ))
+                if let record = self.parseButlerWorkspaceRow(stmt) {
+                    items.append(record)
+                }
             }
         }
         sqlite3_finalize(stmt)
@@ -1551,7 +1606,8 @@ extension CotLocalDatabase {
         guard !trimmed.isEmpty else { return nil }
         let std = URL(filePath: trimmed).standardizedFileURL.path(percentEncoded: false)
         let sql = """
-        SELECT id, name, COALESCE(folder_path, ''), sort_order, created_at, updated_at
+        SELECT id, name, COALESCE(folder_path, ''), sort_order, created_at, updated_at,
+               COALESCE(bot_id, ''), COALESCE(default_doc_group, '')
         FROM butler_workspaces
         WHERE folder_path = ? OR folder_path = ?
         LIMIT 1;
@@ -1561,19 +1617,32 @@ extension CotLocalDatabase {
         if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
             sqlite3_bind_text(stmt, 1, std, -1, self.transientDestructor)
             sqlite3_bind_text(stmt, 2, trimmed, -1, self.transientDestructor)
-            if sqlite3_step(stmt) == SQLITE_ROW,
-               let idCStr = sqlite3_column_text(stmt, 0),
-               let nameCStr = sqlite3_column_text(stmt, 1)
-            {
-                let rawFolder = sqlite3_column_text(stmt, 2).map { String(cString: $0) }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                match = ButlerWorkspaceRecord(
-                    id: String(cString: idCStr),
-                    name: String(cString: nameCStr),
-                    folderPath: rawFolder.isEmpty ? nil : rawFolder,
-                    sortOrder: Int(sqlite3_column_int(stmt, 3)),
-                    createdAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 4)),
-                    updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 5))
-                )
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                match = self.parseButlerWorkspaceRow(stmt)
+            }
+        }
+        sqlite3_finalize(stmt)
+        return match
+    }
+    
+    
+    func findButlerWorkspace(botID: String) -> ButlerWorkspaceRecord? {
+        let trimmed = botID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let sql = """
+        SELECT id, name, COALESCE(folder_path, ''), sort_order, created_at, updated_at,
+               COALESCE(bot_id, ''), COALESCE(default_doc_group, '')
+        FROM butler_workspaces
+        WHERE bot_id = ?
+        ORDER BY sort_order ASC, created_at ASC
+        LIMIT 1;
+        """
+        var stmt: OpaquePointer?
+        var match: ButlerWorkspaceRecord?
+        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, trimmed, -1, self.transientDestructor)
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                match = self.parseButlerWorkspaceRow(stmt)
             }
         }
         sqlite3_finalize(stmt)
@@ -1585,7 +1654,9 @@ extension CotLocalDatabase {
     func createButlerWorkspace(
         id: String = UUID().uuidString,
         name: String,
-        folderPath: String? = nil
+        folderPath: String? = nil,
+        botID: String? = nil,
+        defaultDocGroup: String? = nil
     ) -> ButlerWorkspaceRecord {
         let now = Date()
         let nowTS = now.timeIntervalSince1970
@@ -1597,6 +1668,8 @@ extension CotLocalDatabase {
             }
             return URL(filePath: raw).standardizedFileURL.path(percentEncoded: false)
         }()
+        let cleanBotID = botID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let cleanDocGroup = defaultDocGroup?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         
         var nextSort = 10
         var sortStmt: OpaquePointer?
@@ -1608,8 +1681,8 @@ extension CotLocalDatabase {
         sqlite3_finalize(sortStmt)
         
         let sql = """
-        INSERT OR IGNORE INTO butler_workspaces (id, name, folder_path, sort_order, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?);
+        INSERT OR IGNORE INTO butler_workspaces (id, name, folder_path, sort_order, created_at, updated_at, bot_id, default_doc_group)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         """
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
@@ -1619,6 +1692,8 @@ extension CotLocalDatabase {
             sqlite3_bind_int(stmt, 4, Int32(nextSort))
             sqlite3_bind_double(stmt, 5, nowTS)
             sqlite3_bind_double(stmt, 6, nowTS)
+            sqlite3_bind_text(stmt, 7, cleanBotID, -1, self.transientDestructor)
+            sqlite3_bind_text(stmt, 8, cleanDocGroup, -1, self.transientDestructor)
             sqlite3_step(stmt)
         }
         sqlite3_finalize(stmt)
@@ -1629,8 +1704,26 @@ extension CotLocalDatabase {
             folderPath: cleanFolder.isEmpty ? nil : cleanFolder,
             sortOrder: nextSort,
             createdAt: now,
-            updatedAt: now
+            updatedAt: now,
+            botID: cleanBotID.isEmpty ? nil : cleanBotID,
+            defaultDocGroup: cleanDocGroup.isEmpty ? nil : cleanDocGroup
         )
+    }
+    
+    
+    func assignButlerWorkspace(id: String, botID: String?, defaultDocGroup: String? = nil) {
+        let cleanBotID = botID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let cleanDocGroup = defaultDocGroup?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let sql = "UPDATE butler_workspaces SET bot_id = ?, default_doc_group = ?, updated_at = ? WHERE id = ?;"
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, cleanBotID, -1, self.transientDestructor)
+            sqlite3_bind_text(stmt, 2, cleanDocGroup, -1, self.transientDestructor)
+            sqlite3_bind_double(stmt, 3, Date().timeIntervalSince1970)
+            sqlite3_bind_text(stmt, 4, id, -1, self.transientDestructor)
+            sqlite3_step(stmt)
+        }
+        sqlite3_finalize(stmt)
     }
     
     
@@ -1714,8 +1807,7 @@ extension CotLocalDatabase {
     }
     
     
-    func fetchButlerSessions() -> [ButlerSessionRecord] {
-        let sql = """
+    private static let butlerSessionSelectColumns = """
         SELECT s.id,
                s.title,
                s.is_pinned,
@@ -1726,40 +1818,110 @@ extension CotLocalDatabase {
                CASE WHEN COALESCE(w.id, '') != '' THEN COALESCE(w.folder_path, '') ELSE COALESCE(s.workspace_path, '') END,
                COALESCE(s.workspace_id, ''),
                COALESCE(w.name, ''),
-               COALESCE(s.sort_order, 0)
+               COALESCE(s.sort_order, 0),
+               COALESCE(NULLIF(s.bot_id, ''), 'butler'),
+               COALESCE(s.unread_count, 0),
+               COALESCE(s.last_message_preview, ''),
+               s.last_read_at
         FROM butler_sessions s
         LEFT JOIN butler_workspaces w ON s.workspace_id = w.id
+    """
+    
+    
+    private func parseButlerSessionRow(_ stmt: OpaquePointer?) -> ButlerSessionRecord? {
+        guard let stmt,
+              let idCStr = sqlite3_column_text(stmt, 0),
+              let titleCStr = sqlite3_column_text(stmt, 1)
+        else { return nil }
+        let preview = sqlite3_column_text(stmt, 5).map { String(cString: $0) } ?? ""
+        let rawWorkspacePath = sqlite3_column_text(stmt, 7).map { String(cString: $0) }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let rawWorkspaceID = sqlite3_column_text(stmt, 8).map { String(cString: $0) }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let rawWorkspaceName = sqlite3_column_text(stmt, 9).map { String(cString: $0) }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let rawBotID = sqlite3_column_text(stmt, 11).map { String(cString: $0) }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "butler"
+        let unreadCount = Int(sqlite3_column_int(stmt, 12))
+        let storedPreview = sqlite3_column_text(stmt, 13).map { String(cString: $0) } ?? ""
+        let lastReadAt: Date? = sqlite3_column_type(stmt, 14) == SQLITE_NULL
+            ? nil
+            : Date(timeIntervalSince1970: sqlite3_column_double(stmt, 14))
+        return ButlerSessionRecord(
+            id: String(cString: idCStr),
+            title: String(cString: titleCStr),
+            isPinned: sqlite3_column_int(stmt, 2) != 0,
+            createdAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 3)),
+            updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 4)),
+            previewText: preview,
+            messageCount: Int(sqlite3_column_int64(stmt, 6)),
+            workspacePath: rawWorkspacePath.isEmpty ? nil : rawWorkspacePath,
+            workspaceID: rawWorkspaceID.isEmpty ? nil : rawWorkspaceID,
+            workspaceDisplayName: rawWorkspaceName.isEmpty ? nil : rawWorkspaceName,
+            sortOrder: Int(sqlite3_column_int(stmt, 10)),
+            botID: rawBotID.isEmpty ? "butler" : rawBotID,
+            unreadCount: unreadCount,
+            lastMessagePreview: storedPreview.isEmpty ? preview : storedPreview,
+            lastReadAt: lastReadAt
+        )
+    }
+    
+    
+    func fetchButlerSessions() -> [ButlerSessionRecord] {
+        let sql = """
+        \(Self.butlerSessionSelectColumns)
         ORDER BY s.is_pinned DESC, s.sort_order ASC, s.updated_at DESC;
         """
         var stmt: OpaquePointer?
         var sessions: [ButlerSessionRecord] = []
         if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
             while sqlite3_step(stmt) == SQLITE_ROW {
-                guard
-                    let idCStr = sqlite3_column_text(stmt, 0),
-                    let titleCStr = sqlite3_column_text(stmt, 1)
-                else { continue }
-                let preview = sqlite3_column_text(stmt, 5).map { String(cString: $0) } ?? ""
-                let rawWorkspacePath = sqlite3_column_text(stmt, 7).map { String(cString: $0) }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let rawWorkspaceID = sqlite3_column_text(stmt, 8).map { String(cString: $0) }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let rawWorkspaceName = sqlite3_column_text(stmt, 9).map { String(cString: $0) }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                sessions.append(ButlerSessionRecord(
-                    id: String(cString: idCStr),
-                    title: String(cString: titleCStr),
-                    isPinned: sqlite3_column_int(stmt, 2) != 0,
-                    createdAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 3)),
-                    updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 4)),
-                    previewText: preview,
-                    messageCount: Int(sqlite3_column_int64(stmt, 6)),
-                    workspacePath: rawWorkspacePath.isEmpty ? nil : rawWorkspacePath,
-                    workspaceID: rawWorkspaceID.isEmpty ? nil : rawWorkspaceID,
-                    workspaceDisplayName: rawWorkspaceName.isEmpty ? nil : rawWorkspaceName,
-                    sortOrder: Int(sqlite3_column_int(stmt, 10))
-                ))
+                if let record = self.parseButlerSessionRow(stmt) {
+                    sessions.append(record)
+                }
             }
         }
         sqlite3_finalize(stmt)
         return sessions
+    }
+    
+    
+    func fetchLatestSession(forBotID botID: String) -> ButlerSessionRecord? {
+        let cleanBotID = botID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetBot = cleanBotID.isEmpty ? "butler" : cleanBotID
+        let sql = """
+        \(Self.butlerSessionSelectColumns)
+        WHERE COALESCE(NULLIF(s.bot_id, ''), 'butler') = ?
+        ORDER BY s.updated_at DESC, s.created_at DESC
+        LIMIT 1;
+        """
+        var stmt: OpaquePointer?
+        var match: ButlerSessionRecord?
+        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, targetBot, -1, self.transientDestructor)
+            if sqlite3_step(stmt) == SQLITE_ROW {
+                match = self.parseButlerSessionRow(stmt)
+            }
+        }
+        sqlite3_finalize(stmt)
+        return match
+    }
+    
+    
+    @discardableResult
+    func ensureDirectSession(
+        forBotID botID: String,
+        defaultTitle: String,
+        workspaceID: String? = nil,
+        workspacePath: String? = nil
+    ) -> ButlerSessionRecord {
+        let cleanBotID = botID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetBot = cleanBotID.isEmpty ? "butler" : cleanBotID
+        if let existing = self.fetchLatestSession(forBotID: targetBot) {
+            return existing
+        }
+        return self.createButlerSession(
+            title: defaultTitle,
+            workspaceID: workspaceID,
+            workspacePath: workspacePath,
+            botID: targetBot
+        )
     }
     
     
@@ -1768,12 +1930,15 @@ extension CotLocalDatabase {
         id: String = UUID().uuidString,
         title: String = AppLanguage.text("新对话", en: "New Chat"),
         workspaceID: String? = nil,
-        workspacePath: String? = nil
+        workspacePath: String? = nil,
+        botID: String = "butler"
     ) -> ButlerSessionRecord {
         let now = Date()
         let nowTS = now.timeIntervalSince1970
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedTitle = cleanTitle.isEmpty ? AppLanguage.text("新对话", en: "New Chat") : cleanTitle
+        let cleanBotID = botID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedBotID = cleanBotID.isEmpty ? "butler" : cleanBotID
         let cleanWorkspaceID = workspaceID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         var cleanWorkspacePath = workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         var resolvedWorkspaceName: String? = nil
@@ -1805,8 +1970,8 @@ extension CotLocalDatabase {
         sqlite3_finalize(sortStmt)
         
         let sql = """
-        INSERT OR IGNORE INTO butler_sessions (id, title, is_pinned, workspace_id, workspace_path, sort_order, created_at, updated_at)
-        VALUES (?, ?, 0, ?, ?, ?, ?, ?);
+        INSERT OR IGNORE INTO butler_sessions (id, title, is_pinned, workspace_id, workspace_path, sort_order, created_at, updated_at, bot_id, unread_count, last_message_preview)
+        VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, 0, '');
         """
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
@@ -1817,6 +1982,7 @@ extension CotLocalDatabase {
             sqlite3_bind_int(stmt, 5, Int32(nextSortOrder))
             sqlite3_bind_double(stmt, 6, nowTS)
             sqlite3_bind_double(stmt, 7, nowTS)
+            sqlite3_bind_text(stmt, 8, resolvedBotID, -1, self.transientDestructor)
             sqlite3_step(stmt)
         }
         sqlite3_finalize(stmt)
@@ -1831,8 +1997,46 @@ extension CotLocalDatabase {
             workspacePath: cleanWorkspacePath.isEmpty ? nil : cleanWorkspacePath,
             workspaceID: cleanWorkspaceID.isEmpty ? nil : cleanWorkspaceID,
             workspaceDisplayName: resolvedWorkspaceName,
-            sortOrder: nextSortOrder
+            sortOrder: nextSortOrder,
+            botID: resolvedBotID,
+            unreadCount: 0,
+            lastMessagePreview: "",
+            lastReadAt: nil
         )
+    }
+    
+    
+    func markSessionRead(id: String) {
+        let sql = "UPDATE butler_sessions SET unread_count = 0, last_read_at = ? WHERE id = ?;"
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_double(stmt, 1, Date().timeIntervalSince1970)
+            sqlite3_bind_text(stmt, 2, id, -1, self.transientDestructor)
+            sqlite3_step(stmt)
+        }
+        sqlite3_finalize(stmt)
+    }
+    
+    
+    func incrementSessionUnread(id: String, preview: String) {
+        let trimmed = preview.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clipped = String(trimmed.prefix(200))
+        let sql = """
+        UPDATE butler_sessions
+        SET unread_count = COALESCE(unread_count, 0) + 1,
+            last_message_preview = CASE WHEN ? != '' THEN ? ELSE last_message_preview END,
+            updated_at = ?
+        WHERE id = ?;
+        """
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, clipped, -1, self.transientDestructor)
+            sqlite3_bind_text(stmt, 2, clipped, -1, self.transientDestructor)
+            sqlite3_bind_double(stmt, 3, Date().timeIntervalSince1970)
+            sqlite3_bind_text(stmt, 4, id, -1, self.transientDestructor)
+            sqlite3_step(stmt)
+        }
+        sqlite3_finalize(stmt)
     }
     
     

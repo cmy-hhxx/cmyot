@@ -1036,6 +1036,32 @@ nonisolated enum AIBotID: String, CaseIterable, Identifiable, Codable, Sendable 
 }
 
 
+/// Controls how often a Bot may proactively initiate a direct message.
+nonisolated enum BotProactiveLevel: String, Codable, CaseIterable, Sendable {
+    
+    case off
+    case restrained
+    case active
+    
+    var displayName: String {
+        switch self {
+            case .off: "关闭"
+            case .restrained: "克制"
+            case .active: "积极"
+        }
+    }
+    
+    static func defaultLevel(for botID: AIBotID) -> BotProactiveLevel {
+        switch botID {
+            case .butler, .weeklyReport, .readingCompanion:
+                .restrained
+            default:
+                .off
+        }
+    }
+}
+
+
 /// Per-bot persisted configuration (enabled toggle, dedicated gateway & model override,
 /// tone/persona, temperature, artwork variant index, `Pi` tool profile, and custom name/nickname).
 nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
@@ -1049,6 +1075,7 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
     var toolProfile: PiBotToolProfile? = nil
     var customName: String = ""
     var customNickname: String = ""
+    var proactiveLevel: BotProactiveLevel? = nil
     
     
     init(
@@ -1060,7 +1087,8 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
         artworkVariantIndex: Int? = nil,
         toolProfile: PiBotToolProfile? = nil,
         customName: String = "",
-        customNickname: String = ""
+        customNickname: String = "",
+        proactiveLevel: BotProactiveLevel? = nil
     ) {
         self.isEnabled = isEnabled
         self.endpointID = endpointID
@@ -1071,6 +1099,7 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
         self.toolProfile = toolProfile
         self.customName = customName
         self.customNickname = customNickname
+        self.proactiveLevel = proactiveLevel
     }
     
     
@@ -1079,8 +1108,13 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
     }
     
     
+    func effectiveProactiveLevel(for botID: AIBotID) -> BotProactiveLevel {
+        self.proactiveLevel ?? BotProactiveLevel.defaultLevel(for: botID)
+    }
+    
+    
     enum CodingKeys: String, CodingKey {
-        case isEnabled, endpointID, modelOverride, customPersona, temperature, artworkVariantIndex, toolProfile, customName, customNickname
+        case isEnabled, endpointID, modelOverride, customPersona, temperature, artworkVariantIndex, toolProfile, customName, customNickname, proactiveLevel
     }
     
     
@@ -1095,6 +1129,7 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
         self.toolProfile = try container.decodeIfPresent(PiBotToolProfile.self, forKey: .toolProfile)
         self.customName = try container.decodeIfPresent(String.self, forKey: .customName) ?? ""
         self.customNickname = try container.decodeIfPresent(String.self, forKey: .customNickname) ?? ""
+        self.proactiveLevel = try container.decodeIfPresent(BotProactiveLevel.self, forKey: .proactiveLevel)
     }
 }
 

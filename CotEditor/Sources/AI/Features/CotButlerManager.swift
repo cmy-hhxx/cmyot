@@ -764,17 +764,84 @@ final class CotButlerManager {
     }
     
     
-    func selectSession(_ sessionID: String) {
-        guard self.activeSessionID != sessionID,
-              self.sessions.contains(where: { $0.id == sessionID })
-        else { return }
-        if self.isStreaming {
+    private func resolvedBotDisplayTitle(for botID: String) -> String {
+        let clean = botID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let builtin = AIBotID(rawValue: clean) {
+            return AIBotStore.shared.resolvedName(for: builtin)
+        }
+        if let custom = AIBotStore.shared.customBots.first(where: { $0.id == clean }) {
+            return custom.name
+        }
+        return AppLanguage.text("总管", en: "Butler")
+    }
+    
+    
+    @discardableResult
+    func openDirectChat(botID rawBotID: String) -> ButlerSessionRecord {
+        let cleanBot = rawBotID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetBotID = cleanBot.isEmpty ? AIBotID.butler.rawValue : cleanBot
+        let title = self.resolvedBotDisplayTitle(for: targetBotID)
+        let botWorkspace = self.database.findButlerWorkspace(botID: targetBotID)
+        let session = self.database.ensureDirectSession(
+            forBotID: targetBotID,
+            defaultTitle: title,
+            workspaceID: botWorkspace?.id,
+            workspacePath: botWorkspace?.folderPath
+        )
+        let didChange = (self.activeSessionID != session.id)
+        if didChange && self.isStreaming {
             self.cancelAndResetStreaming(savePartial: true, resetRPC: false)
         }
         self.lastErrorMessage = nil
+        self.database.markSessionRead(id: session.id)
+        self.activeSessionID = session.id
+        self.database.set(session.id, forKey: CotLocalDatabase.ConfigKey.butlerActiveSessionID)
+        self.sessions = self.database.fetchButlerSessions()
+        self.messages = self.database.fetchButlerMessages(sessionID: session.id)
+        if didChange, self.database === CotLocalDatabase.shared {
+            PiKernelManager.shared.resetRPCSession(channel: .butler, forceAbort: false)
+        }
+        return self.sessions.first(where: { $0.id == session.id }) ?? session
+    }
+    
+    
+    func startNewTopic() {
+        self.lastErrorMessage = nil
+        if self.isStreaming {
+            self.cancelAndResetStreaming(savePartial: true, resetRPC: true)
+        }
+        let targetBotID = self.activeSession?.botID ?? AIBotID.butler.rawValue
+        let botWorkspace = self.database.findButlerWorkspace(botID: targetBotID)
+        let created = self.database.createButlerSession(
+            title: AppLanguage.text("新话题", en: "New Topic"),
+            workspaceID: botWorkspace?.id ?? self.activeWorkspaceID,
+            workspacePath: botWorkspace?.folderPath ?? self.activeWorkspacePath,
+            botID: targetBotID
+        )
+        self.activeSessionID = created.id
+        self.database.set(created.id, forKey: CotLocalDatabase.ConfigKey.butlerActiveSessionID)
+        self.sessions = self.database.fetchButlerSessions()
+        self.messages = []
+        if self.database === CotLocalDatabase.shared {
+            PiKernelManager.shared.resetRPCSession(channel: .butler, forceAbort: true)
+        }
+    }
+    
+    
+    func selectSession(_ sessionID: String) {
+        guard self.sessions.contains(where: { $0.id == sessionID }) else { return }
+        let didChange = (self.activeSessionID != sessionID)
+        if didChange && self.isStreaming {
+            self.cancelAndResetStreaming(savePartial: true, resetRPC: false)
+        }
+        self.lastErrorMessage = nil
+        self.database.markSessionRead(id: sessionID)
         self.activeSessionID = sessionID
         self.database.set(sessionID, forKey: CotLocalDatabase.ConfigKey.butlerActiveSessionID)
-        self.messages = self.database.fetchButlerMessages(sessionID: sessionID)
+        self.sessions = self.database.fetchButlerSessions()
+        if didChange || self.messages.isEmpty {
+            self.messages = self.database.fetchButlerMessages(sessionID: sessionID)
+        }
     }
     
     
@@ -1056,16 +1123,29 @@ final class CotButlerManager {
             CotStickerLibraryStore.shared.recordUse(id: userSticker.id)
         }
         
-        let targetBot = Self.resolveDelegatedBot(in: trimmedInput, explicitBotID: delegatedBotID)
-        let targetCustomBot = targetBot == nil
+        var targetBot = Self.resolveDelegatedBot(in: trimmedInput, explicitBotID: delegatedBotID)
+        var targetCustomBot = targetBot == nil
             ? Self.resolveDelegatedCustomBot(in: trimmedInput, explicitBotID: delegatedBotID)
             : nil
+        var isImplicitSessionBot = false
         
         if self.activeSessionID.isEmpty {
             self.bootstrapSessionsAndMessages()
         }
         let targetSessionID = self.activeSessionID
         let sessionRecord = self.sessions.first(where: { $0.id == targetSessionID })
+        if targetBot == nil, targetCustomBot == nil {
+            let sessionBotID = sessionRecord?.botID ?? AIBotID.butler.rawValue
+            if sessionBotID != AIBotID.butler.rawValue {
+                if let builtin = AIBotID(rawValue: sessionBotID) {
+                    targetBot = builtin
+                    isImplicitSessionBot = true
+                } else if let custom = AIBotStore.shared.customBots.first(where: { $0.id == sessionBotID }) {
+                    targetCustomBot = custom
+                    isImplicitSessionBot = true
+                }
+            }
+        }
         let sessionWorkspacePath = sessionRecord?.workspacePath
         let sessionWorkspaceName = sessionRecord?.workspaceName
         
@@ -1078,19 +1158,21 @@ final class CotButlerManager {
         
         let text: String = {
             if !trimmedInput.isEmpty {
-                let botDisplay = targetBot.map { AIBotStore.shared.resolvedName(for: $0) } ?? targetCustomBot?.name
-                let botNick = targetBot.map { AIBotStore.shared.resolvedNickname(for: $0) } ?? targetCustomBot?.nickname
-                if let botDisplay {
-                    let lower = trimmedInput.lowercased()
-                    let alreadyMentioned = [botDisplay, botNick ?? ""]
-                        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-                        .filter { !$0.isEmpty }
-                        .contains { lower.contains("@\($0)") }
-                    return alreadyMentioned ? trimmedInput : "@\(botDisplay) \(trimmedInput)"
+                if !isImplicitSessionBot {
+                    let botDisplay = targetBot.map { AIBotStore.shared.resolvedName(for: $0) } ?? targetCustomBot?.name
+                    let botNick = targetBot.map { AIBotStore.shared.resolvedNickname(for: $0) } ?? targetCustomBot?.nickname
+                    if let botDisplay {
+                        let lower = trimmedInput.lowercased()
+                        let alreadyMentioned = [botDisplay, botNick ?? ""]
+                            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+                            .filter { !$0.isEmpty }
+                            .contains { lower.contains("@\($0)") }
+                        return alreadyMentioned ? trimmedInput : "@\(botDisplay) \(trimmedInput)"
+                    }
                 }
                 return trimmedInput
             }
-            if let targetBot {
+            if let targetBot, !isImplicitSessionBot {
                 let botName = AIBotStore.shared.resolvedName(for: targetBot)
                 if !allAttachedDocs.isEmpty {
                     let docList = allAttachedDocs.map { "「\($0.title)」" }.joined(separator: "、")
@@ -1098,7 +1180,7 @@ final class CotButlerManager {
                 }
                 return AppLanguage.text("请 @\(botName) 协助处理", en: "Ask @\(botName) to help")
             }
-            if let targetCustomBot {
+            if let targetCustomBot, !isImplicitSessionBot {
                 return AppLanguage.text("请 @\(targetCustomBot.name) 聊聊", en: "Chat with @\(targetCustomBot.name)")
             }
             if !allAttachedDocs.isEmpty {
@@ -1963,22 +2045,59 @@ final class CotButlerManager {
     }
     
     
-    /// Posts a proactive daily report message from the Butler into the active session.
-    func postDailyReport(text: String) {
+    /// Delivers a proactive direct message from a specific Bot into its DM session (incrementing unread when inactive).
+    @discardableResult
+    func receiveProactiveMessage(
+        fromBotID rawBotID: String,
+        text: String,
+        metadata: ButlerMessageMetadata = ButlerMessageMetadata()
+    ) -> ButlerSessionRecord? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        if self.activeSessionID.isEmpty {
-            self.startNewSession()
+        guard !trimmed.isEmpty else { return nil }
+        let cleanBot = rawBotID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetBotID = cleanBot.isEmpty ? AIBotID.butler.rawValue : cleanBot
+        let displayTitle = self.resolvedBotDisplayTitle(for: targetBotID)
+        let botWorkspace = self.database.findButlerWorkspace(botID: targetBotID)
+        let session = self.database.ensureDirectSession(
+            forBotID: targetBotID,
+            defaultTitle: displayTitle,
+            workspaceID: botWorkspace?.id,
+            workspacePath: botWorkspace?.folderPath
+        )
+        var enrichedMeta = metadata
+        if targetBotID != AIBotID.butler.rawValue {
+            enrichedMeta.delegatedBotID = enrichedMeta.delegatedBotID ?? targetBotID
+            enrichedMeta.delegatedBotName = enrichedMeta.delegatedBotName ?? displayTitle
         }
-        guard !self.activeSessionID.isEmpty else { return }
-        self.appendAssistantMessage(trimmed, metadata: ButlerMessageMetadata(), sessionID: self.activeSessionID)
+        self.appendAssistantMessage(trimmed, metadata: enrichedMeta, sessionID: session.id)
+        return self.sessions.first(where: { $0.id == session.id }) ?? session
+    }
+    
+    
+    /// Posts a proactive daily report message from the Butler into the Butler DM session.
+    func postDailyReport(text: String) {
+        _ = self.receiveProactiveMessage(fromBotID: AIBotID.butler.rawValue, text: text)
+    }
+    
+    
+    private func recordAssistantTurn(
+        _ assistantMsg: ButlerChatMessage,
+        resolvedText: String,
+        sessionID: String
+    ) {
+        self.database.appendButlerMessage(assistantMsg)
+        if self.activeSessionID == sessionID {
+            self.database.markSessionRead(id: sessionID)
+            self.messages.append(assistantMsg)
+        } else {
+            self.database.incrementSessionUnread(id: sessionID, preview: resolvedText)
+        }
+        self.sessions = self.database.fetchButlerSessions()
     }
     
     
     private func appendAssistantMessage(_ text: String, metadata: ButlerMessageMetadata, sessionID: String) {
-        // Enrich with emotion & optional sticker directive resolution
         var enrichedMeta = metadata
-        let isUserStickerTurn = text.contains("表情包") || self.messages.last?.actionsJSON.contains("stickerID") == true
         if metadata.errorMessage == nil && !text.isEmpty {
             let botKey = metadata.delegatedBotID ?? AIBotID.butler.rawValue
             let allowedIDs = Set(CotStickerLibraryStore.shared.stickers.map(\.id))
@@ -1989,7 +2108,7 @@ final class CotButlerManager {
                 stickerOnlyCountInTurn: 0,
                 allowOnlineSearch: OnlineStickerSearchService.isAutoExpansionEnabled
             )
-            var resolvedText = parsed.text
+            let resolvedText = parsed.text
             if let sid = parsed.stickerID, let stk = CotStickerLibraryStore.shared.sticker(id: sid) {
                 CotStickerLibraryStore.shared.recordUse(id: stk.id)
                 enrichedMeta.stickerID = stk.id
@@ -2005,7 +2124,6 @@ final class CotButlerManager {
                 actionsJSON: Self.encodeMetadata(enrichedMeta),
                 createdAt: Date()
             )
-            self.database.appendButlerMessage(assistantMsg)
             let wsName = self.sessions.first(where: { $0.id == sessionID })?.workspaceName ?? ""
             self.database.appendAIConversationLog(AIConversationLogRecord(
                 id: "butler:\(assistantMsg.id)",
@@ -2021,10 +2139,7 @@ final class CotButlerManager {
             if self.database === CotLocalDatabase.shared && !CotLocalDatabase.isRunningUnitTests {
                 CotMemoryExtractionAgent.shared.scheduleExtractionIfNeeded(reason: "butler_turn")
             }
-            if self.activeSessionID == sessionID {
-                self.messages.append(assistantMsg)
-            }
-            self.sessions = self.database.fetchButlerSessions()
+            self.recordAssistantTurn(assistantMsg, resolvedText: resolvedText, sessionID: sessionID)
             return
         }
         let assistantMsg = ButlerChatMessage(
@@ -2035,11 +2150,7 @@ final class CotButlerManager {
             actionsJSON: Self.encodeMetadata(enrichedMeta),
             createdAt: Date()
         )
-        self.database.appendButlerMessage(assistantMsg)
-        if self.activeSessionID == sessionID {
-            self.messages.append(assistantMsg)
-        }
-        self.sessions = self.database.fetchButlerSessions()
+        self.recordAssistantTurn(assistantMsg, resolvedText: text, sessionID: sessionID)
     }
     
     
