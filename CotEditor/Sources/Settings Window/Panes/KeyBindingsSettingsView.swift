@@ -35,10 +35,6 @@ struct KeyBindingsSettingsView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var studioPalette = StudioPaletteManager.shared
     @State private var model = KeyBindingModel()
-    @State private var searchText: String = ""
-    @State private var onlyModified: Bool = false
-    @State private var hoveredMenuIndex: Int?
-    @FocusState private var isSearchFocused: Bool
     
     
     var body: some View {
@@ -46,273 +42,59 @@ struct KeyBindingsSettingsView: View {
         let isDark = (self.colorScheme == .dark)
         let palette = self.studioPalette.tokens(isDark: isDark)
         let accent = palette.accent
-        let onAccent = palette.onAccentInk
-        let isGlobalList = !self.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || self.onlyModified
-        let displayedRows = self.model.rows(searchText: self.searchText, onlyModified: self.onlyModified)
-        let modifiedTotal = self.model.modifiedCount
+        let sections = self.model.curatedSections()
         let sidePad: CGFloat = self.usesFlexibleFrame ? 24 : 20
         
         VStack(spacing: 0) {
-            // Zone 1: Top Search & Filter Bar (aligned to 24pt Settings header axis)
-            HStack(spacing: 10) {
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                    
-                    TextField(AppLanguage.text("搜索命令或快捷键", en: "Search commands or shortcuts"), text: self.$searchText)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12.5))
-                        .focused(self.$isSearchFocused)
-                    
-                    if !self.searchText.isEmpty {
-                        Button {
-                            self.searchText = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 11.5))
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(sections) { section in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(section.title)
+                                .font(.system(size: 12, weight: .semibold))
                                 .foregroundStyle(.secondary)
-                                .frame(width: 22, height: 22)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .pointerStyle(.link)
-                    }
-                }
-                .padding(.horizontal, 10)
-                .frame(height: 32)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(self.colorScheme == .dark ? Color.white.opacity(0.06) : Color.white)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(
-                            self.isSearchFocused
-                                ? accent.opacity(0.65)
-                                : Color.primary.opacity(self.colorScheme == .dark ? 0.12 : 0.08),
-                            lineWidth: self.isSearchFocused ? 1.1 : 0.75
-                        )
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .onTapGesture {
-                    self.model.stopRecording()
-                    self.isSearchFocused = true
-                }
-                
-                HStack(spacing: 2) {
-                    self.filterChip(
-                        title: AppLanguage.text("全部", en: "All"),
-                        isActive: !self.onlyModified
-                    ) {
-                        self.model.stopRecording()
-                        self.onlyModified = false
-                    }
-                    self.filterChip(
-                        title: modifiedTotal > 0
-                            ? AppLanguage.text("已修改 \(modifiedTotal)", en: "Modified \(modifiedTotal)")
-                            : AppLanguage.text("已修改", en: "Modified"),
-                        isActive: self.onlyModified
-                    ) {
-                        self.model.stopRecording()
-                        self.onlyModified = true
-                    }
-                }
-                .padding(3)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.05))
-                )
-            }
-            .padding(.horizontal, sidePad)
-            .padding(.top, 12)
-            .padding(.bottom, 10)
-            
-            // Zone 2: Split Two-Pane Shortcut Browser & Instant Click-to-Record List
-            HStack(spacing: 0) {
-                if !isGlobalList {
-                    ScrollView(.vertical, showsIndicators: true) {
-                        LazyVStack(alignment: .leading, spacing: 3) {
-                            ForEach(Array(self.model.tree.enumerated()), id: \.offset) { idx, node in
-                                let isSelected = ((self.model.rootIndex ?? 0) == idx)
-                                let isHovered = (self.hoveredMenuIndex == idx)
-                                let hasModified = self.model.menuHasModified(at: idx)
-                                let menuTitle = KeyBindingModel.localizedMenuTitle(node.name)
-                                
-                                Button {
-                                    self.model.stopRecording()
-                                    self.model.rootIndex = idx
-                                } label: {
-                                    HStack(spacing: 6) {
-                                        Text(menuTitle)
-                                            .font(.system(size: 12.5, weight: isSelected ? .semibold : .regular))
-                                            .foregroundStyle(isSelected ? onAccent : Color.primary.opacity(0.88))
-                                            .fixedSize(horizontal: false, vertical: true)
-                                        Spacer(minLength: 2)
-                                        if hasModified {
-                                            Circle()
-                                                .fill(isSelected ? onAccent.opacity(0.90) : accent)
-                                                .frame(width: 5.5, height: 5.5)
-                                        }
+                                .padding(.leading, 4)
+                            
+                            VStack(spacing: 0) {
+                                ForEach(Array(section.rows.enumerated()), id: \.element.id) { idx, row in
+                                    if idx > 0 {
+                                        Rectangle()
+                                            .fill(Color.primary.opacity(isDark ? 0.06 : 0.05))
+                                            .frame(height: 0.5)
+                                            .padding(.leading, 12)
                                     }
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .frame(minHeight: 32)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                            .fill(
-                                                isSelected
-                                                    ? accent
-                                                    : (isHovered ? Color.primary.opacity(self.colorScheme == .dark ? 0.08 : 0.055) : Color.clear)
-                                            )
+                                    KeyBindingCommandRowView(
+                                        row: row,
+                                        showMenuPrefix: false,
+                                        accent: accent,
+                                        onAccent: palette.onAccentInk,
+                                        model: self.model
                                     )
-                                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                                }
-                                .buttonStyle(.plain)
-                                .pointerStyle(.link)
-                                .onHover { inside in
-                                    if inside {
-                                        self.hoveredMenuIndex = idx
-                                    } else if self.hoveredMenuIndex == idx {
-                                        self.hoveredMenuIndex = nil
-                                    }
                                 }
                             }
-                        }
-                        .padding(6)
-                    }
-                    .frame(width: 148)
-                    .background(Color.primary.opacity(self.colorScheme == .dark ? 0.035 : 0.025))
-                    
-                    Rectangle()
-                        .fill(Color.primary.opacity(0.08))
-                        .frame(width: 0.75)
-                }
-                
-                // Command List
-                if displayedRows.isEmpty {
-                    VStack(spacing: 8) {
-                        Image(systemName: self.onlyModified ? "keyboard" : "magnifyingglass")
-                            .font(.system(size: 22, weight: .light))
-                            .foregroundStyle(.secondary)
-                        Text(
-                            self.onlyModified
-                                ? AppLanguage.text("暂无自定义快捷键", en: "No Customized Shortcuts")
-                                : AppLanguage.text("没有匹配的命令", en: "No Matching Commands")
-                        )
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    ScrollView(.vertical, showsIndicators: true) {
-                        LazyVStack(spacing: 0) {
-                            ForEach(displayedRows) { row in
-                                KeyBindingCommandRowView(
-                                    row: row,
-                                    showMenuPrefix: isGlobalList,
-                                    accent: accent,
-                                    onAccent: onAccent,
-                                    model: self.model
-                                )
-                                Rectangle()
-                                    .fill(Color.primary.opacity(self.colorScheme == .dark ? 0.06 : 0.05))
-                                    .frame(height: 0.5)
-                                    .padding(.leading, 12)
-                            }
+                            .background(
+                                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                    .fill(isDark ? Color.white.opacity(0.05) : Color.white)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                    .strokeBorder(Color.primary.opacity(isDark ? 0.09 : 0.07), lineWidth: 0.6)
+                            )
                         }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .padding(.horizontal, sidePad)
+                .padding(.top, 16)
+                .padding(.bottom, 12)
             }
-            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-            .background(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .fill(self.colorScheme == .dark ? Color.white.opacity(0.04) : Color.white)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(self.colorScheme == .dark ? 0.11 : 0.08), lineWidth: 0.75)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
-            .padding(.horizontal, sidePad)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             
-            // Zone 3: Elevated Unclipped Footer Action Bar (comfortably inset above bottom window edge)
-            HStack(spacing: 10) {
-                Button {
-                    self.model.stopRecording()
-                    self.model.restore()
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "arrow.counterclockwise")
-                            .font(.system(size: 11, weight: .semibold))
-                        Text(AppLanguage.text("恢复默认", en: "Restore Defaults"))
-                            .font(.system(size: 12, weight: .medium))
-                    }
-                    .foregroundStyle(self.model.isRestorable ? Color.primary.opacity(0.88) : Color.secondary.opacity(0.55))
-                    .padding(.horizontal, 12)
-                    .frame(height: 28)
-                    .background(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(
-                                self.model.isRestorable
-                                    ? (self.colorScheme == .dark ? Color.white.opacity(0.08) : Color.white)
-                                    : Color.primary.opacity(0.03)
-                            )
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .strokeBorder(
-                                Color.primary.opacity(self.model.isRestorable ? 0.14 : 0.06),
-                                lineWidth: 0.75
-                            )
-                    )
-                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .disabled(!self.model.isRestorable)
-                .pointerStyle(self.model.isRestorable ? .link : .default)
-                
-                if let error = self.model.error {
-                    HStack(spacing: 4) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 11))
-                        Text(error.localizedDescription)
-                            .font(.system(size: 11.5, weight: .medium))
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .foregroundStyle(.red)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Color.red.opacity(0.10), in: Capsule())
-                } else if self.model.recordingItemID != nil {
-                    Text(AppLanguage.text("直接按下组合键 · Esc 取消 · Delete 清除", en: "Press shortcut · Esc to cancel · Delete to clear"))
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(accent)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                
-                Spacer(minLength: 6)
-                
-                HelpLink(anchor: "settings_keybindings")
-            }
-            .padding(.horizontal, sidePad)
-            .padding(.top, 10)
-            .padding(.bottom, self.usesFlexibleFrame ? 14 : 12)
+            self.footerBar(sidePad: sidePad, accent: accent)
         }
         .onAppear {
             self.model.load()
         }
         .onDisappear {
-            self.model.stopRecording()
-        }
-        .onChange(of: self.isSearchFocused) { _, focused in
-            if focused {
-                self.model.stopRecording()
-            }
-        }
-        .onChange(of: self.searchText) { _, _ in
             self.model.stopRecording()
         }
         .frame(
@@ -327,22 +109,68 @@ struct KeyBindingsSettingsView: View {
     }
     
     
-    private func filterChip(title: String, isActive: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 11.5, weight: isActive ? .semibold : .medium))
-                .foregroundStyle(isActive ? Color.primary : Color.secondary)
-                .padding(.horizontal, 11)
-                .frame(height: 26)
+    private func footerBar(sidePad: CGFloat, accent: Color) -> some View {
+        HStack(spacing: 10) {
+            Button {
+                self.model.stopRecording()
+                self.model.restore()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "arrow.counterclockwise")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(AppLanguage.text("恢复默认", en: "Restore Defaults"))
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .foregroundStyle(self.model.isRestorable ? Color.primary.opacity(0.88) : Color.secondary.opacity(0.55))
+                .padding(.horizontal, 12)
+                .frame(height: 28)
                 .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(isActive ? (self.colorScheme == .dark ? Color.white.opacity(0.14) : Color.white) : Color.clear)
-                        .shadow(color: isActive ? .black.opacity(0.08) : .clear, radius: 1.5, y: 0.5)
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(
+                            self.model.isRestorable
+                                ? (self.colorScheme == .dark ? Color.white.opacity(0.08) : Color.white)
+                                : Color.primary.opacity(0.03)
+                        )
                 )
-                .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(
+                            Color.primary.opacity(self.model.isRestorable ? 0.14 : 0.06),
+                            lineWidth: 0.75
+                        )
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(!self.model.isRestorable)
+            .pointerStyle(self.model.isRestorable ? .link : .default)
+            
+            if let error = self.model.error {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11))
+                    Text(error.localizedDescription)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .foregroundStyle(.red)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(Color.red.opacity(0.10), in: Capsule())
+            } else if self.model.recordingItemID != nil {
+                Text(AppLanguage.text("按下组合键 · Esc 取消 · Delete 清除", en: "Press keys · Esc cancel · Delete clear"))
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(accent)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            
+            Spacer(minLength: 6)
+            
+            HelpLink(anchor: "settings_keybindings")
         }
-        .buttonStyle(.plain)
-        .pointerStyle(.link)
+        .padding(.horizontal, sidePad)
+        .padding(.top, 10)
+        .padding(.bottom, self.usesFlexibleFrame ? 14 : 12)
     }
 }
 
@@ -664,6 +492,86 @@ private struct KeyBindingCommandRowView: View {
         item.shortcut = shortcut
         self.save()
         self.revision &+= 1
+    }
+    
+    
+    struct CuratedShortcutSection: Identifiable {
+        let id: String
+        let title: String
+        let rows: [FlattenedCommandRow]
+    }
+    
+    private struct CuratedCommandSpec {
+        let selectorName: String
+        let tag: Int
+        let fallbackTitle: String
+    }
+    
+    private static let curatedSectionSpecs: [(id: String, zh: String, en: String, items: [CuratedCommandSpec])] = [
+        (
+            id: "documents",
+            zh: "文档与窗口",
+            en: "Documents",
+            items: [
+                CuratedCommandSpec(selectorName: "newDocumentAsTab:", tag: 0, fallbackTitle: "New"),
+                CuratedCommandSpec(selectorName: "openDocument:", tag: 0, fallbackTitle: "Open…"),
+                CuratedCommandSpec(selectorName: "saveDocument:", tag: 0, fallbackTitle: "Save"),
+                CuratedCommandSpec(selectorName: "performClose:", tag: 0, fallbackTitle: "Close"),
+            ]
+        ),
+        (
+            id: "editing",
+            zh: "常用编辑",
+            en: "Editing",
+            items: [
+                CuratedCommandSpec(selectorName: "undo:", tag: 0, fallbackTitle: "Undo"),
+                CuratedCommandSpec(selectorName: "redo:", tag: 0, fallbackTitle: "Redo"),
+                CuratedCommandSpec(selectorName: "toggleComment:", tag: 0, fallbackTitle: "Toggle Comment"),
+                CuratedCommandSpec(selectorName: "shiftLeft:", tag: 0, fallbackTitle: "Shift Left"),
+                CuratedCommandSpec(selectorName: "shiftRight:", tag: 0, fallbackTitle: "Shift Right"),
+                CuratedCommandSpec(selectorName: "duplicateLine:", tag: 0, fallbackTitle: "Duplicate Line"),
+            ]
+        ),
+        (
+            id: "navigation",
+            zh: "查找与导航",
+            en: "Find & Navigate",
+            items: [
+                CuratedCommandSpec(selectorName: "performTextFinderAction:", tag: 1, fallbackTitle: "Find…"),
+                CuratedCommandSpec(selectorName: "performTextFinderAction:", tag: 5, fallbackTitle: "Replace"),
+                CuratedCommandSpec(selectorName: "gotoLocation:", tag: 0, fallbackTitle: "Go to Line…"),
+                CuratedCommandSpec(selectorName: "showQuickActions:", tag: 0, fallbackTitle: "Show Quick Actions…"),
+            ]
+        ),
+        (
+            id: "view",
+            zh: "视图与设置",
+            en: "View & Settings",
+            items: [
+                CuratedCommandSpec(selectorName: "biggerFont:", tag: 0, fallbackTitle: "Bigger"),
+                CuratedCommandSpec(selectorName: "smallerFont:", tag: 0, fallbackTitle: "Smaller"),
+                CuratedCommandSpec(selectorName: "resetFont:", tag: 0, fallbackTitle: "Reset to Default"),
+                CuratedCommandSpec(selectorName: "showSettingsWindow:", tag: 0, fallbackTitle: "Settings…"),
+            ]
+        ),
+    ]
+    
+    
+    func curatedSections() -> [CuratedShortcutSection] {
+        let allRows = Array(self.rowsByMenu.joined())
+        return Self.curatedSectionSpecs.compactMap { spec in
+            let rows: [FlattenedCommandRow] = spec.items.compactMap { entry in
+                allRows.first { row in
+                    row.item.action.description == entry.selectorName && row.item.tag == entry.tag
+                }
+            }
+            guard !rows.isEmpty else { return nil }
+            return CuratedShortcutSection(
+                id: spec.id,
+                title: AppLanguage.text(spec.zh, en: spec.en),
+                rows: rows
+            )
+        }
     }
     
     

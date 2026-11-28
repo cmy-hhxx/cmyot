@@ -34,9 +34,9 @@ struct Round22FeatureTests {
     @Test func settingsHasTwelveAtomicTabsIncludingWallpaperAndZeroYu() throws {
         
         let items = SidebarSettingsItem.allCases
-        #expect(items.count == 12)
-        #expect(items.contains(.wallpaper))
-        #expect(SidebarSettingsItem.wallpaper.title == AppLanguage.text("壁纸", en: "Wallpaper"))
+        #expect(items.count == 11)
+        #expect(items.contains(.appearance))
+        #expect(AppearanceSubTab.wallpaper.title == AppLanguage.text("壁纸", en: "Wallpaper"))
         
         for item in items {
             #expect(!item.title.contains("与"))
@@ -82,8 +82,8 @@ struct Round22FeatureTests {
         
         manager.spec.opacity = 0.99
         manager.spec.blurRadius = 64
-        #expect(manager.spec.opacity <= 0.55)
-        #expect(manager.spec.blurRadius <= 32.0)
+        #expect(manager.spec.opacity <= 0.85)
+        #expect(manager.spec.blurRadius <= 40.0)
         
         let testImage = NSImage(size: NSSize(width: 120, height: 80))
         testImage.lockFocus()

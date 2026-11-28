@@ -862,7 +862,7 @@ struct Round33FeatureTests {
     
     
     @Test func sidebarSettingsWindowMountsOpenCodeGoSquareBotsAndPreferences() throws {
-        #expect(SidebarSettingsItem.memory.title == AppLanguage.text("偏好记忆", en: "Preferences"))
+        #expect(SidebarSettingsItem.memory.title == "Memory")
         #expect(!SidebarSettingsItem.memory.title.contains("与"))
         #expect(NSImage(systemSymbolName: SidebarSettingsItem.memory.symbolName, accessibilityDescription: nil) != nil)
         

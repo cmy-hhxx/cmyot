@@ -1893,10 +1893,10 @@ struct Round43VimMaterialProactiveDashboardTests {
         _ = db.compactDatabase()
         #expect(db.inspectDatabaseSnapshot().assets.activeDocuments == 1)
         
-        // Sidebar item exists and view mounts cleanly
-        #expect(SidebarSettingsItem.allCases.contains(.database))
-        #expect(!SidebarSettingsItem.database.title.contains("与"))
-        #expect(NSImage(systemSymbolName: SidebarSettingsItem.database.symbolName, accessibilityDescription: nil) != nil)
+        // Sidebar profile item exists and view mounts cleanly
+        #expect(SidebarSettingsItem.allCases.contains(.profile))
+        #expect(!SidebarSettingsItem.profile.title.contains("与"))
+        #expect(NSImage(systemSymbolName: SidebarSettingsItem.profile.symbolName, accessibilityDescription: nil) != nil)
         
         // Human-readable vault browser & tilde-abbreviated path prevent path overflow and hide SQLite jargon
         let vaultDocs = db.inspectVaultItems(for: .documents, limit: 10)

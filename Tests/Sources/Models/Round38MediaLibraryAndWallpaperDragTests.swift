@@ -15,17 +15,13 @@ import Testing
 struct Round38MediaLibraryAndWallpaperDragTests {
     
     @Test func settingsMediaLibraryTabMetadataIsValid() {
-        #expect(SidebarSettingsItem.allCases.contains(.mediaLibrary))
-        let item = SidebarSettingsItem.mediaLibrary
+        #expect(SidebarSettingsItem.allCases.contains(.appearance))
+        let item = SidebarSettingsItem.appearance
         #expect(!item.title.isEmpty)
         #expect(!item.title.contains("与"))
         #expect(NSImage(systemSymbolName: item.symbolName, accessibilityDescription: nil) != nil)
-        
-        if let wallpaperIdx = SidebarSettingsItem.allCases.firstIndex(of: .wallpaper),
-           let libraryIdx = SidebarSettingsItem.allCases.firstIndex(of: .mediaLibrary)
-        {
-            #expect(libraryIdx == wallpaperIdx + 1)
-        }
+        #expect(AppearanceSubTab.allCases.contains(.wallpaper))
+        #expect(AppearanceSubTab.allCases.contains(.mediaLibrary))
     }
     
     

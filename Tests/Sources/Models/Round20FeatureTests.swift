@@ -34,8 +34,8 @@ struct Round20FeatureTests {
     @Test func settingsHasTwelveAtomicTabsWithoutYuAndUsesGoldenProportions() throws {
         
         let items = SidebarSettingsItem.allCases
-        #expect(items.count == 12)
-        #expect(items.contains(.wallpaper))
+        #expect(items.count == 11)
+        #expect(items.contains(.appearance))
         
         for item in items {
             #expect(!item.title.contains("与"), "Tab title should be atomic without 与: \(item.title)")
