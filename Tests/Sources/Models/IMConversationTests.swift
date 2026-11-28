@@ -289,4 +289,27 @@ struct IMConversationTests {
         manager.selectSession(activeID)
         #expect(manager.totalUnreadCount == 0)
     }
+    
+    
+    @Test func assignButlerWorkspaceIsExclusivePerBot() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appending(path: "CotIMWorkspaceExclusive-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        
+        let db = CotLocalDatabase(customURL: dir.appending(path: "ws-exclusive.sqlite3"))
+        let wsA = db.createButlerWorkspace(name: "工作区 A")
+        let wsB = db.createButlerWorkspace(name: "工作区 B")
+        
+        db.assignButlerWorkspace(id: wsA.id, botID: AIBotID.translate.rawValue)
+        #expect(db.findButlerWorkspace(botID: AIBotID.translate.rawValue)?.id == wsA.id)
+        
+        db.assignButlerWorkspace(id: wsB.id, botID: AIBotID.translate.rawValue)
+        let allAfterMove = db.fetchButlerWorkspaces()
+        #expect(allAfterMove.first(where: { $0.id == wsA.id })?.botID == nil)
+        #expect(allAfterMove.first(where: { $0.id == wsB.id })?.botID == AIBotID.translate.rawValue)
+        
+        db.clearBotFromWorkspaces(botID: AIBotID.translate.rawValue)
+        #expect(db.findButlerWorkspace(botID: AIBotID.translate.rawValue) == nil)
+    }
 }

@@ -1714,13 +1714,38 @@ extension CotLocalDatabase {
     func assignButlerWorkspace(id: String, botID: String?, defaultDocGroup: String? = nil) {
         let cleanBotID = botID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let cleanDocGroup = defaultDocGroup?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let sql = "UPDATE butler_workspaces SET bot_id = ?, default_doc_group = ?, updated_at = ? WHERE id = ?;"
+        self.withTransaction {
+            if !cleanBotID.isEmpty {
+                let clearSQL = "UPDATE butler_workspaces SET bot_id = '' WHERE bot_id = ? AND id != ?;"
+                var clearStmt: OpaquePointer?
+                if sqlite3_prepare_v2(self.db, clearSQL, -1, &clearStmt, nil) == SQLITE_OK {
+                    sqlite3_bind_text(clearStmt, 1, cleanBotID, -1, self.transientDestructor)
+                    sqlite3_bind_text(clearStmt, 2, id, -1, self.transientDestructor)
+                    sqlite3_step(clearStmt)
+                }
+                sqlite3_finalize(clearStmt)
+            }
+            let sql = "UPDATE butler_workspaces SET bot_id = ?, default_doc_group = ?, updated_at = ? WHERE id = ?;"
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(stmt, 1, cleanBotID, -1, self.transientDestructor)
+                sqlite3_bind_text(stmt, 2, cleanDocGroup, -1, self.transientDestructor)
+                sqlite3_bind_double(stmt, 3, Date().timeIntervalSince1970)
+                sqlite3_bind_text(stmt, 4, id, -1, self.transientDestructor)
+                sqlite3_step(stmt)
+            }
+            sqlite3_finalize(stmt)
+        }
+    }
+    
+    
+    func clearBotFromWorkspaces(botID: String) {
+        let cleanBotID = botID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanBotID.isEmpty else { return }
+        let sql = "UPDATE butler_workspaces SET bot_id = '' WHERE bot_id = ?;"
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
             sqlite3_bind_text(stmt, 1, cleanBotID, -1, self.transientDestructor)
-            sqlite3_bind_text(stmt, 2, cleanDocGroup, -1, self.transientDestructor)
-            sqlite3_bind_double(stmt, 3, Date().timeIntervalSince1970)
-            sqlite3_bind_text(stmt, 4, id, -1, self.transientDestructor)
             sqlite3_step(stmt)
         }
         sqlite3_finalize(stmt)

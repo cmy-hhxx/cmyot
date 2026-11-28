@@ -1527,14 +1527,12 @@ struct Round33FeatureTests {
         }
         #expect(!store.selectableGatewayGroups().isEmpty)
         
-        for mode in BotCollectionLayoutMode.allCases {
-            let botsHost = NSHostingView(
-                rootView: AIBotsSettingsView(settingsState: SidebarSettingsState(), initialLayoutMode: mode)
-            )
-            botsHost.frame = NSRect(x: 0, y: 0, width: 527, height: 500)
-            botsHost.layoutSubtreeIfNeeded()
-            #expect(botsHost.bounds.width == 527)
-        }
+        let botsHost = NSHostingView(
+            rootView: AIBotsSettingsView(settingsState: SidebarSettingsState())
+        )
+        botsHost.frame = NSRect(x: 0, y: 0, width: 527, height: 500)
+        botsHost.layoutSubtreeIfNeeded()
+        #expect(botsHost.bounds.width == 527)
     }
     
     

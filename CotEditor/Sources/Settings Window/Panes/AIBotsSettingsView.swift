@@ -1426,1064 +1426,45 @@ struct AIModelsSettingsView: View {
 }
 
 
-// MARK: - Bots (3:4 立绘比例 · 120fps 金字塔叠放扇面 · 异步位图预热)
-
-enum BotCollectionLayoutMode: String, CaseIterable, Identifiable {
-    case card
-    case list
-    case pack
-    
-    var id: String { self.rawValue }
-    
-    var title: String {
-        switch self {
-            case .card: AppLanguage.text("画廊视图", en: "Gallery")
-            case .list: AppLanguage.text("列表视图", en: "List")
-            case .pack: AppLanguage.text("叠放视图", en: "Pack")
-        }
-    }
-    
-    var icon: String {
-        switch self {
-            case .card: "square.grid.2x2"
-            case .list: "list.bullet"
-            case .pack: "square.stack.3d.up"
-        }
-    }
-}
-
-
-private struct BotCardSnapshot: Identifiable, Equatable {
-    
-    let botID: AIBotID
-    let displayTitle: String
-    let shortTitle: String
-    let subtitle: String
-    let personaBadge: String?
-    let modelLabel: String
-    let accentHex: String
-    let isEnabled: Bool
-    let recentCalls: Int
-    let portraitImage: NSImage?
-    
-    var id: AIBotID { self.botID }
-    
-    
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.botID == rhs.botID
-            && lhs.displayTitle == rhs.displayTitle
-            && lhs.shortTitle == rhs.shortTitle
-            && lhs.subtitle == rhs.subtitle
-            && lhs.personaBadge == rhs.personaBadge
-            && lhs.modelLabel == rhs.modelLabel
-            && lhs.accentHex == rhs.accentHex
-            && lhs.isEnabled == rhs.isEnabled
-            && lhs.recentCalls == rhs.recentCalls
-            && lhs.portraitImage === rhs.portraitImage
-    }
-}
-
-
-/// Pure Equatable ~3:4 portrait bitmap surface. Isolated from deck index/offset changes so
-/// CoreAnimation interpolates scale/rotation/offset transforms at 120fps without re-running `body`.
-private struct BotPortraitTileSurface: View, Equatable {
-    
-    let botID: AIBotID
-    let shortTitle: String
-    let accentHex: String
-    let isEnabled: Bool
-    let portraitImage: NSImage?
-    let width: CGFloat
-    let height: CGFloat
-    let cornerRadius: CGFloat
-    let showPackOverlay: Bool
-    let isPackCenter: Bool
-    let isDark: Bool
-    
-    
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.botID == rhs.botID
-            && lhs.shortTitle == rhs.shortTitle
-            && lhs.accentHex == rhs.accentHex
-            && lhs.isEnabled == rhs.isEnabled
-            && lhs.portraitImage === rhs.portraitImage
-            && abs(lhs.width - rhs.width) < 0.5
-            && abs(lhs.height - rhs.height) < 0.5
-            && lhs.showPackOverlay == rhs.showPackOverlay
-            && lhs.isPackCenter == rhs.isPackCenter
-            && lhs.isDark == rhs.isDark
-    }
-    
-    
-    var body: some View {
-        let accent = Color(hexString: self.accentHex)
-        
-        ZStack(alignment: .top) {
-            Color(red: 0.965, green: 0.969, blue: 0.980)
-            
-            if let portrait = self.portraitImage {
-                Image(nsImage: portrait)
-                    .resizable()
-                    .interpolation(.high)
-                    .scaledToFill()
-                    .frame(width: self.width, height: self.height, alignment: .center)
-                    .opacity(self.isEnabled ? 1.0 : 0.48)
-            } else {
-                LinearGradient(
-                    colors: [
-                        accent.opacity(self.isDark ? 0.22 : 0.14),
-                        self.isDark
-                            ? Color(red: 0.15, green: 0.15, blue: 0.18)
-                            : Color(red: 0.95, green: 0.96, blue: 0.98),
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                Text(String(self.shortTitle.prefix(1)))
-                    .font(.system(size: min(self.width * 0.34, 28), weight: .semibold))
-                    .foregroundStyle(accent)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .opacity(self.isEnabled ? 1.0 : 0.48)
-            }
-            
-            if self.showPackOverlay {
-                VStack(spacing: 0) {
-                    Spacer()
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(self.isEnabled ? accent : Color.white.opacity(0.45))
-                            .frame(width: 5.5, height: 5.5)
-                        Text(self.shortTitle)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color.white)
-                            .lineLimit(1)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 6)
-                    .background(
-                        LinearGradient(
-                            colors: [Color.black.opacity(0.0), Color.black.opacity(0.68)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                }
-                .allowsHitTesting(false)
-            }
-        }
-        .frame(width: self.width, height: self.height)
-        .clipShape(RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: self.cornerRadius, style: .continuous)
-                .strokeBorder(
-                    self.isPackCenter
-                        ? accent.opacity(0.85)
-                        : (self.showPackOverlay
-                           ? Color.white.opacity(self.isDark ? 0.22 : 0.85)
-                           : (self.isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.08))),
-                    lineWidth: self.isPackCenter ? 1.5 : 0.85
-                )
-        )
-    }
-}
-
-
-// MARK: - 120Hz Hardware-Clipped CoreAnimation CoverFlow Stage (零 SwiftUI 重绘 · 预烘焙纹理 · 静态 shadowPath)
-
-private final class PackBakedCardTextureCache {
-    
-    static let shared = PackBakedCardTextureCache()
-    private var cache: [String: CGImage] = [:]
-    
-    func texture(
-        for snap: BotCardSnapshot,
-        width: CGFloat,
-        height: CGFloat,
-        cornerRadius: CGFloat,
-        isDark: Bool
-    ) -> CGImage? {
-        let imgToken = snap.portraitImage.map { String(UInt(bitPattern: ObjectIdentifier($0))) } ?? "nil"
-        let key = "\(snap.botID.rawValue)|\(snap.shortTitle)|\(snap.accentHex)|\(snap.isEnabled)|\(isDark)|\(Int(width))x\(Int(height))|\(imgToken)"
-        if let hit = self.cache[key] {
-            return hit
-        }
-        guard let baked = Self.renderCardFace(
-            snap: snap,
-            width: width,
-            height: height,
-            cornerRadius: cornerRadius,
-            isDark: isDark
-        ) else {
-            return nil
-        }
-        if self.cache.count > 48 {
-            self.cache.removeAll(keepingCapacity: true)
-        }
-        self.cache[key] = baked
-        return baked
-    }
-    
-    private static func renderCardFace(
-        snap: BotCardSnapshot,
-        width: CGFloat,
-        height: CGFloat,
-        cornerRadius: CGFloat,
-        isDark: Bool
-    ) -> CGImage? {
-        let scale: CGFloat = 2.0
-        let pxW = max(1, Int((width * scale).rounded()))
-        let pxH = max(1, Int((height * scale).rounded()))
-        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
-        guard let ctx = CGContext(
-            data: nil,
-            width: pxW,
-            height: pxH,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
-        ) else {
-            return nil
-        }
-        
-        let nsCtx = NSGraphicsContext(cgContext: ctx, flipped: false)
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = nsCtx
-        defer { NSGraphicsContext.restoreGraphicsState() }
-        
-        ctx.scaleBy(x: scale, y: scale)
-        let rect = NSRect(x: 0, y: 0, width: width, height: height)
-        let clipPath = NSBezierPath(roundedRect: rect, xRadius: cornerRadius, yRadius: cornerRadius)
-        clipPath.addClip()
-        
-        let accentNS = NSColor(Color(hexString: snap.accentHex))
-        
-        // 1. Base surface
-        let bg = isDark
-            ? NSColor(srgbRed: 0.14, green: 0.145, blue: 0.17, alpha: 1.0)
-            : NSColor(srgbRed: 0.965, green: 0.969, blue: 0.980, alpha: 1.0)
-        bg.setFill()
-        rect.fill()
-        
-        // 2. Portrait bitmap (or monogram fallback)
-        if let portrait = snap.portraitImage {
-            portrait.draw(
-                in: rect,
-                from: .zero,
-                operation: .sourceOver,
-                fraction: snap.isEnabled ? 1.0 : 0.48
-            )
-        } else {
-            let topTint = accentNS.withAlphaComponent(isDark ? 0.24 : 0.16)
-            if let grad = NSGradient(starting: bg, ending: topTint) {
-                grad.draw(in: rect, angle: 90)
-            }
-            let initial = String(snap.shortTitle.prefix(1)) as NSString
-            let font = NSFont.systemFont(ofSize: 28, weight: .semibold)
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: font,
-                .foregroundColor: accentNS.withAlphaComponent(snap.isEnabled ? 1.0 : 0.48),
-            ]
-            let sz = initial.size(withAttributes: attrs)
-            initial.draw(
-                at: NSPoint(x: (width - sz.width) * 0.5, y: (height - sz.height) * 0.5),
-                withAttributes: attrs
-            )
-        }
-        
-        // 3. Bottom scrim gradient (y = 0 is bottom in unflipped NSGraphicsContext)
-        let scrimHeight: CGFloat = 44
-        let scrimRect = NSRect(x: 0, y: 0, width: width, height: scrimHeight)
-        if let scrim = NSGradient(
-            starting: NSColor.black.withAlphaComponent(0.72),
-            ending: NSColor.black.withAlphaComponent(0.0)
-        ) {
-            scrim.draw(in: scrimRect, angle: 90)
-        }
-        
-        // 4. Status dot + short title at bottom-left
-        let dotSize: CGFloat = 5.5
-        let dotRect = NSRect(x: 9.5, y: 10.5, width: dotSize, height: dotSize)
-        let dotColor = snap.isEnabled ? accentNS : NSColor.white.withAlphaComponent(0.45)
-        dotColor.setFill()
-        NSBezierPath(ovalIn: dotRect).fill()
-        
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakMode = .byTruncatingTail
-        let titleAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
-            .foregroundColor: NSColor.white,
-            .paragraphStyle: paragraph,
-        ]
-        let titleX: CGFloat = 19.5
-        let titleRect = NSRect(x: titleX, y: 5.5, width: max(10, width - titleX - 8), height: 16)
-        (snap.shortTitle as NSString).draw(in: titleRect, withAttributes: titleAttrs)
-        
-        // 5. Crisp inner hairline border
-        let borderPath = NSBezierPath(
-            roundedRect: rect.insetBy(dx: 0.5, dy: 0.5),
-            xRadius: max(1, cornerRadius - 0.5),
-            yRadius: max(1, cornerRadius - 0.5)
-        )
-        borderPath.lineWidth = 1.0
-        let borderColor = isDark
-            ? NSColor.white.withAlphaComponent(0.20)
-            : NSColor.white.withAlphaComponent(0.88)
-        borderColor.setStroke()
-        borderPath.stroke()
-        
-        return ctx.makeImage()
-    }
-}
-
-
-private final class PackCoreAnimationStageNSView: NSView {
-    
-    private final class CardLayerSlot {
-        let container = CALayer()
-        let face = CALayer()
-        let dimScrim = CALayer()
-        let focusRing = CALayer()
-        let hoverBorder = CALayer()
-        var currentCenter: CGPoint = .zero
-        var currentScale: CGFloat = 1.0
-        var currentRotation: CGFloat = 0.0
-        var hoverAmount: CGFloat = 0.0
-        var pressAmount: CGFloat = 0.0
-        var isVisibleOnStage: Bool = false
-    }
-    
-    var snapshots: [BotCardSnapshot] = []
-    var cardWidth: CGFloat = 126
-    var cardHeight: CGFloat = 170
-    var cardCornerRadius: CGFloat = 15
-    var isDark: Bool = false
-    var onActiveIndexChanged: ((Int) -> Void)?
-    var onInspectBot: ((AIBotID) -> Void)?
-    
-    private var slots: [CardLayerSlot] = []
-    private var lastAppliedStateSignature: String = ""
-    private var deckTrackingArea: NSTrackingArea?
-    
-    // Continuous deck position in [0, count - 1] (with rubber-banding at ends)
-    private var position: CGFloat = 0
-    private var reportedIndex: Int = 0
-    
-    // 120Hz ProMotion CADisplayLink spring & hover/press state
-    private var displayLink: CADisplayLink?
-    private var isPositionSpringActive = false
-    private var springTarget: CGFloat = 0
-    private var springVelocity: CGFloat = 0
-    private var lastFrameTimestamp: CFTimeInterval = 0
-    
-    // Hover & tactile press state
-    private var hoveredCardIndex: Int?
-    private var pressedCardIndex: Int?
-    
-    // Direct gesture tracking
-    private var isTrackpadDragging = false
-    private var lastScrollSampleTime: CFTimeInterval = 0
-    private var smoothedScrollVelocity: CGFloat = 0 // in cards/sec
-    
-    private var mouseDownPoint: CGPoint?
-    private var mouseDragStartPosition: CGFloat = 0
-    private var isMouseDragging = false
-    private var lastMouseSampleTime: CFTimeInterval = 0
-    private var lastMouseX: CGFloat = 0
-    private var mouseVelocity: CGFloat = 0 // in cards/sec
-    
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        self.wantsLayer = true
-        self.layerContentsRedrawPolicy = .never
-        if let root = self.layer {
-            root.masksToBounds = true
-            root.cornerRadius = 14
-            root.cornerCurve = .continuous
-            root.borderWidth = 0.75
-        }
-    }
-    
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-    
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let existing = self.deckTrackingArea {
-            self.removeTrackingArea(existing)
-        }
-        let area = NSTrackingArea(
-            rect: .zero,
-            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        )
-        self.addTrackingArea(area)
-        self.deckTrackingArea = area
-    }
-    
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        if self.window == nil {
-            self.stopDisplayLink()
-            self.hoveredCardIndex = nil
-            self.pressedCardIndex = nil
-        }
-    }
-    
-    override func setFrameSize(_ newSize: NSSize) {
-        super.setFrameSize(newSize)
-        self.applyPositionsImmediately()
-    }
-    
-    func configure(
-        snapshots: [BotCardSnapshot],
-        targetIndex: Int,
-        stepToken: Int,
-        lastHandledStepToken: inout Int,
-        cardWidth: CGFloat,
-        cardHeight: CGFloat,
-        isDark: Bool
-    ) {
-        self.cardWidth = cardWidth
-        self.cardHeight = cardHeight
-        self.isDark = isDark
-        self.snapshots = snapshots
-        
-        if let root = self.layer {
-            CATransaction.begin()
-            CATransaction.setDisableActions(true)
-            root.backgroundColor = isDark
-                ? NSColor.white.withAlphaComponent(0.032).cgColor
-                : NSColor.black.withAlphaComponent(0.024).cgColor
-            root.borderColor = isDark
-                ? NSColor.white.withAlphaComponent(0.09).cgColor
-                : NSColor.black.withAlphaComponent(0.07).cgColor
-            CATransaction.commit()
-        }
-        
-        let maxIdx = max(0, snapshots.count - 1)
-        let clampedTarget = min(maxIdx, max(0, targetIndex))
-        
-        // Rebuild or refresh static card textures only when snapshot content/theme actually changed
-        let sig = "\(isDark)|\(Int(cardWidth))x\(Int(cardHeight))|" + snapshots.map {
-            let pTok = $0.portraitImage.map { String(UInt(bitPattern: ObjectIdentifier($0))) } ?? "0"
-            return "\($0.botID.rawValue):\($0.shortTitle):\($0.accentHex):\($0.isEnabled):\(pTok)"
-        }.joined(separator: ",")
-        
-        if sig != self.lastAppliedStateSignature {
-            let isFirstMount = self.lastAppliedStateSignature.isEmpty
-            self.lastAppliedStateSignature = sig
-            self.rebuildCardLayers()
-            if isFirstMount {
-                self.position = CGFloat(clampedTarget)
-                self.springTarget = self.position
-                self.reportedIndex = clampedTarget
-            }
-            self.applyPositionsImmediately()
-        }
-        
-        if stepToken != lastHandledStepToken {
-            lastHandledStepToken = stepToken
-            self.reportedIndex = clampedTarget
-            self.animateToIndex(clampedTarget, initialVelocity: 0)
-        }
-    }
-    
-    private func rebuildCardLayers() {
-        guard let root = self.layer else { return }
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        defer { CATransaction.commit() }
-        
-        while self.slots.count > self.snapshots.count {
-            let removed = self.slots.removeLast()
-            removed.container.removeFromSuperlayer()
-        }
-        while self.slots.count < self.snapshots.count {
-            let slot = CardLayerSlot()
-            slot.container.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-            slot.container.shadowColor = NSColor.black.cgColor
-            slot.container.shadowRadius = 7.0
-            slot.container.shadowOffset = CGSize(width: 0, height: -4)
-            
-            slot.face.contentsGravity = .resizeAspectFill
-            slot.face.contentsScale = 2.0
-            slot.container.addSublayer(slot.face)
-            
-            slot.dimScrim.cornerCurve = .continuous
-            slot.dimScrim.backgroundColor = NSColor.black.cgColor
-            slot.dimScrim.opacity = 0
-            slot.container.addSublayer(slot.dimScrim)
-            
-            slot.focusRing.cornerCurve = .continuous
-            slot.focusRing.borderWidth = 1.75
-            slot.focusRing.backgroundColor = nil
-            slot.container.addSublayer(slot.focusRing)
-            
-            slot.hoverBorder.cornerCurve = .continuous
-            slot.hoverBorder.borderWidth = 1.25
-            slot.hoverBorder.backgroundColor = nil
-            slot.hoverBorder.opacity = 0
-            slot.container.addSublayer(slot.hoverBorder)
-            
-            root.addSublayer(slot.container)
-            self.slots.append(slot)
-        }
-        
-        let cardBounds = CGRect(x: 0, y: 0, width: self.cardWidth, height: self.cardHeight)
-        let shadowCGPath = CGPath(
-            roundedRect: cardBounds,
-            cornerWidth: self.cardCornerRadius,
-            cornerHeight: self.cardCornerRadius,
-            transform: nil
-        )
-        
-        for (idx, snap) in self.snapshots.enumerated() {
-            let slot = self.slots[idx]
-            slot.container.bounds = cardBounds
-            slot.container.shadowPath = shadowCGPath
-            slot.container.shadowOpacity = self.isDark ? 0.36 : 0.14
-            
-            slot.face.frame = cardBounds
-            slot.face.contents = PackBakedCardTextureCache.shared.texture(
-                for: snap,
-                width: self.cardWidth,
-                height: self.cardHeight,
-                cornerRadius: self.cardCornerRadius,
-                isDark: self.isDark
-            )
-            
-            slot.dimScrim.frame = cardBounds
-            slot.dimScrim.cornerRadius = self.cardCornerRadius
-            
-            slot.focusRing.frame = cardBounds
-            slot.focusRing.cornerRadius = self.cardCornerRadius
-            slot.focusRing.borderColor = NSColor(Color(hexString: snap.accentHex)).cgColor
-            
-            slot.hoverBorder.frame = cardBounds
-            slot.hoverBorder.cornerRadius = self.cardCornerRadius
-            slot.hoverBorder.borderColor = (self.isDark
-                ? NSColor.white.withAlphaComponent(0.45)
-                : NSColor.white.withAlphaComponent(0.95)).cgColor
-        }
-    }
-    
-    // MARK: Fan Curve & Zero-Allocation 3D Layer Transform Commit
-    
-    private static func rubberBanded(_ raw: CGFloat, maxIndex: CGFloat) -> CGFloat {
-        if raw < 0 {
-            return raw * 0.25
-        } else if raw > maxIndex {
-            return maxIndex + (raw - maxIndex) * 0.25
-        }
-        return raw
-    }
-    
-    private func applyPositionsImmediately() {
-        guard !self.slots.isEmpty, self.bounds.width > 10 else { return }
-        let stageCenterX = self.bounds.width * 0.5
-        let stageCenterY = self.bounds.height * 0.5 + 2.0
-        
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        for (idx, slot) in self.slots.enumerated() {
-            let delta = CGFloat(idx) - self.position
-            let absDelta = abs(delta)
-            
-            // Strictly cull cards beyond ±3.45 so at most 7 layers are ever visible and all stay well inside 527pt!
-            if absDelta > 3.45 {
-                if !slot.container.isHidden {
-                    slot.container.isHidden = true
-                }
-                slot.isVisibleOnStage = false
-                continue
-            }
-            if slot.container.isHidden {
-                slot.container.isHidden = false
-            }
-            slot.isVisibleOnStage = true
-            
-            let hover = slot.hoverAmount
-            let press = slot.pressAmount
-            
-            // Smooth 3D CoverFlow fan with subtle hover peek & tactile press compression
-            let offsetX = CGFloat(tanh(Double(delta) * 0.46)) * 196.0
-            let baseDropY = min(15.0, delta * delta * 1.70)
-            let hoverLiftY: CGFloat = (absDelta > 0.35 ? 6.5 : 2.5) * hover
-            let pressSinkY: CGFloat = -2.0 * press
-            
-            let baseScale = max(0.71, 1.0 - absDelta * 0.092)
-            let hoverScaleBoost: CGFloat = (absDelta > 0.35 ? 0.032 : 0.018) * hover
-            let pressScaleDip: CGFloat = -0.028 * press
-            let scale = max(0.66, baseScale + hoverScaleBoost + pressScaleDip)
-            
-            let rotationZ = -CGFloat(tanh(Double(delta) * 0.54)) * (4.8 * .pi / 180.0) * (1.0 - hover * 0.22)
-            let rotationY = -CGFloat(tanh(Double(delta) * 0.68)) * (13.5 * .pi / 180.0) * (1.0 - hover * 0.30)
-            
-            let opacity: Float = absDelta <= 2.65
-                ? 1.0
-                : Float(max(0.0, (3.45 - absDelta) / 0.80))
-            let focusOpacity = Float(max(0.0, 1.0 - absDelta * 1.45))
-            
-            // Depth scrim darkens distant cards subtly and lifts away smoothly on hover or focus
-            let rawDim = min(0.32, Double(absDelta) * (self.isDark ? 0.13 : 0.085))
-            let scrimAlpha = Float(max(0.0, rawDim * (1.0 - Double(hover) * 0.72)))
-            
-            let center = CGPoint(x: stageCenterX + offsetX, y: stageCenterY - baseDropY + hoverLiftY + pressSinkY)
-            slot.currentCenter = center
-            slot.currentScale = scale
-            slot.currentRotation = rotationZ
-            
-            var transform = CATransform3DIdentity
-            transform.m34 = -1.0 / 920.0
-            transform = CATransform3DScale(transform, scale, scale, 1.0)
-            transform = CATransform3DRotate(transform, rotationY, 0, 1, 0)
-            transform = CATransform3DRotate(transform, rotationZ, 0, 0, 1)
-            
-            slot.container.position = center
-            slot.container.transform = transform
-            slot.container.opacity = opacity
-            slot.container.zPosition = 200.0 - absDelta * 20.0 + (hover * 3.0)
-            slot.container.shadowRadius = CGFloat(max(4.0, (12.0 - Double(absDelta) * 2.4) + Double(hover) * 2.5 - Double(press) * 3.0))
-            slot.container.shadowOpacity = Float(
-                (self.isDark ? 0.44 : 0.18) * max(0.45, 1.0 - Double(absDelta) * 0.18) + Double(hover) * 0.05
-            )
-            slot.dimScrim.opacity = scrimAlpha
-            slot.focusRing.opacity = focusOpacity
-            slot.hoverBorder.opacity = Float(hover * (absDelta > 0.35 ? 0.92 : 0.55))
-        }
-        CATransaction.commit()
-    }
-    
-    private func notifyNearestIndexIfChanged(haptic: Bool = false) {
-        guard !self.snapshots.isEmpty else { return }
-        let maxIdx = max(0, self.snapshots.count - 1)
-        let nearest = min(maxIdx, max(0, Int(self.position.rounded())))
-        if nearest != self.reportedIndex {
-            self.reportedIndex = nearest
-            if haptic {
-                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
-            }
-            self.onActiveIndexChanged?(nearest)
-        }
-    }
-    
-    // MARK: 120Hz ProMotion Spring + Hover/Press Loop
-    
-    private func ensureDisplayLinkRunning() {
-        guard self.displayLink == nil else { return }
-        self.lastFrameTimestamp = CACurrentMediaTime()
-        let link = self.displayLink(target: self, selector: #selector(self.stepFrame(_:)))
-        if #available(macOS 14.0, *) {
-            link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
-        }
-        link.add(to: .main, forMode: .common)
-        self.displayLink = link
-    }
-    
-    private func animateToIndex(_ index: Int, initialVelocity: CGFloat) {
-        let maxIdx = max(0, self.snapshots.count - 1)
-        let clamped = CGFloat(min(maxIdx, max(0, index)))
-        self.springTarget = clamped
-        self.springVelocity = initialVelocity
-        
-        if abs(self.position - clamped) < 0.001 && abs(initialVelocity) < 0.01 {
-            self.position = clamped
-            self.isPositionSpringActive = false
-            self.applyPositionsImmediately()
-            self.notifyNearestIndexIfChanged()
-            return
-        }
-        
-        self.isPositionSpringActive = true
-        self.ensureDisplayLinkRunning()
-    }
-    
-    private func stopSpring() {
-        self.isPositionSpringActive = false
-        self.springVelocity = 0
-    }
-    
-    private func stopDisplayLink() {
-        self.displayLink?.invalidate()
-        self.displayLink = nil
-        self.isPositionSpringActive = false
-        self.springVelocity = 0
-    }
-    
-    @objc private func stepFrame(_ link: CADisplayLink) {
-        let now = link.timestamp > 0 ? link.timestamp : CACurrentMediaTime()
-        let rawDT = now - self.lastFrameTimestamp
-        self.lastFrameTimestamp = now
-        let dt = CGFloat(min(1.0 / 30.0, max(1.0 / 240.0, rawDT)))
-        var anyMoving = false
-        
-        if self.isPositionSpringActive {
-            // Smooth lightly underdamped harmonic spring (zeta = 0.88, omega = 19.5 rad/s -> tactile Apple CoverFlow settle)
-            let omega: CGFloat = 19.5
-            let zeta: CGFloat = 0.88
-            let x = self.position - self.springTarget
-            let v = self.springVelocity
-            let accel = -(omega * omega) * x - (2.0 * zeta * omega) * v
-            let vNext = v + accel * dt
-            let xNext = x + vNext * dt
-            
-            if abs(xNext) < 0.0014 && abs(vNext) < 0.014 {
-                self.position = self.springTarget
-                self.springVelocity = 0
-                self.isPositionSpringActive = false
-            } else {
-                self.position = self.springTarget + xNext
-                self.springVelocity = vNext
-                anyMoving = true
-            }
-            self.notifyNearestIndexIfChanged()
-        }
-        
-        // Smooth 120Hz exponential interpolation for per-card hover peek & press depth
-        let hoverAlpha = min(1.0, 1.0 - exp(-20.0 * dt))
-        let pressAlpha = min(1.0, 1.0 - exp(-28.0 * dt))
-        for (idx, slot) in self.slots.enumerated() {
-            let hoverTarget: CGFloat = (!self.isMouseDragging && !self.isTrackpadDragging && self.hoveredCardIndex == idx) ? 1.0 : 0.0
-            let pressTarget: CGFloat = (!self.isMouseDragging && self.pressedCardIndex == idx) ? 1.0 : 0.0
-            
-            if abs(slot.hoverAmount - hoverTarget) > 0.004 {
-                slot.hoverAmount += (hoverTarget - slot.hoverAmount) * hoverAlpha
-                anyMoving = true
-            } else {
-                slot.hoverAmount = hoverTarget
-            }
-            
-            if abs(slot.pressAmount - pressTarget) > 0.004 {
-                slot.pressAmount += (pressTarget - slot.pressAmount) * pressAlpha
-                anyMoving = true
-            } else {
-                slot.pressAmount = pressTarget
-            }
-        }
-        
-        self.applyPositionsImmediately()
-        if !anyMoving {
-            self.stopDisplayLink()
-        }
-    }
-    
-    // MARK: Card Hit-Testing & Hover Tracking
-    
-    private func hitTestCardIndex(at point: CGPoint) -> Int? {
-        let hitIndices = self.slots.indices
-            .filter { self.slots[$0].isVisibleOnStage }
-            .sorted { abs(CGFloat($0) - self.position) < abs(CGFloat($1) - self.position) }
-        
-        for idx in hitIndices {
-            let slot = self.slots[idx]
-            let dx = point.x - slot.currentCenter.x
-            let dy = point.y - slot.currentCenter.y
-            let cosA = cos(-slot.currentRotation)
-            let sinA = sin(-slot.currentRotation)
-            let localX = (dx * cosA - dy * sinA) / max(0.2, slot.currentScale)
-            let localY = (dx * sinA + dy * cosA) / max(0.2, slot.currentScale)
-            if abs(localX) <= self.cardWidth * 0.5 && abs(localY) <= self.cardHeight * 0.5 {
-                return idx
-            }
-        }
-        return nil
-    }
-    
-    override func mouseMoved(with event: NSEvent) {
-        guard !self.isMouseDragging else { return }
-        let pt = self.convert(event.locationInWindow, from: nil)
-        let hit = self.hitTestCardIndex(at: pt)
-        if hit != self.hoveredCardIndex {
-            self.hoveredCardIndex = hit
-            self.ensureDisplayLinkRunning()
-        }
-        if hit != nil {
-            NSCursor.pointingHand.set()
-        } else {
-            NSCursor.arrow.set()
-        }
-    }
-    
-    override func mouseExited(with event: NSEvent) {
-        if self.hoveredCardIndex != nil {
-            self.hoveredCardIndex = nil
-            self.ensureDisplayLinkRunning()
-        }
-        if !self.isMouseDragging {
-            NSCursor.arrow.set()
-        }
-    }
-    
-    // MARK: Trackpad Two-Finger Swipe & Mouse Wheel
-    
-    override func scrollWheel(with event: NSEvent) {
-        guard !self.snapshots.isEmpty else {
-            super.scrollWheel(with: event)
-            return
-        }
-        
-        let dx = event.scrollingDeltaX
-        let dy = event.scrollingDeltaY
-        
-        // Pass vertical scrolling straight through to the parent Settings ScrollView
-        if !self.isTrackpadDragging && abs(dy) > abs(dx) * 1.15 {
-            self.nextResponder?.scrollWheel(with: event)
-            return
-        }
-        
-        let maxIdx = CGFloat(max(0, self.snapshots.count - 1))
-        
-        if event.hasPreciseScrollingDeltas {
-            if event.phase == .mayBegin {
-                self.stopSpring()
-                return
-            }
-            if event.phase == .began || event.phase == .changed {
-                if !self.isTrackpadDragging {
-                    self.isTrackpadDragging = true
-                    self.hoveredCardIndex = nil
-                    self.stopSpring()
-                    self.smoothedScrollVelocity = 0
-                    self.lastScrollSampleTime = CACurrentMediaTime()
-                }
-                let now = CACurrentMediaTime()
-                let dt = max(0.004, now - self.lastScrollSampleTime)
-                self.lastScrollSampleTime = now
-                
-                let deltaCards = -dx / 84.0
-                let instVel = deltaCards / CGFloat(dt)
-                self.smoothedScrollVelocity = self.smoothedScrollVelocity * 0.55 + instVel * 0.45
-                
-                let unclamped = self.position + deltaCards
-                self.position = Self.rubberBanded(unclamped, maxIndex: maxIdx)
-                self.applyPositionsImmediately()
-                self.notifyNearestIndexIfChanged(haptic: true)
-                return
-            }
-            if event.phase == .ended || event.phase == .cancelled {
-                guard self.isTrackpadDragging else { return }
-                self.isTrackpadDragging = false
-                let v = min(14.0, max(-14.0, self.smoothedScrollVelocity))
-                let projected = self.position + v * 0.14
-                let targetIdx = min(Int(maxIdx), max(0, Int(projected.rounded())))
-                self.animateToIndex(targetIdx, initialVelocity: v * 0.55)
-                return
-            }
-            if !event.momentumPhase.isEmpty {
-                return
-            }
-        } else if abs(dx) > 0.05 {
-            let baseIdx = Int((self.isPositionSpringActive ? self.springTarget : self.position).rounded())
-            let step = dx > 0 ? -1 : 1
-            let nextIdx = min(Int(maxIdx), max(0, baseIdx + step))
-            if nextIdx != baseIdx {
-                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
-            }
-            self.animateToIndex(nextIdx, initialVelocity: 0)
-        } else {
-            self.nextResponder?.scrollWheel(with: event)
-        }
-    }
-    
-    // MARK: Mouse Click & 1:1 Drag
-    
-    override func mouseDown(with event: NSEvent) {
-        let pt = self.convert(event.locationInWindow, from: nil)
-        self.mouseDownPoint = pt
-        self.mouseDragStartPosition = self.position
-        self.isMouseDragging = false
-        self.mouseVelocity = 0
-        self.lastMouseX = pt.x
-        self.lastMouseSampleTime = CACurrentMediaTime()
-        self.pressedCardIndex = self.hitTestCardIndex(at: pt)
-        self.stopSpring()
-        if self.pressedCardIndex != nil {
-            self.ensureDisplayLinkRunning()
-        }
-    }
-    
-    override func mouseDragged(with event: NSEvent) {
-        guard let startPt = self.mouseDownPoint, !self.snapshots.isEmpty else { return }
-        let pt = self.convert(event.locationInWindow, from: nil)
-        let totalDX = pt.x - startPt.x
-        if !self.isMouseDragging && abs(totalDX) > 4 {
-            self.isMouseDragging = true
-            self.pressedCardIndex = nil
-            self.hoveredCardIndex = nil
-            NSCursor.closedHand.set()
-        }
-        guard self.isMouseDragging else { return }
-        
-        let now = CACurrentMediaTime()
-        let dt = max(0.004, now - self.lastMouseSampleTime)
-        let stepDX = pt.x - self.lastMouseX
-        self.lastMouseSampleTime = now
-        self.lastMouseX = pt.x
-        
-        let instVel = (-stepDX / 84.0) / CGFloat(dt)
-        self.mouseVelocity = self.mouseVelocity * 0.55 + instVel * 0.45
-        
-        let maxIdx = CGFloat(max(0, self.snapshots.count - 1))
-        let raw = self.mouseDragStartPosition - (totalDX / 84.0)
-        self.position = Self.rubberBanded(raw, maxIndex: maxIdx)
-        self.applyPositionsImmediately()
-        self.notifyNearestIndexIfChanged(haptic: true)
-    }
-    
-    override func mouseUp(with event: NSEvent) {
-        defer {
-            self.mouseDownPoint = nil
-            self.isMouseDragging = false
-            if self.pressedCardIndex != nil {
-                self.pressedCardIndex = nil
-                self.ensureDisplayLinkRunning()
-            }
-        }
-        guard !self.snapshots.isEmpty else { return }
-        let maxIdx = max(0, self.snapshots.count - 1)
-        let pt = self.convert(event.locationInWindow, from: nil)
-        
-        if self.isMouseDragging {
-            let v = min(14.0, max(-14.0, self.mouseVelocity))
-            let projected = self.position + v * 0.14
-            let targetIdx = min(maxIdx, max(0, Int(projected.rounded())))
-            self.animateToIndex(targetIdx, initialVelocity: v * 0.55)
-            let hoverAfter = self.hitTestCardIndex(at: pt)
-            self.hoveredCardIndex = hoverAfter
-            (hoverAfter != nil ? NSCursor.pointingHand : NSCursor.arrow).set()
-            return
-        }
-        
-        if let idx = self.hitTestCardIndex(at: pt) {
-            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
-            if abs(CGFloat(idx) - self.position) > 0.32 {
-                self.animateToIndex(idx, initialVelocity: 0)
-            } else {
-                self.onInspectBot?(self.snapshots[idx].botID)
-            }
-            return
-        }
-        
-        let nearest = min(maxIdx, max(0, Int(self.position.rounded())))
-        self.animateToIndex(nearest, initialVelocity: 0)
-    }
-}
-
-
-private struct PackCoreAnimationDeckView: NSViewRepresentable {
-    
-    let snapshots: [BotCardSnapshot]
-    let activeIndex: Int
-    let externalStepToken: Int
-    let cardWidth: CGFloat
-    let cardHeight: CGFloat
-    let isDark: Bool
-    let onActiveIndexChanged: (Int) -> Void
-    let onInspectBot: (AIBotID) -> Void
-    
-    final class Coordinator {
-        var lastHandledStepToken: Int = 0
-    }
-    
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
-    }
-    
-    func makeNSView(context: Context) -> PackCoreAnimationStageNSView {
-        let view = PackCoreAnimationStageNSView()
-        view.onActiveIndexChanged = self.onActiveIndexChanged
-        view.onInspectBot = self.onInspectBot
-        view.configure(
-            snapshots: self.snapshots,
-            targetIndex: self.activeIndex,
-            stepToken: self.externalStepToken,
-            lastHandledStepToken: &context.coordinator.lastHandledStepToken,
-            cardWidth: self.cardWidth,
-            cardHeight: self.cardHeight,
-            isDark: self.isDark
-        )
-        return view
-    }
-    
-    func updateNSView(_ nsView: PackCoreAnimationStageNSView, context: Context) {
-        nsView.onActiveIndexChanged = self.onActiveIndexChanged
-        nsView.onInspectBot = self.onInspectBot
-        nsView.configure(
-            snapshots: self.snapshots,
-            targetIndex: self.activeIndex,
-            stepToken: self.externalStepToken,
-            lastHandledStepToken: &context.coordinator.lastHandledStepToken,
-            cardWidth: self.cardWidth,
-            cardHeight: self.cardHeight,
-            isDark: self.isDark
-        )
-    }
-}
-
+// MARK: - Master-Detail Bots Settings
 
 struct AIBotsSettingsView: View {
     
     /// Exact deterministic content width (`780 - 204 sidebar - 1 divider - 48 padding = 527pt`).
     private static let fixedStageWidth: CGFloat = 527
-    private static let galleryColumns = 4
-    private static let galleryGap: CGFloat = 13
-    private static let galleryCardWidth: CGFloat = 122
-    private static let galleryCardHeight: CGFloat = 122
-    private static let galleryRowStride: CGFloat = 172
-    private static let packCardWidth: CGFloat = 148
-    private static let packCardHeight: CGFloat = 148
-    private static let packStageHeight: CGFloat = 204
     
     var settingsState: SidebarSettingsState? = nil
-    var initialLayoutMode: BotCollectionLayoutMode = .card
     
     @Environment(\.colorScheme) private var colorScheme
-    
     @State private var botStore = AIBotStore.shared
-    @State private var analytics = AnalyticsManager.shared
-    @State private var piKernel = PiKernelManager.shared
-    @State private var layoutMode: BotCollectionLayoutMode = .card
-    @State private var didApplyInitialMode = false
-    @State private var inspectingBot: AIBotID?
-    @State private var allEndpoints: [AIEndpointProfile] = []
-    @State private var activeEndpoint: AIEndpointProfile?
-    @State private var packActiveIndex: Int = 0
-    @State private var packExternalStepToken: Int = 0
-    @State private var snapshots: [BotCardSnapshot] = []
-    @State private var prewarmTask: Task<Void, Never>?
+    @State private var selectedTarget: SelectedBotTarget = .builtIn(.butler)
     @State private var isShowingCreateBot = false
     @State private var editingCustomBot: CustomBotProfile? = nil
-    
-    @Namespace private var modePillNamespace
     
     
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if let botID = self.inspectingBot {
-                self.inlineInspector(for: botID)
-                    .transition(.opacity)
-            } else {
-                self.morphingCollectionView
-                    .transition(.opacity)
+            BotsGlobalProactiveCard()
+            
+            HStack(alignment: .top, spacing: 12) {
+                BotMasterListSidebar(
+                    selectedTarget: self.$selectedTarget,
+                    builtInBots: AIBotID.allCases,
+                    customBots: self.botStore.customBots,
+                    botStore: self.botStore,
+                    cardSurface: self.cardSurface,
+                    cardBorder: self.cardBorder,
+                    onCreateBot: { self.isShowingCreateBot = true }
+                )
+                
+                self.detailInspector
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }
         .frame(width: Self.fixedStageWidth, alignment: .topLeading)
         .onAppear {
-            if !self.didApplyInitialMode {
-                self.didApplyInitialMode = true
-                self.layoutMode = self.initialLayoutMode
-            }
-            self.reload(cachedImagesOnly: true)
+            self.botStore.reloadFromDatabase()
             self.consumePendingBotSelection()
-            self.startAsyncPortraitPrewarm()
-        }
-        .onDisappear {
-            self.prewarmTask?.cancel()
         }
         .onChange(of: self.settingsState?.pendingBotID) { _, _ in
             self.consumePendingBotSelection()
@@ -2497,19 +1478,59 @@ struct AIBotsSettingsView: View {
                 self.isShowingCreateBot = true
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: UserProfileManager.activeProfileDidChangeNotification)) { _ in
-            self.reload(cachedImagesOnly: true)
-            self.startAsyncPortraitPrewarm()
+        .onChange(of: self.botStore.customBotsRevision) { _, _ in
+            if case .custom(let cid) = self.selectedTarget,
+               !self.botStore.customBots.contains(where: { $0.id == cid })
+            {
+                self.selectedTarget = .builtIn(.butler)
+            }
         }
         .sheet(isPresented: self.$isShowingCreateBot) {
-            CustomBotCreationSheet { _ in
-                self.reload(cachedImagesOnly: true)
+            CustomBotCreationSheet { created in
+                self.selectedTarget = .custom(created.id)
+                self.botStore.reloadFromDatabase()
             }
         }
         .sheet(item: self.$editingCustomBot) { customBot in
-            CustomBotCreationSheet(editingBot: customBot) { _ in
-                self.reload(cachedImagesOnly: true)
+            CustomBotCreationSheet(editingBot: customBot) { updated in
+                self.selectedTarget = .custom(updated.id)
+                self.botStore.reloadFromDatabase()
             }
+        }
+    }
+    
+    
+    @ViewBuilder
+    private var detailInspector: some View {
+        switch self.selectedTarget {
+            case .builtIn(let botID):
+                AIBotInlineInspectorView(
+                    botID: botID,
+                    cardSurface: self.cardSurface,
+                    cardBorder: self.cardBorder,
+                    onEndpointsUpdated: {
+                        self.botStore.reloadFromDatabase()
+                    }
+                )
+                
+            case .custom(let customID):
+                if let customBot = self.botStore.customBots.first(where: { $0.id == customID }) {
+                    CustomBotInspectorView(
+                        customBot: customBot,
+                        cardSurface: self.cardSurface,
+                        cardBorder: self.cardBorder,
+                        onEdit: { self.editingCustomBot = customBot }
+                    )
+                } else {
+                    AIBotInlineInspectorView(
+                        botID: .butler,
+                        cardSurface: self.cardSurface,
+                        cardBorder: self.cardBorder,
+                        onEndpointsUpdated: {
+                            self.botStore.reloadFromDatabase()
+                        }
+                    )
+                }
         }
     }
     
@@ -2521,609 +1542,12 @@ struct AIBotsSettingsView: View {
         }
         if let customID = self.settingsState?.pendingCustomBotID {
             self.settingsState?.pendingCustomBotID = nil
-            self.inspectingBot = nil
-            if let found = self.botStore.customBots.first(where: { $0.id == customID }) {
-                self.editingCustomBot = found
-            }
+            self.selectedTarget = .custom(customID)
             return
         }
         guard let pending = self.settingsState?.pendingBotID else { return }
-        self.inspectingBot = pending
+        self.selectedTarget = .builtIn(pending)
         self.settingsState?.pendingBotID = nil
-    }
-    
-    
-    private func botDisplayTitle(for botID: AIBotID) -> String {
-        let name = self.botStore.resolvedName(for: botID)
-        if name != botID.displayName {
-            return "\(name) · \(botID.displayName)"
-        }
-        return botID.displayName
-    }
-    
-    
-    private func resolvedEndpoint(for config: AIBotConfig) -> AIEndpointProfile? {
-        if let endpointID = config.endpointID,
-           let matched = self.allEndpoints.first(where: { $0.id == endpointID })
-        {
-            return matched
-        }
-        return self.activeEndpoint
-    }
-    
-    
-    private func resolvedCharacter(for botID: AIBotID, config: AIBotConfig) -> AIGijinkaCharacter? {
-        let endpoint = self.resolvedEndpoint(for: config)
-        let overrideModel = config.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !overrideModel.isEmpty {
-            return AIGijinkaCharacter.resolve(
-                modelName: overrideModel,
-                endpointName: endpoint?.displayName,
-                baseURL: endpoint?.baseURL
-            )
-        }
-        return AIGijinkaCharacter.resolve(
-            modelName: endpoint?.displayModel,
-            endpointName: endpoint?.displayName,
-            baseURL: endpoint?.baseURL
-        ) ?? .claude
-    }
-    
-    
-    private func rebuildSnapshots(cachedImagesOnly: Bool) {
-        let featureCounts = Dictionary(
-            self.analytics.featureDistribution(days: 30).map { ($0.feature, $0.requests) },
-            uniquingKeysWith: { first, _ in first }
-        )
-        
-        var nextSnapshots: [BotCardSnapshot] = []
-        nextSnapshots.reserveCapacity(AIBotID.allCases.count)
-        
-        for botID in AIBotID.allCases {
-            let config = self.botStore.config(for: botID)
-            let endpoint = self.resolvedEndpoint(for: config)
-            let character = self.resolvedCharacter(for: botID, config: config)
-            let portrait = self.botStore.resolvedPortraitImage(
-                for: botID,
-                pointWidth: Self.packCardWidth,
-                pointHeight: Self.packCardHeight,
-                cachedOnly: cachedImagesOnly
-            )
-            let resolvedName = self.botStore.resolvedName(for: botID)
-            let resolvedNickname = self.botStore.resolvedNickname(for: botID)
-            let effectiveModel = config.modelOverride.isEmpty
-                ? (endpoint?.displayModel ?? AppLanguage.text("未选择模型", en: "No Model"))
-                : config.modelOverride
-            
-            nextSnapshots.append(BotCardSnapshot(
-                botID: botID,
-                displayTitle: self.botDisplayTitle(for: botID),
-                shortTitle: resolvedName,
-                subtitle: "@\(resolvedNickname)",
-                personaBadge: "@\(resolvedNickname)",
-                modelLabel: effectiveModel,
-                accentHex: character?.accentHex ?? botID.accentHex,
-                isEnabled: config.isEnabled,
-                recentCalls: featureCounts[botID.analyticsFeatureKey] ?? 0,
-                portraitImage: portrait
-            ))
-        }
-        self.snapshots = nextSnapshots
-    }
-    
-    
-    /// Pre-decodes uncached Retina ~3:4 portrait bitmaps off the main thread so opening Bots never stutters.
-    private func startAsyncPortraitPrewarm() {
-        self.prewarmTask?.cancel()
-        let missingWork: [(artwork: AIGijinkaArtwork, source: NSImage)] = AIBotID.allCases.compactMap { botID in
-            guard self.botStore.customAvatarImage(for: botID) == nil else { return nil }
-            let cfg = self.botStore.config(for: botID)
-            guard let character = self.resolvedCharacter(for: botID, config: cfg) else { return nil }
-            let artwork = character.artwork(for: botID, variantOverride: cfg.artworkVariantIndex)
-            if AIGijinkaImageLoader.shared.cachedPortraitCard(
-                for: artwork,
-                pointWidth: Self.packCardWidth,
-                pointHeight: Self.packCardHeight
-            ) != nil {
-                return nil
-            }
-            guard let src = AIGijinkaImageLoader.shared.image(for: artwork) else { return nil }
-            return (artwork, src)
-        }
-        guard !missingWork.isEmpty else {
-            if self.snapshots.contains(where: { $0.portraitImage == nil }) {
-                self.rebuildSnapshots(cachedImagesOnly: false)
-            }
-            return
-        }
-        
-        let targetW = Self.packCardWidth
-        let targetH = Self.packCardHeight
-        self.prewarmTask = Task(priority: .userInitiated) {
-            let rendered = await Self.renderMissingPortraits(missingWork, width: targetW, height: targetH)
-            guard !Task.isCancelled else { return }
-            for (art, bmp) in rendered {
-                AIGijinkaImageLoader.shared.storePortraitCard(bmp, for: art, pointWidth: targetW, pointHeight: targetH)
-            }
-            self.rebuildSnapshots(cachedImagesOnly: false)
-            let isDark = (self.colorScheme == .dark)
-            for snap in self.snapshots {
-                await Task.yield()
-                guard !Task.isCancelled else { return }
-                _ = PackBakedCardTextureCache.shared.texture(
-                    for: snap,
-                    width: Self.packCardWidth,
-                    height: Self.packCardHeight,
-                    cornerRadius: 15,
-                    isDark: isDark
-                )
-            }
-        }
-    }
-    
-    
-    @concurrent private static func renderMissingPortraits(
-        _ work: [(artwork: AIGijinkaArtwork, source: NSImage)],
-        width: CGFloat,
-        height: CGFloat
-    ) async -> [(AIGijinkaArtwork, NSImage)] {
-        var rendered: [(AIGijinkaArtwork, NSImage)] = []
-        var seen = Set<String>()
-        for entry in work where seen.insert(entry.artwork.id).inserted {
-            if Task.isCancelled { break }
-            if let bitmap = AIGijinkaImageLoader.renderPortraitBitmap(
-                from: entry.source,
-                cropAnchor: entry.artwork.cropAnchor,
-                pointWidth: width,
-                pointHeight: height
-            ) {
-                rendered.append((entry.artwork, bitmap))
-            }
-        }
-        return rendered
-    }
-    
-    
-    // MARK: - Morphing Gallery / List / Stack Stage
-    
-    @ViewBuilder
-    private var morphingCollectionView: some View {
-        let count = max(1, self.snapshots.count)
-        let maxIndex = max(0, count - 1)
-        let liveNearestIndex = min(maxIndex, max(0, self.packActiveIndex))
-        let rowsCount = Int(ceil(Double(count) / Double(Self.galleryColumns)))
-        let stageHeight: CGFloat = switch self.layoutMode {
-            case .list: CGFloat(count) * 56.0
-            case .card: CGFloat(rowsCount) * Self.galleryRowStride
-            case .pack: Self.packStageHeight + 88.0
-        }
-        let enabledCount = self.snapshots.filter(\.isEnabled).count
-        let focusedPackSnap: BotCardSnapshot? = self.snapshots.indices.contains(liveNearestIndex)
-            ? self.snapshots[liveNearestIndex]
-            : self.snapshots.first
-        let isDark = (self.colorScheme == .dark)
-        
-        VStack(alignment: .leading, spacing: 14) {
-            // Segmented Layout Switcher
-            HStack(spacing: 4) {
-                ForEach(BotCollectionLayoutMode.allCases) { mode in
-                    let isSelected = (self.layoutMode == mode)
-                    Button {
-                        withAnimation(.easeOut(duration: 0.16)) {
-                            self.layoutMode = mode
-                        }
-                    } label: {
-                        Text(mode.title)
-                            .font(.system(size: 12.5, weight: isSelected ? .semibold : .medium))
-                            .foregroundStyle(isSelected ? .primary : .secondary)
-                            .padding(.horizontal, 12)
-                            .frame(height: 30)
-                            .background {
-                                if isSelected {
-                                    Capsule()
-                                        .fill(isDark ? Color.white.opacity(0.13) : Color.black.opacity(0.08))
-                                        .matchedGeometryEffect(id: "botLayoutPill", in: self.modePillNamespace)
-                                }
-                            }
-                            .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .pointerStyle(.link)
-                }
-                
-                Spacer()
-                
-                Text("\(enabledCount)/\(self.snapshots.count) \(AppLanguage.text("已启用", en: "Active"))")
-                    .font(.system(size: 11.5, weight: .medium).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                
-                Button {
-                    self.isShowingCreateBot = true
-                } label: {
-                    Label(AppLanguage.text("新建 Bot", en: "New Bot"), systemImage: "plus")
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-            }
-            
-            Rectangle()
-                .fill(self.cardBorder)
-                .frame(height: 1)
-                .opacity(self.layoutMode == .card ? 0.0 : 1.0)
-            
-            // Stage
-            if self.layoutMode == .pack {
-                VStack(spacing: 9) {
-                    PackCoreAnimationDeckView(
-                        snapshots: self.snapshots,
-                        activeIndex: liveNearestIndex,
-                        externalStepToken: self.packExternalStepToken,
-                        cardWidth: Self.packCardWidth,
-                        cardHeight: Self.packCardHeight,
-                        isDark: isDark,
-                        onActiveIndexChanged: { nextIndex in
-                            if self.packActiveIndex != nextIndex {
-                                self.packActiveIndex = nextIndex
-                            }
-                        },
-                        onInspectBot: { botID in
-                            withAnimation(.easeOut(duration: 0.16)) {
-                                self.inspectingBot = botID
-                            }
-                        }
-                    )
-                    .frame(width: Self.fixedStageWidth, height: Self.packStageHeight)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    
-                    // Interactive deck progress pills
-                    HStack(spacing: 5) {
-                        ForEach(Array(self.snapshots.enumerated()), id: \.element.id) { idx, snap in
-                            let isCurrent = (idx == liveNearestIndex)
-                            let pillAccent = Color(hexString: snap.accentHex)
-                            Button {
-                                guard idx != liveNearestIndex else { return }
-                                self.packActiveIndex = idx
-                                self.packExternalStepToken &+= 1
-                                NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .default)
-                            } label: {
-                                Capsule(style: .continuous)
-                                    .fill(isCurrent
-                                          ? pillAccent
-                                          : Color.primary.opacity(isDark ? 0.18 : 0.14))
-                                    .frame(width: isCurrent ? 18 : 5.5, height: 5.5)
-                                    .animation(.snappy(duration: 0.22, extraBounce: 0), value: liveNearestIndex)
-                            }
-                            .buttonStyle(.plain)
-                            .pointerStyle(.link)
-                            .help(snap.displayTitle)
-                        }
-                    }
-                    .frame(height: 10)
-                    
-                    if let focusedSnap = focusedPackSnap {
-                        self.packBottomDockBar(
-                            focusedSnap: focusedSnap,
-                            activeIndex: liveNearestIndex,
-                            total: count,
-                            isDark: isDark
-                        )
-                    }
-                }
-                .frame(width: Self.fixedStageWidth, height: stageHeight, alignment: .topLeading)
-                .clipped()
-            } else {
-                ZStack(alignment: .topLeading) {
-                    ForEach(Array(self.snapshots.enumerated()), id: \.element.id) { index, snap in
-                        self.stageNode(
-                            snap: snap,
-                            index: index,
-                            isDark: isDark
-                        )
-                    }
-                }
-                .frame(width: Self.fixedStageWidth, height: stageHeight, alignment: .topLeading)
-            }
-            
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(self.piKernel.isAvailable && self.piKernel.isKernelEnabled ? Color.green : Color.orange)
-                    .frame(width: 6, height: 6)
-                Text(self.piKernel.statusSummary)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
-                Spacer()
-            }
-            .padding(.top, 2)
-            
-            CustomBotsRosterSection(
-                cardSurface: self.cardSurface,
-                cardBorder: self.cardBorder,
-                onCreateNew: { self.isShowingCreateBot = true },
-                onEditBot: { self.editingCustomBot = $0 }
-            )
-        }
-    }
-    
-    
-    @ViewBuilder
-    private func stageNode(
-        snap: BotCardSnapshot,
-        index: Int,
-        isDark: Bool
-    ) -> some View {
-        let botID = snap.botID
-        let accent = Color(hexString: snap.accentHex)
-        
-        let artW: CGFloat = self.layoutMode == .list ? 44 : Self.galleryCardWidth
-        let artH: CGFloat = self.layoutMode == .list ? 44 : Self.galleryCardHeight
-        let artCorner: CGFloat = self.layoutMode == .list ? 10 : 15
-        let itemW: CGFloat = self.layoutMode == .list ? Self.fixedStageWidth : artW
-        let itemH: CGFloat = self.layoutMode == .list ? 44 : (artH + 40)
-        let posX: CGFloat = self.layoutMode == .list ? 0 : CGFloat(index % Self.galleryColumns) * (artW + Self.galleryGap)
-        let posY: CGFloat = self.layoutMode == .list ? CGFloat(index) * 56.0 : CGFloat(index / Self.galleryColumns) * Self.galleryRowStride
-        
-        ZStack(alignment: .topLeading) {
-            BotPortraitTileSurface(
-                botID: botID,
-                shortTitle: snap.shortTitle,
-                accentHex: snap.accentHex,
-                isEnabled: snap.isEnabled,
-                portraitImage: snap.portraitImage,
-                width: artW,
-                height: artH,
-                cornerRadius: artCorner,
-                showPackOverlay: false,
-                isPackCenter: false,
-                isDark: isDark
-            )
-            .equatable()
-            .contentShape(RoundedRectangle(cornerRadius: artCorner, style: .continuous))
-            .onTapGesture {
-                withAnimation(.easeOut(duration: 0.18)) {
-                    self.inspectingBot = botID
-                }
-            }
-            
-            if self.layoutMode == .list {
-                HStack(spacing: 10) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 6) {
-                            Text(snap.displayTitle)
-                                .font(.system(size: 13.5, weight: .semibold))
-                                .foregroundStyle(snap.isEnabled ? .primary : .secondary)
-                            if let personaBadge = snap.personaBadge {
-                                Text(personaBadge)
-                                    .font(.system(size: 10.5, weight: .medium))
-                                    .foregroundStyle(accent)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 1.5)
-                                    .background(accent.opacity(isDark ? 0.16 : 0.10), in: Capsule())
-                            }
-                        }
-                        
-                        HStack(spacing: 6) {
-                            Text(snap.modelLabel)
-                                .font(.system(size: 11))
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
-                            if snap.recentCalls > 0 {
-                                Text("· \(snap.recentCalls) 次")
-                                    .font(.system(size: 11).monospacedDigit())
-                                    .foregroundStyle(.tertiary)
-                            }
-                        }
-                    }
-                    
-                    Spacer(minLength: 6)
-                    
-                    Toggle("", isOn: Binding(
-                        get: { snap.isEnabled },
-                        set: { enabled in
-                            var updated = self.botStore.config(for: botID)
-                            updated.isEnabled = enabled
-                            self.botStore.updateConfig(updated, for: botID)
-                            self.rebuildSnapshots(cachedImagesOnly: false)
-                        }
-                    ))
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    
-                    Button {
-                        withAnimation(.snappy(duration: 0.22, extraBounce: 0)) {
-                            self.inspectingBot = botID
-                        }
-                    } label: {
-                        Text(AppLanguage.text("配置", en: "Edit"))
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 8)
-                            .frame(height: 24)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.leading, artW + 12)
-                .frame(width: itemW, height: artH, alignment: .leading)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    withAnimation(.snappy(duration: 0.22, extraBounce: 0)) {
-                        self.inspectingBot = botID
-                    }
-                }
-            }
-            
-            if self.layoutMode == .card {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 4) {
-                        Text(snap.shortTitle)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(snap.isEnabled ? .primary : .secondary)
-                            .lineLimit(1)
-                        
-                        Spacer(minLength: 2)
-                        
-                        Circle()
-                            .fill(snap.isEnabled ? accent : Color.primary.opacity(0.18))
-                            .frame(width: 6, height: 6)
-                    }
-                    
-                    Text(snap.subtitle)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-                .frame(width: artW, alignment: .leading)
-                .offset(y: artH + 6)
-                .onTapGesture {
-                    withAnimation(.snappy(duration: 0.22, extraBounce: 0)) {
-                        self.inspectingBot = botID
-                    }
-                }
-            }
-        }
-        .frame(width: itemW, height: itemH, alignment: .topLeading)
-        .offset(x: posX, y: posY)
-        .zIndex(Double(index))
-        .pointerStyle(.link)
-    }
-    
-    
-    private func packBottomDockBar(
-        focusedSnap: BotCardSnapshot,
-        activeIndex: Int,
-        total: Int,
-        isDark: Bool
-    ) -> some View {
-        let focusedAccent = Color(hexString: focusedSnap.accentHex)
-        
-        return HStack(spacing: 10) {
-            Circle()
-                .fill(focusedSnap.isEnabled ? focusedAccent : Color.secondary.opacity(0.35))
-                .frame(width: 8, height: 8)
-            
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text(focusedSnap.displayTitle)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.primary)
-                    if let personaBadge = focusedSnap.personaBadge {
-                        Text(personaBadge)
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundStyle(focusedAccent)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 1.5)
-                            .background(focusedAccent.opacity(0.14), in: Capsule())
-                    }
-                }
-                Text(focusedSnap.modelLabel)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            
-            Spacer(minLength: 6)
-            
-            HStack(spacing: 4) {
-                Button {
-                    guard activeIndex > 0 else { return }
-                    self.packActiveIndex = activeIndex - 1
-                    self.packExternalStepToken &+= 1
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .frame(width: 26, height: 26)
-                        .background(Color.primary.opacity(isDark ? 0.08 : 0.045), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .disabled(activeIndex <= 0)
-                .opacity(activeIndex <= 0 ? 0.35 : 1.0)
-                .pointerStyle(activeIndex <= 0 ? .default : .link)
-                
-                Text("\(activeIndex + 1)/\(total)")
-                    .font(.system(size: 11, weight: .medium, design: .monospaced).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .contentTransition(.numericText())
-                    .frame(minWidth: 34)
-                
-                Button {
-                    guard activeIndex + 1 < total else { return }
-                    self.packActiveIndex = activeIndex + 1
-                    self.packExternalStepToken &+= 1
-                } label: {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .frame(width: 26, height: 26)
-                        .background(Color.primary.opacity(isDark ? 0.08 : 0.045), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .disabled(activeIndex + 1 >= total)
-                .opacity(activeIndex + 1 >= total ? 0.35 : 1.0)
-                .pointerStyle(activeIndex + 1 >= total ? .default : .link)
-            }
-            
-            Button {
-                withAnimation(.easeOut(duration: 0.18)) {
-                    self.inspectingBot = focusedSnap.botID
-                }
-            } label: {
-                Text(AppLanguage.text("进入配置", en: "Configure"))
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .padding(.horizontal, 11)
-                    .frame(height: 28)
-                    .background(Color.primary.opacity(isDark ? 0.10 : 0.06), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .pointerStyle(.link)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .frame(minHeight: 58, alignment: .leading)
-        .frame(width: Self.fixedStageWidth)
-        .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
-    }
-    
-    
-    // MARK: - Inline Bot Inspector
-    
-    @ViewBuilder
-    private func inlineInspector(for botID: AIBotID) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Button {
-                    withAnimation(.snappy(duration: 0.24, extraBounce: 0)) {
-                        self.inspectingBot = nil
-                    }
-                    self.reload(cachedImagesOnly: false)
-                    self.startAsyncPortraitPrewarm()
-                } label: {
-                    Text(AppLanguage.text("← 返回 Bots", en: "← Back to Bots"))
-                        .font(.system(size: 12.5, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 11)
-                        .frame(height: 28)
-                        .background(self.cardSurface, in: Capsule())
-                        .overlay(Capsule().strokeBorder(self.cardBorder, lineWidth: 1))
-                }
-                .buttonStyle(.plain)
-                .pointerStyle(.link)
-                
-                Spacer()
-            }
-            
-            AIBotInlineInspectorView(
-                botID: botID,
-                cardSurface: self.cardSurface,
-                cardBorder: self.cardBorder,
-                onEndpointsUpdated: {
-                    self.reload(cachedImagesOnly: false)
-                }
-            )
-        }
     }
     
     
@@ -3134,20 +1558,10 @@ struct AIBotsSettingsView: View {
     private var cardBorder: Color {
         self.colorScheme == .dark ? Color.white.opacity(0.09) : Color.black.opacity(0.07)
     }
-    
-    
-    private func reload(cachedImagesOnly: Bool) {
-        let profiles = AIEndpointStore.profiles
-        self.allEndpoints = profiles
-        let activeID = AIEndpointStore.activeID ?? profiles.first?.id
-        self.activeEndpoint = profiles.first(where: { $0.id == activeID })
-        self.botStore.reloadFromDatabase()
-        self.rebuildSnapshots(cachedImagesOnly: cachedImagesOnly)
-    }
 }
 
 
-// MARK: - Inline Bot Inspector (Supports All Configured Subscriptions)
+// MARK: - Inline Built-In Bot Inspector
 
 private struct AIBotInlineInspectorView: View {
     
@@ -3161,6 +1575,7 @@ private struct AIBotInlineInspectorView: View {
     @State private var config: AIBotConfig = AIBotConfig()
     @State private var nicknameDraft: String = ""
     @State private var personaDraft: String = ""
+    @State private var proactiveLevel: BotProactiveLevel = .off
     @State private var pendingAvatarData: Data? = nil
     @State private var pendingAvatarSourceURL: URL? = nil
     @State private var pendingResetAvatar = false
@@ -3205,20 +1620,14 @@ private struct AIBotInlineInspectorView: View {
         if self.pendingResetAvatar {
             return nil
         }
-        return self.botStore.resolvedPortraitImage(for: self.botID, pointWidth: 72, pointHeight: 72)
+        return self.botStore.resolvedPortraitImage(for: self.botID, pointWidth: 44, pointHeight: 44)
     }
     
     private var selectedModelLabel: String {
         let defaultModel = self.activeGatewayGroup?.profile.displayModel ?? AIProvider.openCodeGo.defaultModel
         let trimmedOverride = self.config.modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedOverride.isEmpty {
-            return AppLanguage.text("跟随当前默认 (\(defaultModel))", en: "Default (\(defaultModel))")
-        }
-        if let epID = self.config.endpointID,
-           let group = self.gatewayGroups.first(where: { $0.profile.id == epID }),
-           self.gatewayGroups.count > 1
-        {
-            return "\(group.title) · \(trimmedOverride)"
+            return AppLanguage.text("默认 (\(defaultModel))", en: "Default (\(defaultModel))")
         }
         return trimmedOverride
     }
@@ -3230,19 +1639,41 @@ private struct AIBotInlineInspectorView: View {
     }
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            self.headerSummaryRow
-            Divider()
-            self.avatarPickerRow
-            self.nicknameRow
-            self.modelPickerRow
-            self.personaEditorSection
-            Divider()
-            self.actionBar
+        VStack(alignment: .leading, spacing: 12) {
+            SettingsGroupCard(title: AppLanguage.text("身份", en: "Identity")) {
+                VStack(alignment: .leading, spacing: 10) {
+                    self.headerSummaryRow
+                    Divider()
+                    self.avatarPickerRow
+                    self.nicknameRow
+                }
+                .padding(12)
+            }
+            
+            SettingsGroupCard(title: AppLanguage.text("模型", en: "Model")) {
+                self.modelPickerRow
+                    .padding(12)
+            }
+            
+            BotProactiveAndWorkspaceCard(
+                botIDString: self.botID.rawValue,
+                proactiveLevel: self.$proactiveLevel,
+                onProactiveChanged: { nextLevel in
+                    self.config.proactiveLevel = nextLevel
+                    self.botStore.updateConfig(self.config, for: self.botID)
+                    self.savedBannerVisible = false
+                }
+            )
+            
+            SettingsGroupCard(title: AppLanguage.text("人设", en: "Persona")) {
+                VStack(alignment: .leading, spacing: 10) {
+                    self.personaEditorSection
+                    Divider()
+                    self.actionBar
+                }
+                .padding(12)
+            }
         }
-        .padding(14)
-        .background(self.cardSurface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 1))
         .task(id: self.botID) {
             self.loadInitialState()
         }
@@ -3251,48 +1682,64 @@ private struct AIBotInlineInspectorView: View {
     private var headerSummaryRow: some View {
         let accent = Color(hexString: self.resolvedCharacter?.accentHex ?? self.botID.accentHex)
         let shownName = self.displayedNickname
-        return HStack(spacing: 14) {
+        return HStack(spacing: 10) {
             ZStack {
-                Color(red: 0.965, green: 0.969, blue: 0.980)
                 if let portrait = self.displayedPortrait {
                     Image(nsImage: portrait)
                         .resizable()
                         .interpolation(.high)
                         .scaledToFill()
-                        .frame(width: 72, height: 72, alignment: .center)
+                        .frame(width: 44, height: 44, alignment: .center)
                 } else {
+                    accent.opacity(0.16)
                     Text(String(shownName.prefix(1)))
-                        .font(.system(size: 22, weight: .semibold))
+                        .font(.system(size: 18, weight: .semibold))
                         .foregroundStyle(accent)
                 }
             }
-            .frame(width: 72, height: 72)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .frame(width: 44, height: 44)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(accent.opacity(0.32), lineWidth: 0.85)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(self.cardBorder, lineWidth: 0.75)
             )
             
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(shownName)
-                    .font(.system(size: 15, weight: .semibold))
-                Text(self.selectedModelLabel)
+                    .font(.system(size: 14, weight: .semibold))
+                Text(self.botID.handle)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer()
+            
+            Spacer(minLength: 6)
+            
+            if self.botID != .butler {
+                Toggle("", isOn: self.$config.isEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                    .onChange(of: self.config.isEnabled) { _, _ in
+                        self.botStore.updateConfig(self.config, for: self.botID)
+                    }
+            }
+            
+            Button(AppLanguage.text("打开对话", en: "Open Chat")) {
+                _ = self.butlerManager.openDirectChat(botID: self.botID.rawValue)
+                self.butlerManager.requestOpenHub()
+            }
+            .controlSize(.small)
         }
     }
     
     private var avatarPickerRow: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Text(AppLanguage.text("头像", en: "Avatar"))
                 .font(.system(size: 12.5, weight: .medium))
                 .foregroundStyle(.secondary)
-                .frame(width: 74, alignment: .leading)
+                .frame(width: 52, alignment: .leading)
             
-            Button(AppLanguage.text("上传头像", en: "Upload Avatar")) {
+            Button(AppLanguage.text("上传", en: "Upload")) {
                 self.pickCustomAvatar()
             }
             .controlSize(.small)
@@ -3330,11 +1777,11 @@ private struct AIBotInlineInspectorView: View {
     }
     
     private var nicknameRow: some View {
-        HStack(spacing: 10) {
-            Text(AppLanguage.text("昵称", en: "Nickname"))
+        HStack(spacing: 8) {
+            Text(AppLanguage.text("名称", en: "Name"))
                 .font(.system(size: 12.5, weight: .medium))
                 .foregroundStyle(.secondary)
-                .frame(width: 74, alignment: .leading)
+                .frame(width: 52, alignment: .leading)
             
             TextField(
                 self.botID == .butler ? "曜" : self.botID.displayName,
@@ -3351,12 +1798,7 @@ private struct AIBotInlineInspectorView: View {
     private var modelPickerRow: some View {
         let activeGatewayTitle = self.activeGatewayGroup?.title ?? "API 网关"
         let defaultModel = self.activeGatewayGroup?.profile.displayModel ?? AIProvider.openCodeGo.defaultModel
-        return HStack(spacing: 10) {
-            Text(AppLanguage.text("后端模型", en: "Model"))
-                .font(.system(size: 12.5, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 74, alignment: .leading)
-            
+        return HStack(spacing: 8) {
             Menu {
                 let isFollowingDefault = (self.config.endpointID == nil && self.config.modelOverride.isEmpty)
                 Button {
@@ -3399,7 +1841,7 @@ private struct AIBotInlineInspectorView: View {
                         .lineLimit(1)
                     Spacer(minLength: 4)
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 9.5, weight: .semibold))
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 10)
@@ -3417,18 +1859,10 @@ private struct AIBotInlineInspectorView: View {
             Button {
                 Task { await self.refreshModels() }
             } label: {
-                HStack(spacing: 4) {
-                    if self.isRefreshingModels {
-                        ProgressView()
-                            .controlSize(.small)
-                            .scaleEffect(0.7)
-                            .frame(width: 12, height: 12)
-                    }
-                    Text(self.isRefreshingModels
-                         ? AppLanguage.text("刷新中", en: "Fetching")
-                         : AppLanguage.text("刷新模型", en: "Refresh"))
-                        .font(.system(size: 11.5))
-                }
+                Text(self.isRefreshingModels
+                     ? AppLanguage.text("刷新中", en: "Fetching")
+                     : AppLanguage.text("刷新", en: "Refresh"))
+                    .font(.system(size: 12))
             }
             .controlSize(.small)
             .disabled(self.isRefreshingModels)
@@ -3436,32 +1870,26 @@ private struct AIBotInlineInspectorView: View {
     }
     
     private var personaEditorSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(AppLanguage.text("性格与情绪", en: "Personality"))
-                .font(.system(size: 12.5, weight: .medium))
-                .foregroundStyle(.secondary)
-            
-            ZStack(alignment: .topLeading) {
-                TextEditor(text: self.$personaDraft)
-                    .font(.system(size: 12.5))
-                    .scrollContentBackground(.hidden)
-                    .padding(6)
-                    .onChange(of: self.personaDraft) { _, _ in
-                        self.savedBannerVisible = false
-                    }
-                if self.personaDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(AppLanguage.text("输入性格、语气与情绪", en: "Describe personality and mood"))
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(.tertiary)
-                        .padding(.horizontal, 11)
-                        .padding(.vertical, 8)
-                        .allowsHitTesting(false)
+        ZStack(alignment: .topLeading) {
+            TextEditor(text: self.$personaDraft)
+                .font(.system(size: 12.5))
+                .scrollContentBackground(.hidden)
+                .padding(6)
+                .onChange(of: self.personaDraft) { _, _ in
+                    self.savedBannerVisible = false
                 }
+            if self.personaDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(AppLanguage.text("性格、语气与边界", en: "Personality and tone"))
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 8)
+                    .allowsHitTesting(false)
             }
-            .frame(height: 88)
-            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 0.8))
         }
+        .frame(height: 82)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(self.cardBorder, lineWidth: 0.8))
     }
     
     private var actionBar: some View {
@@ -3517,6 +1945,7 @@ private struct AIBotInlineInspectorView: View {
     private func loadInitialState() {
         let loaded = self.botStore.config(for: self.botID)
         self.config = loaded
+        self.proactiveLevel = loaded.effectiveProactiveLevel(for: self.botID)
         if self.botID == .butler {
             self.nicknameDraft = self.butlerManager.name
         } else {
@@ -3553,6 +1982,7 @@ private struct AIBotInlineInspectorView: View {
             self.config.customName = cleanNick
             self.config.customNickname = cleanNick
         }
+        self.config.proactiveLevel = self.proactiveLevel
         self.config.customPersona = self.personaDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         self.botStore.updateConfig(self.config, for: self.botID)
         self.onEndpointsUpdated()
