@@ -22,6 +22,7 @@
 import AppKit
 import Defaults
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - Sidebar Navigation Model (11 Focused Tabs in 2 Groups)
 
@@ -228,6 +229,7 @@ private struct SidebarSettingsRootView: View {
     @AppStorage(.documentAppearance) private var documentAppearance
     @State private var studioPalette = StudioPaletteManager.shared
     @State private var dbStatusMessage: String?
+    @State private var isMigratingDatabase: Bool = false
     @State private var databaseRefreshRevision: Int = 0
     @State private var hoveredItem: SidebarSettingsItem?
     @Namespace private var sidebarSelectionNamespace
@@ -430,7 +432,9 @@ private struct SidebarSettingsRootView: View {
                 SidebarProfileSettingsPane(
                     onExportDatabase: { self.exportLocalDatabase() },
                     onImportDatabase: { self.importLocalDatabase() },
-                    refreshRevision: self.databaseRefreshRevision
+                    refreshRevision: self.databaseRefreshRevision,
+                    isMigrating: self.isMigratingDatabase,
+                    migrationStatus: self.dbStatusMessage
                 )
             case .general:
                 SidebarGeneralSettingsPane()
@@ -456,18 +460,33 @@ private struct SidebarSettingsRootView: View {
     }
     
     
+    private static let archiveByteFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useBytes, .useKB, .useMB, .useGB]
+        formatter.countStyle = .file
+        formatter.includesUnit = true
+        return formatter
+    }()
+    
+    
     private func exportLocalDatabase() {
         let savePanel = NSSavePanel()
-        savePanel.nameFieldStringValue = "cot-backup-\(AnalyticsManager.dateKey()).sqlite3"
+        savePanel.nameFieldStringValue = "cot-backup-\(AnalyticsManager.dateKey()).\(MigrationArchiveService.archiveExtension)"
+        if let backupType = UTType(filenameExtension: MigrationArchiveService.archiveExtension) {
+            savePanel.allowedContentTypes = [backupType]
+        }
         savePanel.canCreateDirectories = true
         savePanel.begin { response in
             guard response == .OK, let url = savePanel.url else { return }
             Task { @MainActor in
+                self.isMigratingDatabase = true
+                defer { self.isMigratingDatabase = false }
                 do {
-                    try CotLocalDatabase.shared.exportDatabase(to: url)
-                    self.setTemporaryStatus("✓ 已导出完整备份：\(url.lastPathComponent)")
+                    let result = try await MigrationArchiveService.exportArchive(from: .shared, to: url)
+                    let sizeText = Self.archiveByteFormatter.string(fromByteCount: result.archiveBytes)
+                    self.setTemporaryStatus(AppLanguage.text("已导出 \(sizeText)", en: "Exported \(sizeText)"))
                 } catch {
-                    self.setTemporaryStatus("导出失败：\(error.localizedDescription)")
+                    self.setTemporaryStatus(AppLanguage.text("导出失败：\(error.localizedDescription)", en: "Export failed: \(error.localizedDescription)"))
                 }
             }
         }
@@ -477,15 +496,26 @@ private struct SidebarSettingsRootView: View {
     private func importLocalDatabase() {
         let openPanel = NSOpenPanel()
         openPanel.allowsMultipleSelection = false
+        var allowed: [UTType] = []
+        for ext in [MigrationArchiveService.archiveExtension, "sqlite3", "sqlite", "db"] {
+            if let type = UTType(filenameExtension: ext) {
+                allowed.append(type)
+            }
+        }
+        if !allowed.isEmpty {
+            openPanel.allowedContentTypes = allowed
+        }
         openPanel.begin { response in
             guard response == .OK, let url = openPanel.url else { return }
             Task { @MainActor in
+                self.isMigratingDatabase = true
+                defer { self.isMigratingDatabase = false }
                 do {
-                    try CotLocalDatabase.shared.importDatabase(from: url)
+                    _ = try await MigrationArchiveService.importArchive(from: url, into: .shared)
                     self.databaseRefreshRevision &+= 1
-                    self.setTemporaryStatus("✓ 已恢复本地数据：\(url.lastPathComponent)")
+                    self.setTemporaryStatus(AppLanguage.text("已还原本地数据", en: "Restored backup"))
                 } catch {
-                    self.setTemporaryStatus("导入失败：\(error.localizedDescription)")
+                    self.setTemporaryStatus(AppLanguage.text("导入失败：\(error.localizedDescription)", en: "Import failed: \(error.localizedDescription)"))
                 }
             }
         }

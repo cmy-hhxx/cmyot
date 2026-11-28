@@ -4365,6 +4365,26 @@ struct StarMapSearchResultsHUD: View {
         }
     }
     
+    func reloadFromDatabase() {
+        self.suppressAutoSlotStamp = true
+        defer { self.suppressAutoSlotStamp = false }
+        
+        let rawEnabled = self.database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeEnabled)
+        self.isEnabled = (rawEnabled != "0")
+        let rawFreq = self.database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeFrequency)
+        self.frequency = ScheduleFrequency(rawValue: rawFreq) ?? .daily
+        self.renameUntitledEnabled = self.database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeRenameUntitled) != "0"
+        self.organizeStarMapEnabled = self.database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeStarMap) != "0"
+        self.refreshDashboardEnabled = self.database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeRefreshDashboard) != "0"
+        self.catchUpOnWakeEnabled = self.database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeCatchUpOnWake) != "0"
+        let rawHour = Int(self.database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeHour))
+        let rawMinute = Int(self.database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeMinute))
+        self.scheduledHour = min(23, max(0, rawHour ?? 3))
+        self.scheduledMinute = min(59, max(0, rawMinute ?? 0))
+        self.lastCycleKey = self.database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeLastCycleKey)
+        self.lastSummary = self.database.string(forKey: CotLocalDatabase.ConfigKey.aiScheduledOrganizeLastSummary)
+    }
+    
     var formattedScheduledTime: String {
         String(format: "%02d:%02d", self.scheduledHour, self.scheduledMinute)
     }

@@ -376,6 +376,17 @@ final class ProactiveDailyJournalService {
     }
     
     
+    func reloadFromDatabase() {
+        let rawEnabled = self.database.string(forKey: CotLocalDatabase.ConfigKey.proactiveMenuBarTipsEnabled, default: "true")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        self.tipsEnabled = (rawEnabled != "false" && rawEnabled != "0")
+        self.activeFloatingTip = nil
+        self.reloadLedger(for: Date())
+        self.revision &+= 1
+    }
+    
+    
     isolated deinit {
         self.schedulerTask?.cancel()
     }

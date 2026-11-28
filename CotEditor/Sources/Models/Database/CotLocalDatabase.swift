@@ -2042,9 +2042,26 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         AIBotStore.shared.reloadFromDatabase()
         CotButlerManager.shared.reloadFromDatabase()
         ButlerMeetingRoomManager.shared.reloadFromDatabase()
+        CotMemoryStore.shared.reloadFromDatabase()
+        ScheduledAIDocumentOrganizer.shared.reloadFromDatabase()
+        ProactiveDailyJournalService.shared.reloadFromDatabase()
         UserHabitPredictor.shared.reloadFromDatabase()
         AINextTokenPredictor.shared.reloadForActiveUser()
         AnalyticsManager.shared.reloadFromDatabase()
+    }
+    
+    
+    /// Creates an atomic WAL-checkpointed SQLite snapshot at `destinationURL` without touching live state.
+    func vacuumSnapshot(to destinationURL: URL) throws {
+        self.executeSQL("PRAGMA wal_checkpoint(FULL);")
+        if FileManager.default.fileExists(atPath: destinationURL.path) {
+            try FileManager.default.removeItem(at: destinationURL)
+        }
+        let escapedPath = destinationURL.path.replacingOccurrences(of: "'", with: "''")
+        let vacuumSQL = "VACUUM INTO '\(escapedPath)';"
+        if sqlite3_exec(self.db, vacuumSQL, nil, nil, nil) != SQLITE_OK {
+            try FileManager.default.copyItem(at: self.databaseURL, to: destinationURL)
+        }
     }
     
     
@@ -2060,23 +2077,12 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
             self.syncAllLocalMediaBlobsToDatabase()
         }
         self.syncUserPreferencesToDatabase()
-        
-        self.executeSQL("PRAGMA wal_checkpoint(FULL);")
-        
-        if FileManager.default.fileExists(atPath: destinationURL.path) {
-            try FileManager.default.removeItem(at: destinationURL)
-        }
-        
-        let escapedPath = destinationURL.path.replacingOccurrences(of: "'", with: "''")
-        let vacuumSQL = "VACUUM INTO '\(escapedPath)';"
-        if sqlite3_exec(self.db, vacuumSQL, nil, nil, nil) != SQLITE_OK {
-            try FileManager.default.copyItem(at: self.databaseURL, to: destinationURL)
-        }
+        try self.vacuumSnapshot(to: destinationURL)
     }
     
     
     /// Imports another Cot SQLite database file, replacing/merging documents, media blobs, AI endpoints+keys, user avatar/profile, and configurations.
-    func importDatabase(from sourceURL: URL) throws {
+    func importDatabase(from sourceURL: URL, resetEndpointsIfMissing: Bool = false) throws {
         
         // Validate that the source is a readable SQLite database with our tables
         var checkDB: OpaquePointer?
@@ -2103,7 +2109,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         self.migrateLegacyPromptsIfNeeded()
         self.reloadAll()
         
-        self.restoreAIEndpointsFromDatabase(resetIfMissing: false)
+        self.restoreAIEndpointsFromDatabase(resetIfMissing: resetEndpointsIfMissing)
         self.restoreUserProfileFromDatabase()
         self.restoreUserPreferencesFromDatabase(overwriteExisting: true)
         self.applySyncedDefaultsToUserDefaults()

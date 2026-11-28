@@ -29,6 +29,8 @@ struct SidebarProfileSettingsPane: View {
     let onExportDatabase: () -> Void
     let onImportDatabase: () -> Void
     var refreshRevision: Int = 0
+    var isMigrating: Bool = false
+    var migrationStatus: String? = nil
     
     @State private var profileManager = UserProfileManager.shared
     @State private var isCreatingUser = false
@@ -62,7 +64,9 @@ struct SidebarProfileSettingsPane: View {
             LocalDatabaseSettingsView(
                 onExportDatabase: self.onExportDatabase,
                 onImportDatabase: self.onImportDatabase,
-                refreshRevision: self.refreshRevision
+                refreshRevision: self.refreshRevision,
+                isMigrating: self.isMigrating,
+                migrationStatus: self.migrationStatus
             )
         }
     }
