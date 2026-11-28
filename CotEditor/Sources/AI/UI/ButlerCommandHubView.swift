@@ -239,14 +239,8 @@ final class ToolbarButlerBotButtonView: NSView {
     
     
     @objc private func triggerProactiveTipNow(_ sender: Any?) {
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            if let tip = await ProactiveDailyJournalService.shared.recordProactiveNote(
-                allowRemoteAI: false,
-                showFloatingTip: false
-            ) {
-                ButlerToolbarTipBubbleController.shared.presentTip(tip, preferredAnchor: self)
-            }
+        Task { @MainActor in
+            _ = await CotProactiveDispatchService.shared.tick(manual: true, onlyBotID: AIBotID.butler.rawValue)
         }
     }
     

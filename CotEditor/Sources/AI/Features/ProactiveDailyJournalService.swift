@@ -568,29 +568,10 @@ final class ProactiveDailyJournalService {
     }
     
     
-    // MARK: Periodic Background Scheduler
+    // MARK: Periodic Background Scheduler (Delegated to CotProactiveDispatchService)
     
     func startBackgroundScheduler() {
-        guard !CotLocalDatabase.isRunningUnitTests else { return }
-        guard self.schedulerTask == nil else { return }
-        
-        self.schedulerTask = Task { @MainActor [weak self] in
-            // Initial gentle check shortly after launch
-            try? await Task.sleep(for: .seconds(18))
-            guard !Task.isCancelled, let self else { return }
-            _ = self.ensureTodayDocument()
-            if self.todayTips.isEmpty {
-                _ = await self.recordProactiveNote(allowRemoteAI: false, showFloatingTip: self.tipsEnabled)
-            }
-            
-            // Periodic observation every 22 minutes
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1320))
-                guard !Task.isCancelled else { break }
-                guard self.tipsEnabled else { continue }
-                _ = await self.recordProactiveNote(allowRemoteAI: true, showFloatingTip: true)
-            }
-        }
+        CotProactiveDispatchService.shared.startBackgroundScheduler()
     }
     
     

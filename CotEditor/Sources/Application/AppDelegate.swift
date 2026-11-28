@@ -208,7 +208,7 @@ extension Logger {
         AnalyticsManager.shared.startBackgroundDigestScheduler()
         ScheduledAIDocumentOrganizer.shared.startScheduler()
         ButlerToolbarTipBubbleController.shared.startListening()
-        ProactiveDailyJournalService.shared.startBackgroundScheduler()
+        CotProactiveDispatchService.shared.startBackgroundScheduler()
         ButlerDailyReportService.shared.startBackgroundScheduler()
         AppIconManager.shared.applySavedAppIconOnLaunch()
         
