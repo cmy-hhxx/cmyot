@@ -202,7 +202,30 @@ final class ToolbarButlerBotButtonView: NSView {
         toggleItem.target = self
         toggleItem.state = ProactiveDailyJournalService.shared.tipsEnabled ? .on : .off
         menu.addItem(toggleItem)
+        
+        menu.addItem(.separator())
+        
+        let aiSettingsItem = NSMenuItem(
+            title: AppLanguage.text("API 网关设置…", en: "API Gateway Settings…"),
+            action: #selector(AppDelegate.showAIPreferences(_:)),
+            keyEquivalent: ""
+        )
+        aiSettingsItem.target = NSApp.delegate
+        menu.addItem(aiSettingsItem)
+        
+        let botsSettingsItem = NSMenuItem(
+            title: AppLanguage.text("Bots 设置…", en: "Bots Settings…"),
+            action: #selector(self.openBotsSettings(_:)),
+            keyEquivalent: ""
+        )
+        botsSettingsItem.target = self
+        menu.addItem(botsSettingsItem)
         return menu
+    }
+    
+    
+    @objc private func openBotsSettings(_ sender: Any?) {
+        (NSApp.delegate as? AppDelegate)?.openBotSettings()
     }
     
     

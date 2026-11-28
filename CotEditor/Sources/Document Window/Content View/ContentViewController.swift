@@ -40,43 +40,59 @@ enum WorkspaceCenterIcons {
     
     private static let defaultSize = NSSize(width: 18, height: 18)
     
+    private struct DynamicTint: Sendable {
+        let light: (CGFloat, CGFloat, CGFloat, CGFloat)
+        let dark: (CGFloat, CGFloat, CGFloat, CGFloat)
+        
+        func resolve(for appearance: NSAppearance) -> NSColor {
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            let c = isDark ? self.dark : self.light
+            return NSColor(srgbRed: c.0, green: c.1, blue: c.2, alpha: c.3)
+        }
+    }
     
-    /// Renders an Apple SF Symbol centered inside an exact `18 × 18` toolbar canvas with crisp Apple optical weights.
+    
+    /// Renders a uniform-stroke linear SF Symbol centered inside an exact `18 × 18` toolbar canvas
+    /// with dynamic appearance-aware semantic coloring so dark/light transitions update live.
     @MainActor
     private static func appleToolbarSymbol(
         _ symbolName: String,
         fallback: String? = nil,
-        pointSize: CGFloat = 14.2,
+        pointSize: CGFloat = 14.0,
         weight: NSFont.Weight = .medium,
-        tintColor: NSColor? = nil,
-        isTemplate: Bool,
+        dynamicTint: DynamicTint? = nil,
+        fixedColor: NSColor? = nil,
+        isTemplate: Bool = false,
         size: NSSize = defaultSize
     ) -> NSImage {
         let base = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
             ?? fallback.flatMap { NSImage(systemSymbolName: $0, accessibilityDescription: nil) }
         let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: weight)
         let configured = base?.withSymbolConfiguration(config)
-        let finalSymbol: NSImage? = if let tintColor, !isTemplate, let configured {
-            configured.tinted(with: tintColor)
-        } else {
-            configured
-        }
         
         let image = NSImage(size: size, flipped: false) { rect in
             NSGraphicsContext.current?.shouldAntialias = true
             NSGraphicsContext.current?.imageInterpolation = .high
-            if let sym = finalSymbol {
-                let symSize = sym.size
-                let scale = min(1.0, min((rect.width - 1.5) / max(1, symSize.width), (rect.height - 1.5) / max(1, symSize.height)))
-                let drawW = symSize.width * scale
-                let drawH = symSize.height * scale
-                let drawRect = NSRect(
-                    x: (rect.width - drawW) * 0.5,
-                    y: (rect.height - drawH) * 0.5,
-                    width: drawW,
-                    height: drawH
-                )
-                sym.draw(in: drawRect, from: .zero, operation: .sourceOver, fraction: 1.0)
+            guard let sym = configured else { return true }
+            
+            let symSize = sym.size
+            let scale = min(1.0, min((rect.width - 1.5) / max(1, symSize.width), (rect.height - 1.5) / max(1, symSize.height)))
+            let drawW = symSize.width * scale
+            let drawH = symSize.height * scale
+            let drawRect = NSRect(
+                x: (rect.width - drawW) * 0.5,
+                y: (rect.height - drawH) * 0.5,
+                width: drawW,
+                height: drawH
+            )
+            sym.draw(in: drawRect, from: .zero, operation: .sourceOver, fraction: 1.0)
+            
+            if !isTemplate {
+                let tint = fixedColor ?? dynamicTint?.resolve(for: NSAppearance.currentDrawing())
+                if let tint {
+                    tint.setFill()
+                    drawRect.fill(using: .sourceIn)
+                }
             }
             return true
         }
@@ -85,128 +101,110 @@ enum WorkspaceCenterIcons {
     }
     
     
-    /// Apple HIG icon for 编辑 / 只读 (`editable` toolbar item): `pencil.line` vs unmistakable `lock.fill`.
+    /// Linear icon for 编辑 / 只读 (`editable` toolbar item): slate-blue `pencil.line` vs amber `lock`.
     @MainActor
     static func editableIcon(isEditable: Bool, size: NSSize = defaultSize) -> NSImage {
-        self.appleToolbarSymbol(
-            isEditable ? "pencil.line" : "lock.fill",
-            fallback: isEditable ? "square.and.pencil" : "lock",
+        let tint = isEditable
+            ? DynamicTint(light: (0.28, 0.41, 0.56, 0.94), dark: (0.56, 0.70, 0.84, 0.94))
+            : DynamicTint(light: (0.74, 0.45, 0.12, 0.96), dark: (0.92, 0.68, 0.30, 0.96))
+        return self.appleToolbarSymbol(
+            isEditable ? "pencil.line" : "lock",
+            fallback: isEditable ? "square.and.pencil" : "lock.fill",
             pointSize: 14.0,
             weight: .medium,
-            isTemplate: true,
+            dynamicTint: tint,
             size: size
         )
     }
     
     
-    /// Apple HIG icon for Emoji (`quickEmoji` toolbar item).
-    @MainActor
-    static func quickEmojiIcon(size: NSSize = defaultSize) -> NSImage {
-        self.appleToolbarSymbol(
-            "face.smiling",
-            pointSize: 14.5,
-            weight: .medium,
-            isTemplate: true,
-            size: size
-        )
-    }
-    
-    
-    /// Apple HIG icon for 数据看板: unboxed bar chart (`chart.bar.xaxis` / filled tinted accent when open).
+    /// Linear icon for 数据看板 (`chart.bar.xaxis`), muted teal in rest state and accent-tinted when active.
     @MainActor
     static func analyticsDashboardIcon(isActive: Bool, size: NSSize = defaultSize) -> NSImage {
-        let tint = StudioPaletteManager.shared.activeNSAccentColor
+        let tint = DynamicTint(light: (0.14, 0.49, 0.53, 0.94), dark: (0.38, 0.77, 0.80, 0.94))
         return self.appleToolbarSymbol(
-            isActive ? "chart.bar.fill" : "chart.bar.xaxis",
+            "chart.bar.xaxis",
             fallback: "chart.bar",
             pointSize: 14.0,
-            weight: .medium,
-            tintColor: isActive ? tint : nil,
-            isTemplate: !isActive,
+            weight: isActive ? .semibold : .medium,
+            dynamicTint: isActive ? nil : tint,
+            fixedColor: isActive ? StudioPaletteManager.shared.activeNSAccentColor : nil,
             size: size
         )
     }
     
     
-    /// Apple HIG icon for 深浅外观 (`sun.max` / `moon.stars.fill`).
+    /// Linear icon for 深浅外观 (`sun.max` warm amber / `moon.stars` muted indigo).
     @MainActor
     static func appearanceModeIcon(isDark: Bool, size: NSSize = defaultSize) -> NSImage {
-        self.appleToolbarSymbol(
-            isDark ? "moon.stars.fill" : "sun.max",
-            pointSize: 14.5,
+        let tint = isDark
+            ? DynamicTint(light: (0.34, 0.31, 0.65, 0.94), dark: (0.64, 0.60, 0.92, 0.94))
+            : DynamicTint(light: (0.72, 0.48, 0.10, 0.94), dark: (0.92, 0.72, 0.34, 0.94))
+        return self.appleToolbarSymbol(
+            isDark ? "moon.stars" : "sun.max",
+            pointSize: 14.2,
             weight: .medium,
-            isTemplate: true,
+            dynamicTint: tint,
             size: size
         )
     }
     
     
-    /// Apple HIG icon for 周报中心 (`calendar`).
+    /// Linear icon for 周报中心 (`calendar`), muted terracotta-rose in rest state.
     @MainActor
     static func weeklyReportIcon(isActive: Bool, size: NSSize = defaultSize) -> NSImage {
-        let tint = StudioPaletteManager.shared.activeNSAccentColor
+        let tint = DynamicTint(light: (0.70, 0.31, 0.28, 0.94), dark: (0.90, 0.54, 0.49, 0.94))
         return self.appleToolbarSymbol(
             "calendar",
-            pointSize: 14.2,
-            weight: .medium,
-            tintColor: isActive ? tint : nil,
-            isTemplate: !isActive,
+            pointSize: 14.0,
+            weight: isActive ? .semibold : .medium,
+            dynamicTint: isActive ? nil : tint,
+            fixedColor: isActive ? StudioPaletteManager.shared.activeNSAccentColor : nil,
             size: size
         )
     }
     
     
-    /// Apple HIG icon for 文档中心 (`books.vertical` / `books.vertical.fill`) — distinct book-spine silhouette.
+    /// Linear icon for 文档中心 (`books.vertical`), muted cobalt blue in rest state.
     @MainActor
     static func documentCenterIcon(isActive: Bool, size: NSSize = defaultSize) -> NSImage {
-        let tint = StudioPaletteManager.shared.activeNSAccentColor
+        let tint = DynamicTint(light: (0.20, 0.39, 0.68, 0.94), dark: (0.47, 0.67, 0.93, 0.94))
         return self.appleToolbarSymbol(
-            isActive ? "books.vertical.fill" : "books.vertical",
+            "books.vertical",
             fallback: "doc.on.doc",
-            pointSize: 14.0,
-            weight: .medium,
-            tintColor: isActive ? tint : nil,
-            isTemplate: !isActive,
+            pointSize: 13.8,
+            weight: isActive ? .semibold : .medium,
+            dynamicTint: isActive ? nil : tint,
+            fixedColor: isActive ? StudioPaletteManager.shared.activeNSAccentColor : nil,
             size: size
         )
     }
     
     
-    /// Apple HIG icon for 终端 (`apple.terminal` / `terminal`).
+    /// Linear icon for 终端 (`apple.terminal`), muted emerald green.
     @MainActor
     static func terminalIcon(size: NSSize = defaultSize) -> NSImage {
-        self.appleToolbarSymbol(
+        let tint = DynamicTint(light: (0.16, 0.48, 0.32, 0.94), dark: (0.38, 0.77, 0.56, 0.94))
+        return self.appleToolbarSymbol(
             "apple.terminal",
             fallback: "terminal",
-            pointSize: 14.2,
+            pointSize: 14.0,
             weight: .medium,
-            isTemplate: true,
+            dynamicTint: tint,
             size: size
         )
     }
     
     
-    /// Apple HIG icon for AI 设置 (`sparkles`).
-    @MainActor
-    static func aiSettingsIcon(size: NSSize = defaultSize) -> NSImage {
-        self.appleToolbarSymbol(
-            "sparkles",
-            pointSize: 14.2,
-            weight: .medium,
-            isTemplate: true,
-            size: size
-        )
-    }
-    
-    
-    /// Apple HIG icon for 设置 (`gearshape`).
+    /// Linear icon for 设置 (`gearshape`), neutral slate-graphite.
     @MainActor
     static func settingsIcon(size: NSSize = defaultSize) -> NSImage {
-        self.appleToolbarSymbol(
+        let tint = DynamicTint(light: (0.35, 0.38, 0.43, 0.92), dark: (0.65, 0.69, 0.74, 0.92))
+        return self.appleToolbarSymbol(
             "gearshape",
-            pointSize: 14.2,
+            pointSize: 14.0,
             weight: .medium,
-            isTemplate: true,
+            dynamicTint: tint,
             size: size
         )
     }

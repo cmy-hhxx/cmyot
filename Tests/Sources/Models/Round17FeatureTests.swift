@@ -408,7 +408,6 @@ struct Round17FeatureTests {
         let icons: [NSImage] = [
             WorkspaceCenterIcons.editableIcon(isEditable: true),
             WorkspaceCenterIcons.editableIcon(isEditable: false),
-            WorkspaceCenterIcons.quickEmojiIcon(),
             WorkspaceCenterIcons.analyticsDashboardIcon(isActive: false),
             WorkspaceCenterIcons.analyticsDashboardIcon(isActive: true),
             WorkspaceCenterIcons.appearanceModeIcon(isDark: false),
@@ -418,15 +417,13 @@ struct Round17FeatureTests {
             WorkspaceCenterIcons.documentCenterIcon(isActive: false),
             WorkspaceCenterIcons.documentCenterIcon(isActive: true),
             WorkspaceCenterIcons.terminalIcon(),
-            WorkspaceCenterIcons.aiSettingsIcon(),
             WorkspaceCenterIcons.settingsIcon(),
         ]
         for icon in icons {
             #expect(icon.size.width == 18)
             #expect(icon.size.height == 18)
+            #expect(icon.isTemplate == false)
         }
-        #expect(WorkspaceCenterIcons.analyticsDashboardIcon(isActive: false).isTemplate == true)
-        #expect(WorkspaceCenterIcons.analyticsDashboardIcon(isActive: true).isTemplate == false)
     }
     
     

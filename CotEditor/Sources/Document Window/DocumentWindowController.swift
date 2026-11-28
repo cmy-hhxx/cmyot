@@ -766,8 +766,8 @@ private extension NSViewController {
 
 private extension NSToolbar.Identifier {
     
-    static let document = Self("Document.personal.13")
-    static let directoryDocument = Self("DirectoryDocument")
+    static let document = Self("Document.personal.14")
+    static let directoryDocument = Self("DirectoryDocument.v2")
 }
 
 
@@ -776,7 +776,6 @@ private extension NSToolbarItem.Identifier {
     private static let prefix = "com.coteditor.CotEditor.ToolbarItem."
     
     static let syntax = Self(Self.prefix + "syntaxStyle")
-    static let quickEmoji = Self(Self.prefix + "quickEmoji")
     static let analyticsDashboard = Self(Self.prefix + "analyticsDashboard")
     static let appearanceMode = Self(Self.prefix + "appearanceMode")
     static let weeklyReportCenter = Self(Self.prefix + "weeklyReportCenter")
@@ -812,7 +811,6 @@ private extension NSToolbarItem.Identifier {
     
     static let keepOnTop = Self(Self.prefix + "keepOnTop")
     static let terminal = Self(Self.prefix + "terminal")
-    static let aiSettings = Self(Self.prefix + "aiSettings")
     static let editable = Self(Self.prefix + "editable")
     static let spellCheck = Self(Self.prefix + "spellCheck")
     static let emojiAndSymbols = Self(Self.prefix + "emojiAndSymbols")
@@ -839,13 +837,11 @@ extension DocumentWindowController: NSToolbarDelegate {
         
         Set(self.directoryIdentifiers).union([
             .editable,
-            .quickEmoji,
             .appearanceMode,
             .analyticsDashboard,
             .weeklyReportCenter,
             .documentCenter,
             .terminal,
-            .aiSettings,
             .settings,
             .flexibleSpace,
             .butlerBot,
@@ -859,7 +855,6 @@ extension DocumentWindowController: NSToolbarDelegate {
         
         self.directoryIdentifiers + [
             .editable,
-            .quickEmoji,
             .appearanceMode,
             .space,
             .analyticsDashboard,
@@ -870,7 +865,6 @@ extension DocumentWindowController: NSToolbarDelegate {
             .textScale,
             .space,
             .terminal,
-            .aiSettings,
             .settings,
             .flexibleSpace,
             .butlerBot,
@@ -884,7 +878,6 @@ extension DocumentWindowController: NSToolbarDelegate {
         
         var identifiers = self.directoryIdentifiers + [
             .editable,
-            .quickEmoji,
             .appearanceMode,
             .analyticsDashboard,
             .weeklyReportCenter,
@@ -893,7 +886,6 @@ extension DocumentWindowController: NSToolbarDelegate {
             .textScale,
             .textSize,
             .terminal,
-            .aiSettings,
             .settings,
             .butlerBot,
             .pinnedTodos,
@@ -959,17 +951,6 @@ extension DocumentWindowController: NSToolbarDelegate {
                 item.view = slider
                 item.isNavigational = true
                 item.visibilityPriority = .high
-                return item
-                
-            case .quickEmoji:
-                let item = NSMenuToolbarItem(itemIdentifier: itemIdentifier)
-                item.isBordered = true
-                item.showsIndicator = false
-                item.isNavigational = true
-                item.label = AppLanguage.text("表情", en: "Emoji")
-                item.toolTip = AppLanguage.text("插入常用标点与表情", en: "Frequently used emoji")
-                item.image = WorkspaceCenterIcons.quickEmojiIcon()
-                item.menu = Self.quickEmojiMenu()
                 return item
                 
             case .analyticsDashboard:
@@ -1055,18 +1036,6 @@ extension DocumentWindowController: NSToolbarDelegate {
                 item.image = WorkspaceCenterIcons.settingsIcon()
                 item.target = NSApp.delegate
                 item.action = #selector(AppDelegate.showSettingsWindow(_:))
-                item.isNavigational = true
-                item.visibilityPriority = .high
-                return item
-                
-            case .aiSettings:
-                let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-                item.isBordered = true
-                item.label = "AI"
-                item.toolTip = AppLanguage.text("配置 API 网关与 Bots", en: "Configure API Gateways & Bots")
-                item.image = WorkspaceCenterIcons.aiSettingsIcon()
-                item.target = NSApp.delegate
-                item.action = #selector(AppDelegate.showAIPreferences(_:))
                 item.isNavigational = true
                 item.visibilityPriority = .high
                 return item
@@ -1435,12 +1404,12 @@ extension DocumentWindowController {
     ]
     
     
-    static func quickEmojiMenu() -> NSMenu {
+    static func quickEmojiMenu(onSelect: ((String) -> Void)? = nil) -> NSMenu {
         
         let menu = NSMenu()
         for emojis in Self.quickEmojiRows {
             let item = NSMenuItem()
-            item.view = EmojiMenuRowView(emojis: emojis)
+            item.view = EmojiMenuRowView(emojis: emojis, onSelect: onSelect)
             menu.addItem(item)
         }
         
@@ -1508,19 +1477,28 @@ extension DocumentWindowController {
 }
 
 
-/// One compact horizontal row of emoji buttons, used by the toolbar's emoji menu.
+/// One compact horizontal row of emoji buttons, used by the editor's quick emoji menu.
 final class EmojiMenuRowView: NSView {
     
-    init(emojis: [String]) {
+    private let onSelect: ((String) -> Void)?
+    
+    init(emojis: [String], onSelect: ((String) -> Void)? = nil) {
         
+        self.onSelect = onSelect
         let buttonSize: CGFloat = 30
         super.init(frame: NSRect(x: 0, y: 0,
-                                 width: CGFloat(emojis.count) * (buttonSize + 2),
+                                 width: CGFloat(emojis.count) * (buttonSize + 2) + 8,
                                  height: buttonSize))
         
-        let stack = NSStackView(views: emojis.map { emoji in
-            let button = NSButton(title: emoji, target: nil,
-                                  action: #selector(DocumentViewController.insertQuickEmojiFromButton(_:)))
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.spacing = 2
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        self.addSubview(stack)
+        
+        for emoji in emojis {
+            let button = NSButton(title: emoji, target: self,
+                                  action: #selector(self.handleEmojiTap(_:)))
             button.isBordered = false
             button.setButtonType(.momentaryPushIn)
             button.font = Self.buttonFont
@@ -1529,20 +1507,27 @@ final class EmojiMenuRowView: NSView {
                 button.widthAnchor.constraint(equalToConstant: buttonSize),
                 button.heightAnchor.constraint(equalToConstant: buttonSize),
             ])
-            return button
-        })
-        
-        stack.orientation = .horizontal
-        stack.spacing = 2
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        self.addSubview(stack)
+            stack.addArrangedSubview(button)
+        }
         
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: self.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: self.trailingAnchor),
+            stack.leadingAnchor.constraint(equalTo: self.leadingAnchor, constant: 4),
+            stack.trailingAnchor.constraint(equalTo: self.trailingAnchor, constant: -4),
             stack.topAnchor.constraint(equalTo: self.topAnchor),
             stack.bottomAnchor.constraint(equalTo: self.bottomAnchor),
         ])
+    }
+    
+    
+    @objc private func handleEmojiTap(_ sender: NSButton) {
+        
+        let emoji = sender.title
+        self.enclosingMenuItem?.menu?.cancelTracking()
+        if let onSelect = self.onSelect {
+            onSelect(emoji)
+        } else {
+            NSApp.sendAction(#selector(DocumentViewController.insertQuickEmojiFromButton(_:)), to: nil, from: sender)
+        }
     }
     
     

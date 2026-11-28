@@ -2499,6 +2499,27 @@ final class EditorTextView: NSTextView, CurrentLineHighlighting, MultiCursorEdit
             ))
         }
         
+        let emojiSubmenu = DocumentWindowController.quickEmojiMenu(onSelect: { [weak self] emoji in
+            guard let self, self.isEditable else { return }
+            self.insertText(emoji, replacementRange: self.selectedRange())
+        })
+        emojiSubmenu.addItem(.separator())
+        emojiSubmenu.addItem(self.makeContextMenuItem(
+            title: AppLanguage.text("更多表情与符号…", en: "Emoji & Symbols Panel…"),
+            symbol: "face.smiling",
+            action: #selector(NSApplication.orderFrontCharacterPalette(_:)),
+            target: nil,
+            enabled: state.isEditable
+        ))
+        let emojiRoot = self.makeContextMenuItem(
+            title: AppLanguage.text("表情与符号", en: "Emoji & Symbols"),
+            symbol: "face.smiling",
+            action: nil,
+            enabled: state.isEditable
+        )
+        emojiRoot.submenu = emojiSubmenu
+        menu.addItem(emojiRoot)
+        
         menu.addItem(self.makeContextMenuItem(
             title: AIAction.ocrPolish.title,
             symbol: "doc.text.viewfinder",
