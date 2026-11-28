@@ -29,6 +29,9 @@ import UniformTypeIdentifiers
 @MainActor
 final class ToolbarButlerBotButtonView: NSView {
     
+    private static var openPanelCount: Int = 0
+    static var isAnyPanelVisible: Bool { Self.openPanelCount > 0 }
+    
     private final class ButlerFloatingPanel: NSPanel {
         override var canBecomeKey: Bool { true }
         override var canBecomeMain: Bool { false }
@@ -276,6 +279,12 @@ final class ToolbarButlerBotButtonView: NSView {
             self.closeFloatingPanel()
             return
         }
+        if let unreadSession = CotButlerManager.shared.mostRecentUnreadSession {
+            ButlerMeetingRoomManager.shared.setActive(false)
+            CotButlerManager.shared.selectSession(unreadSession.id)
+        } else if let active = CotButlerManager.shared.activeSession, active.unreadCount > 0 {
+            CotButlerManager.shared.selectSession(active.id)
+        }
         self.showFloatingPanel()
     }
     
@@ -395,6 +404,7 @@ final class ToolbarButlerBotButtonView: NSView {
         
         self.panel = panel
         self.panelHosting = hosting
+        Self.openPanelCount += 1
         self.installMonitors(hostWindow: hostWindow, panel: panel)
     }
     
@@ -520,6 +530,7 @@ final class ToolbarButlerBotButtonView: NSView {
             panel.parent?.removeChildWindow(panel)
             panel.orderOut(nil)
             self.panel = nil
+            Self.openPanelCount = max(0, Self.openPanelCount - 1)
         }
         self.panelHosting = nil
     }
@@ -564,6 +575,7 @@ private struct ButlerToolbarCapsuleLabel: View {
                 .foregroundStyle(tokens.primaryInk)
                 .lineLimit(1)
             
+            let unreadTotal = self.butler.totalUnreadCount
             if self.butler.isStreaming {
                 DissolveThinkingOrbView(
                     state: .thinking,
@@ -572,6 +584,18 @@ private struct ButlerToolbarCapsuleLabel: View {
                     interactive: false,
                     color: tokens.accent
                 )
+            } else if unreadTotal > 0 {
+                Text(unreadTotal > 99 ? "99+" : "\(unreadTotal)")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(tokens.canvasTop)
+                    .padding(.horizontal, 5)
+                    .frame(minWidth: 16)
+                    .frame(height: 16)
+                    .background(
+                        Capsule()
+                            .fill(tokens.primaryInk.opacity(0.85))
+                    )
             } else if self.journalService.unreadCount > 0 {
                 Circle()
                     .fill(tokens.accent)
@@ -820,7 +844,10 @@ struct ButlerCommandHubView: View {
                 workspaceID: $0.workspaceID,
                 workspacePath: $0.workspacePath,
                 workspaceName: $0.workspaceName,
-                sortOrder: $0.sortOrder
+                sortOrder: $0.sortOrder,
+                botID: $0.botID,
+                unreadCount: $0.unreadCount,
+                lastMessagePreview: $0.lastMessagePreview
             )
         }
         
@@ -930,6 +957,36 @@ struct ButlerCommandHubView: View {
             )
         }
         
+        let contactSeeds: [IMContactSeed] = [
+            IMContactSeed(
+                id: AIBotID.butler.rawValue,
+                name: self.butler.name,
+                nickname: self.butler.nickname,
+                handle: AIBotID.butler.handle,
+                tagline: AIBotID.butler.tagline,
+                accentHex: AIBotID.butler.accentHex,
+                avatarURL: avatarDataURL ?? CotMediaSchemeHandler.botAvatarURLString(botID: AIBotID.butler.rawValue, revision: avatarRev),
+                isCustom: false,
+                isButler: true
+            ),
+        ] + availableBots.map { bot in
+            IMContactSeed(
+                id: bot.id,
+                name: bot.name,
+                nickname: bot.nickname,
+                handle: bot.handle,
+                tagline: bot.tagline,
+                accentHex: bot.accentHex,
+                avatarURL: bot.avatarURL,
+                isCustom: bot.isCustom ?? false,
+                isButler: false
+            )
+        }
+        let contacts = IMContactListBuilder.build(sessions: self.butler.sessions, bots: contactSeeds)
+        let activeBotID = self.butler.activeSession?.botID ?? AIBotID.butler.rawValue
+        let activeBotName = contacts.first(where: { $0.id == activeBotID })?.name ?? self.butler.name
+        let totalUnread = self.butler.totalUnreadCount
+        
         return BeautifulAgentHostStatePayload(
             mode: "butler",
             isDark: isDark,
@@ -948,7 +1005,7 @@ struct ButlerCommandHubView: View {
             isStreaming: isActiveSessionStreaming,
             streamingStatusLabel: isActiveSessionStreaming && !self.butler.streamingStatusLabel.isEmpty ? self.butler.streamingStatusLabel : nil,
             errorMessage: self.butler.lastErrorMessage,
-            placeholder: AppLanguage.text("输入问题，输入 @ 引用文档或指派 Bots", en: "Ask anything, or type @ for docs & bots"),
+            placeholder: AppLanguage.text("发消息给 \(activeBotName)", en: "Message \(activeBotName)"),
             greetingName: greetingName,
             greetingSubtitle: nil,
             articleTitle: nil,
@@ -976,7 +1033,10 @@ struct ButlerCommandHubView: View {
             activeMeetingSessionID: self.meetingRoom.activeSessionID,
             stickerCatalog: stickerCatalog,
             userAvatarURL: CotMediaSchemeHandler.userAvatarURLString(revision: userAvatarRev),
-            onlineStickerExpansionEnabled: OnlineStickerSearchService.isAutoExpansionEnabled
+            onlineStickerExpansionEnabled: OnlineStickerSearchService.isAutoExpansionEnabled,
+            contacts: contacts,
+            activeBotID: activeBotID,
+            totalUnread: totalUnread
         )
     }
     
@@ -1432,6 +1492,16 @@ struct ButlerCommandHubView: View {
         cb.onRefreshStickers = {
             self.stickerStore.syncWithDiskAndDatabase()
             self.webController.syncState(self.buildHostState(), force: true)
+        }
+        cb.onOpenDirectChat = { botID in
+            self.meetingRoom.setActive(false)
+            _ = self.butler.openDirectChat(botID: botID)
+            self.webController.focusComposer()
+        }
+        cb.onNewTopic = {
+            self.meetingRoom.setActive(false)
+            self.butler.startNewTopic()
+            self.webController.focusComposer()
         }
         return cb
     }

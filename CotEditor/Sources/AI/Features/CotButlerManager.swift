@@ -494,6 +494,21 @@ final class CotButlerManager {
         self.sessions.first(where: { $0.id == self.activeSessionID })
     }
     
+    var totalUnreadCount: Int {
+        self.sessions.reduce(0) { $0 + $1.unreadCount }
+    }
+    
+    var mostRecentUnreadSession: ButlerSessionRecord? {
+        self.sessions
+            .filter { $0.unreadCount > 0 }
+            .max { lhs, rhs in
+                if lhs.updatedAt != rhs.updatedAt {
+                    return lhs.updatedAt < rhs.updatedAt
+                }
+                return lhs.createdAt < rhs.createdAt
+            }
+    }
+    
     var activeWorkspaceID: String? {
         self.activeSession?.workspaceID
     }
@@ -2045,12 +2060,13 @@ final class CotButlerManager {
     }
     
     
-    /// Delivers a proactive direct message from a specific Bot into its DM session (incrementing unread when inactive).
+    /// Delivers a proactive direct message from a specific Bot into its DM session (incrementing unread when inactive or when `countsAsUnread` is true).
     @discardableResult
     func receiveProactiveMessage(
         fromBotID rawBotID: String,
         text: String,
-        metadata: ButlerMessageMetadata = ButlerMessageMetadata()
+        metadata: ButlerMessageMetadata = ButlerMessageMetadata(),
+        countsAsUnread: Bool = false
     ) -> ButlerSessionRecord? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -2069,7 +2085,7 @@ final class CotButlerManager {
             enrichedMeta.delegatedBotID = enrichedMeta.delegatedBotID ?? targetBotID
             enrichedMeta.delegatedBotName = enrichedMeta.delegatedBotName ?? displayTitle
         }
-        self.appendAssistantMessage(trimmed, metadata: enrichedMeta, sessionID: session.id)
+        self.appendAssistantMessage(trimmed, metadata: enrichedMeta, sessionID: session.id, forceUnread: countsAsUnread)
         return self.sessions.first(where: { $0.id == session.id }) ?? session
     }
     
@@ -2083,12 +2099,15 @@ final class CotButlerManager {
     private func recordAssistantTurn(
         _ assistantMsg: ButlerChatMessage,
         resolvedText: String,
-        sessionID: String
+        sessionID: String,
+        forceUnread: Bool = false
     ) {
         self.database.appendButlerMessage(assistantMsg)
         if self.activeSessionID == sessionID {
-            self.database.markSessionRead(id: sessionID)
             self.messages.append(assistantMsg)
+        }
+        if self.activeSessionID == sessionID && !forceUnread {
+            self.database.markSessionRead(id: sessionID)
         } else {
             self.database.incrementSessionUnread(id: sessionID, preview: resolvedText)
         }
@@ -2096,7 +2115,12 @@ final class CotButlerManager {
     }
     
     
-    private func appendAssistantMessage(_ text: String, metadata: ButlerMessageMetadata, sessionID: String) {
+    private func appendAssistantMessage(
+        _ text: String,
+        metadata: ButlerMessageMetadata,
+        sessionID: String,
+        forceUnread: Bool = false
+    ) {
         var enrichedMeta = metadata
         if metadata.errorMessage == nil && !text.isEmpty {
             let botKey = metadata.delegatedBotID ?? AIBotID.butler.rawValue
@@ -2139,7 +2163,7 @@ final class CotButlerManager {
             if self.database === CotLocalDatabase.shared && !CotLocalDatabase.isRunningUnitTests {
                 CotMemoryExtractionAgent.shared.scheduleExtractionIfNeeded(reason: "butler_turn")
             }
-            self.recordAssistantTurn(assistantMsg, resolvedText: resolvedText, sessionID: sessionID)
+            self.recordAssistantTurn(assistantMsg, resolvedText: resolvedText, sessionID: sessionID, forceUnread: forceUnread)
             return
         }
         let assistantMsg = ButlerChatMessage(
@@ -2150,7 +2174,7 @@ final class CotButlerManager {
             actionsJSON: Self.encodeMetadata(enrichedMeta),
             createdAt: Date()
         )
-        self.recordAssistantTurn(assistantMsg, resolvedText: text, sessionID: sessionID)
+        self.recordAssistantTurn(assistantMsg, resolvedText: text, sessionID: sessionID, forceUnread: forceUnread)
     }
     
     

@@ -5,13 +5,15 @@ import MarkdownProse from "./primitives/MarkdownProse";
 import MeetingRoomView from "./primitives/MeetingRoomView";
 import { renderTextWithMentions } from "./primitives/MentionText";
 import PromptBar, { type PromptBarHandle } from "./primitives/PromptBar";
-import SidebarNav from "./primitives/SidebarNav";
+import IMSidebar from "./primitives/IMSidebar";
+import TopicHistoryMenu from "./primitives/TopicHistoryMenu";
 import ThinkingState from "./primitives/ThinkingState";
 import ToolChips from "./primitives/ToolChips";
 import type {
   AgentMessage,
   AttachedDocumentRef,
   HostState,
+  SessionSummary,
   StreamPatch,
   WorkspaceOption,
 } from "./types";
@@ -1029,6 +1031,11 @@ export default function App() {
   const isMeetingRoom = !isNews && Boolean(state.meetingRoomActive);
   const showSidebar = !isNews && state.showSidebar !== false;
   const activeSession = state.sessions.find((s) => s.id === state.activeSessionID);
+  const activeBotID = state.activeBotID || activeSession?.botID || "butler";
+  const contacts = state.contacts ?? [];
+  const activeContact = contacts.find((c) => c.id === activeBotID);
+  const botTopics = state.sessions.filter((s) => (s.botID ?? "butler") === activeBotID);
+  const totalUnread = state.totalUnread ?? contacts.reduce((sum, c) => sum + c.unreadCount, 0);
   const availableWorkspaces = state.availableWorkspaces ?? [];
   const availableDocuments = state.availableDocuments ?? [];
   const availableBots = state.availableBots ?? [];
@@ -1045,47 +1052,30 @@ export default function App() {
     ? state.locale === "zh"
       ? `在「${activeSession.workspaceName}」中提问`
       : `Ask in ${activeSession.workspaceName}`
-    : state.greetingName
-      ? state.locale === "zh"
-        ? `你好，${state.greetingName}`
-        : `Hello, ${state.greetingName}`
-      : state.botName;
+    : activeContact?.name || state.botName;
 
   return (
     <main className="flex h-full w-full overflow-hidden bg-page text-ink">
       {showSidebar && (
-        <SidebarNav
-          botName={state.botName}
-          botAvatarDataURL={state.botAvatarDataURL}
-          sessions={state.sessions}
-          activeSessionID={state.activeSessionID}
-          availableWorkspaces={availableWorkspaces}
+        <IMSidebar
+          contacts={contacts}
+          activeBotID={activeBotID}
+          totalUnread={totalUnread}
           collapsed={sidebarCollapsed}
           locale={state.locale}
-          onToggleCollapse={handleToggleCollapse}
-          onNewChat={handleNewChat}
-          onCreateWorkspace={handleCreateWorkspace}
-          onRenameWorkspace={handleRenameWorkspace}
-          onDeleteWorkspace={handleDeleteWorkspace}
-          onChooseWorkspaceFolder={handleChooseWorkspaceFolder}
-          onUnlinkWorkspaceFolder={handleUnlinkWorkspaceFolder}
-          onReorderWorkspaces={handleReorderWorkspaces}
-          onMoveSession={handleMoveSession}
-          onSelectSession={handleSelectSession}
-          onDeleteSession={handleDeleteSession}
-          onRenameSession={handleRenameSession}
-          onTogglePinSession={handleTogglePinSession}
-          onOpenSettings={handleOpenBotSettings}
           meetingRoomActive={isMeetingRoom}
           meetingRoomIsConvening={Boolean(state.meetingRoomIsConvening)}
           meetingRoomSessions={state.meetingRoomSessions ?? []}
           activeMeetingSessionID={state.activeMeetingSessionID ?? ""}
-          onOpenMeetingRoom={handleOpenMeetingRoom}
-          onNewMeetingSession={() => postToNative("newMeetingSession")}
+          onToggleCollapse={handleToggleCollapse}
+          onOpenDirectChat={(botId) => postToNative("openDirectChat", { botId })}
+          onNewGroup={() => {
+            postToNative("newMeetingSession");
+            postToNative("toggleMeetingRoom", { active: true });
+          }}
           onSelectMeetingSession={(id) => postToNative("selectMeetingSession", { id })}
-          onRenameMeetingSession={(id, title) => postToNative("renameMeetingSession", { id, title })}
-          onDeleteMeetingSession={(id) => postToNative("deleteMeetingSession", { id })}
-          onTogglePinMeetingSession={(id) => postToNative("togglePinMeetingSession", { id })}
+          onOpenCreateBotSheet={() => postToNative("openCreateBotSheet")}
+          onOpenSettings={handleOpenBotSettings}
         />
       )}
 
@@ -1113,7 +1103,7 @@ export default function App() {
             ) : (
               <>
                 <span className="truncate text-[14px] font-semibold text-ink">
-                  {activeSession?.title || state.botName}
+                  {activeContact?.name || state.botName}
                 </span>
                 <WorkspacePickerMenu
                   activeWorkspaceID={activeSession?.workspaceID}
@@ -1152,6 +1142,27 @@ export default function App() {
           </div>
 
           <div className="flex shrink-0 items-center gap-1">
+            {!isNews && !isMeetingRoom && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => postToNative("newTopic")}
+                  className="flex h-7.5 items-center rounded-[7px] px-2 text-[12.5px] font-medium text-ink-2 transition-colors duration-100 hover:bg-hover hover:text-ink"
+                >
+                  {state.locale === "zh" ? "新话题" : "New Topic"}
+                </button>
+                <TopicHistoryMenu
+                  topics={botTopics}
+                  activeSessionID={state.activeSessionID}
+                  locale={state.locale}
+                  onSelectSession={handleSelectSession}
+                  onRenameSession={handleRenameSession}
+                  onDeleteSession={handleDeleteSession}
+                  onTogglePinSession={handleTogglePinSession}
+                />
+              </>
+            )}
+
             {!isNews && isMeetingRoom && (
               <button
                 type="button"
@@ -1215,11 +1226,11 @@ export default function App() {
                 <span>
                   {isMeetingRoom
                     ? state.locale === "zh"
-                      ? "返回总管"
-                      : "Exit Room"
+                      ? "返回"
+                      : "Back"
                     : state.locale === "zh"
-                      ? "会议室"
-                      : "Meeting Room"}
+                      ? "群聊"
+                      : "Group"}
                 </span>
               </button>
             )}
@@ -1454,8 +1465,8 @@ export default function App() {
                   streamingStatusLabel={state.streamingStatusLabel}
                   errorMessage={state.errorMessage}
                   userAvatarURL={state.userAvatarURL}
-                  botAvatarURL={state.botAvatarDataURL}
-                  botName={state.botName}
+                  botAvatarURL={activeContact?.avatarURL || state.botAvatarDataURL}
+                  botName={activeContact?.name || state.botName}
                   onRetry={handleRetry}
                   onInsert={handleInsertToEditor}
                   onOpenNote={handleOpenNewDocument}

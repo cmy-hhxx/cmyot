@@ -109,6 +109,27 @@ nonisolated struct BeautifulAgentSessionPayload: Codable, Equatable, Identifiabl
     var workspacePath: String? = nil
     var workspaceName: String? = nil
     var sortOrder: Int? = nil
+    var botID: String? = nil
+    var unreadCount: Int? = nil
+    var lastMessagePreview: String? = nil
+}
+
+
+nonisolated struct BeautifulAgentContactPayload: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var name: String
+    var nickname: String
+    var handle: String
+    var tagline: String
+    var accentHex: String
+    var avatarURL: String? = nil
+    var isCustom: Bool
+    var isButler: Bool
+    var sessionID: String? = nil
+    var unreadCount: Int
+    var lastMessagePreview: String? = nil
+    var updatedAt: Double? = nil
+    var isPinned: Bool
 }
 
 
@@ -267,6 +288,9 @@ nonisolated struct BeautifulAgentHostStatePayload: Codable, Equatable, Sendable 
     var stickerCatalog: [BeautifulAgentStickerPayload]? = nil
     var userAvatarURL: String? = nil
     var onlineStickerExpansionEnabled: Bool? = nil
+    var contacts: [BeautifulAgentContactPayload]? = nil
+    var activeBotID: String? = nil
+    var totalUnread: Int? = nil
 }
 
 
@@ -336,6 +360,8 @@ struct BeautifulAgentWebActionCallbacks {
     var onOpenCreateBotSheet: (() -> Void)? = nil
     var onOpenBotConfig: ((String) -> Void)? = nil
     var onRefreshStickers: (() -> Void)? = nil
+    var onOpenDirectChat: ((String) -> Void)? = nil
+    var onNewTopic: (() -> Void)? = nil
 }
 
 
@@ -901,6 +927,14 @@ struct BeautifulAgentWebView: NSViewRepresentable, Equatable {
                     
                 case "refreshStickers":
                     self.callbacks.onRefreshStickers?()
+                    
+                case "openDirectChat":
+                    if let botID = dict["botId"] as? String, !botID.isEmpty {
+                        self.callbacks.onOpenDirectChat?(botID)
+                    }
+                    
+                case "newTopic":
+                    self.callbacks.onNewTopic?()
                     
                 default:
                     break

@@ -216,4 +216,77 @@ struct IMConversationTests {
         #expect(restoredDM?.unreadCount == 1)
         #expect(restoredDM?.lastMessagePreview == "今日两条播客已更新摘要。")
     }
+    
+    
+    @Test func contactListBuilderMergesLatestSessionSumsUnreadAndOrdersButlerFirst() {
+        let older = ButlerSessionRecord(
+            id: "s-trans-1",
+            title: "旧翻译",
+            isPinned: false,
+            createdAt: Date(timeIntervalSince1970: 100),
+            updatedAt: Date(timeIntervalSince1970: 100),
+            botID: "translate",
+            unreadCount: 1,
+            lastMessagePreview: "旧消息"
+        )
+        let newer = ButlerSessionRecord(
+            id: "s-trans-2",
+            title: "新翻译",
+            isPinned: true,
+            createdAt: Date(timeIntervalSince1970: 200),
+            updatedAt: Date(timeIntervalSince1970: 300),
+            botID: "translate",
+            unreadCount: 2,
+            lastMessagePreview: "最新译文已完成"
+        )
+        let customSession = ButlerSessionRecord(
+            id: "s-custom-1",
+            title: "自定义对话",
+            isPinned: false,
+            createdAt: Date(timeIntervalSince1970: 150),
+            updatedAt: Date(timeIntervalSince1970: 150),
+            botID: "custom_1",
+            unreadCount: 4,
+            lastMessagePreview: "自定义回复"
+        )
+        let seeds = [
+            IMContactSeed(id: "custom_1", name: "自定义", nickname: "自", handle: "@c", tagline: "t", accentHex: "#111111", avatarURL: nil, isCustom: true, isButler: false),
+            IMContactSeed(id: "translate", name: "翻译官", nickname: "翻", handle: "@t", tagline: "t", accentHex: "#222222", avatarURL: nil, isCustom: false, isButler: false),
+            IMContactSeed(id: "butler", name: "总管", nickname: "曜", handle: "@b", tagline: "t", accentHex: "#333333", avatarURL: nil, isCustom: false, isButler: true),
+        ]
+        
+        let contacts = IMContactListBuilder.build(sessions: [older, newer, customSession], bots: seeds)
+        #expect(contacts.map(\.id) == ["butler", "translate", "custom_1"])
+        #expect(contacts[0].sessionID == nil)
+        #expect(contacts[0].unreadCount == 0)
+        #expect(contacts[1].sessionID == "s-trans-2")
+        #expect(contacts[1].unreadCount == 3)
+        #expect(contacts[1].lastMessagePreview == "最新译文已完成")
+        #expect(contacts[1].isPinned == true)
+        #expect(contacts[2].unreadCount == 4)
+    }
+    
+    
+    @Test func receiveProactiveMessageCountsAsUnreadEvenForActiveSessionWhenHidden() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appending(path: "CotIMActiveUnreadTest-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        
+        let db = CotLocalDatabase(customURL: dir.appending(path: "active-unread.sqlite3"))
+        let manager = CotButlerManager(database: db)
+        let activeID = manager.activeSessionID
+        
+        let delivered = manager.receiveProactiveMessage(
+            fromBotID: AIBotID.butler.rawValue,
+            text: "晚安复盘已整理完成。",
+            countsAsUnread: true
+        )
+        #expect(delivered?.id == activeID)
+        #expect(manager.totalUnreadCount == 1)
+        #expect(manager.mostRecentUnreadSession?.id == activeID)
+        
+        manager.selectSession(activeID)
+        #expect(manager.totalUnreadCount == 0)
+    }
 }

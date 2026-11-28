@@ -53,6 +53,26 @@ export type SessionSummary = {
   workspacePath?: string | null;
   workspaceName?: string | null;
   sortOrder?: number;
+  botID?: string;
+  unreadCount?: number;
+  lastMessagePreview?: string;
+};
+
+export type ContactSummary = {
+  id: string;
+  name: string;
+  nickname: string;
+  handle: string;
+  tagline: string;
+  accentHex: string;
+  avatarURL?: string | null;
+  isCustom: boolean;
+  isButler: boolean;
+  sessionID?: string | null;
+  unreadCount: number;
+  lastMessagePreview?: string | null;
+  updatedAt?: number | null;
+  isPinned: boolean;
 };
 
 export type WorkspaceOption = {
@@ -246,6 +266,9 @@ export type HostState = {
   stickerCatalog?: StickerItem[];
   userAvatarURL?: string | null;
   onlineStickerExpansionEnabled?: boolean;
+  contacts?: ContactSummary[];
+  activeBotID?: string;
+  totalUnread?: number;
 };
 
 export type StreamPatch = {
