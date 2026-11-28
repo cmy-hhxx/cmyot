@@ -136,11 +136,27 @@ struct Theme: Equatable, Sendable {
         
         if self.selection.usesSystemSetting {
             return .unemphasizedSelectedContentBackgroundColor.forDarkMode(self.isDarkTheme)
-        } else {
-            guard let color = self.selection.color.usingColorSpace(.genericRGB) else { return nil }
-            
-            return NSColor(calibratedWhite: color.lightnessComponent, alpha: 1.0)
         }
+        guard let sel = self.selection.color.usingColorSpace(.sRGB),
+              let bg = self.background.color.usingColorSpace(.sRGB)
+        else {
+            return NSColor(calibratedWhite: self.isDarkTheme ? 1.0 : 0.0, alpha: self.isDarkTheme ? 0.18 : 0.12)
+        }
+        // Preserve translucency as a neutral tint so translucent accent selections never turn opaque dark gray
+        // and stay legible over both solid themes and custom wallpapers.
+        if sel.alphaComponent < 0.92 {
+            let alpha = max(0.10, min(0.24, sel.alphaComponent * 0.65))
+            return NSColor(calibratedWhite: self.isDarkTheme ? 1.0 : 0.0, alpha: alpha)
+        }
+        let a = sel.alphaComponent
+        let r = sel.redComponent * a + bg.redComponent * (1 - a)
+        let g = sel.greenComponent * a + bg.greenComponent * (1 - a)
+        let b = sel.blueComponent * a + bg.blueComponent * (1 - a)
+        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        let clampedWhite: CGFloat = self.isDarkTheme
+            ? max(0.22, min(0.38, luma))
+            : max(0.80, min(0.92, luma))
+        return NSColor(calibratedWhite: clampedWhite, alpha: 1.0)
     }
     
     

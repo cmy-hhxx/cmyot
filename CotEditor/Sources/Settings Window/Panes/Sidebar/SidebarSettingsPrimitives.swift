@@ -27,6 +27,7 @@ enum SettingsDesignTokens {
     static let sidebarWidth: CGFloat = 204
     static let detailWidth: CGFloat = 575 // 204 + 1 + 575 == 780
     static let contentPadding: CGFloat = 24
+    static let cardHorizontalInset: CGFloat = 14
     static let sectionSpacing: CGFloat = 18
     static let sectionTitleSpacing: CGFloat = 6
     static let rowHeight: CGFloat = 42
@@ -64,34 +65,35 @@ struct SettingsSquircleBadge: View {
     let size: CGFloat
     var isSelected: Bool = false
     
+    @Environment(\.colorScheme) private var colorScheme
+    
     var body: some View {
-        let radius = max(5, self.size * 0.27)
+        let isDark = (self.colorScheme == .dark)
+        let radius = max(5, self.size * 0.28)
+        let fillColor: Color = if self.isSelected {
+            Color.white.opacity(0.18)
+        } else {
+            isDark ? Color.white.opacity(0.08) : Color.black.opacity(0.055)
+        }
+        let strokeColor: Color = if self.isSelected {
+            Color.white.opacity(0.28)
+        } else {
+            isDark ? Color.white.opacity(0.10) : Color.black.opacity(0.07)
+        }
+        let glyphColor: Color = self.isSelected ? .white : Color.primary.opacity(0.82)
+        
         RoundedRectangle(cornerRadius: radius, style: .continuous)
-            .fill(
-                LinearGradient(
-                    colors: [self.color.opacity(0.88), self.color],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
+            .fill(fillColor)
             .frame(width: self.size, height: self.size)
             .overlay(
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [Color.white.opacity(self.isSelected ? 0.50 : 0.32), Color.clear],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 0.5
-                    )
+                    .strokeBorder(strokeColor, lineWidth: 0.5)
             )
             .overlay(
                 Image(systemName: self.symbolName)
-                    .font(.system(size: self.size * 0.52, weight: .semibold))
-                    .foregroundStyle(.white)
+                    .font(.system(size: self.size * 0.54, weight: self.isSelected ? .semibold : .medium))
+                    .foregroundStyle(glyphColor)
             )
-            .shadow(color: self.color.opacity(0.22), radius: 1.5, y: 0.5)
     }
 }
 
@@ -109,7 +111,7 @@ struct SettingsGroupCard<Content: View>: View {
                 Text(title)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .padding(.leading, 4)
+                    .padding(.leading, SettingsDesignTokens.cardHorizontalInset)
             }
             
             VStack(alignment: .leading, spacing: 0) {
@@ -151,7 +153,7 @@ struct SettingsItemRow<Control: View>: View {
             
             self.control()
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, SettingsDesignTokens.cardHorizontalInset)
         .padding(.vertical, 6)
         .frame(minHeight: SettingsDesignTokens.rowHeight)
     }
@@ -166,7 +168,7 @@ struct SettingsRowDivider: View {
         Rectangle()
             .fill(self.colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.07))
             .frame(height: 0.5)
-            .padding(.leading, 14)
+            .padding(.horizontal, SettingsDesignTokens.cardHorizontalInset)
     }
 }
 

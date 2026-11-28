@@ -28,6 +28,7 @@ struct SidebarProfileSettingsPane: View {
     
     let onExportDatabase: () -> Void
     let onImportDatabase: () -> Void
+    var onResetAllConfiguration: (() -> Void)? = nil
     var refreshRevision: Int = 0
     var isMigrating: Bool = false
     var migrationStatus: String? = nil
@@ -64,6 +65,7 @@ struct SidebarProfileSettingsPane: View {
             LocalDatabaseSettingsView(
                 onExportDatabase: self.onExportDatabase,
                 onImportDatabase: self.onImportDatabase,
+                onResetAllConfiguration: self.onResetAllConfiguration,
                 refreshRevision: self.refreshRevision,
                 isMigrating: self.isMigrating,
                 migrationStatus: self.migrationStatus

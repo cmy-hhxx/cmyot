@@ -111,10 +111,53 @@ type UnifiedMessageItem =
       sessionID: string;
       name: string;
       preview: string;
+      participantIDs: string[];
       participantCount: number;
       updatedAt: number;
       isPinned: boolean;
     };
+
+function GroupAvatarMosaic({
+  participantIDs,
+  contacts,
+}: {
+  participantIDs: string[];
+  contacts: ContactSummary[];
+}) {
+  const members = participantIDs
+    .slice(0, 4)
+    .map((id) => contacts.find((c) => c.id === id))
+    .filter((c): c is ContactSummary => Boolean(c));
+
+  if (members.length === 0) {
+    return (
+      <span className="flex size-7 shrink-0 items-center justify-center rounded-[7px] bg-inset text-ink-2 shadow-hairline">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round">
+          <circle cx="9" cy="8.5" r="2.8" />
+          <path d="M3.5 19a5.5 5.5 0 0 1 11 0" />
+        </svg>
+      </span>
+    );
+  }
+
+  return (
+    <span className="grid size-7 shrink-0 grid-cols-2 grid-rows-2 gap-[1.5px] overflow-hidden rounded-[7px] bg-inset p-[1.5px] shadow-hairline">
+      {members.map((m) => (
+        <span
+          key={m.id}
+          className="flex items-center justify-center overflow-hidden rounded-[2px] bg-surface"
+          style={!m.avatarURL ? { backgroundColor: `${m.accentHex}24`, color: m.accentHex } : undefined}
+        >
+          {m.avatarURL ? (
+            <img src={m.avatarURL} alt={m.name} className="size-full object-cover" />
+          ) : (
+            <span className="text-[9px] font-bold leading-none">{m.name.slice(0, 1)}</span>
+          )}
+        </span>
+      ))}
+    </span>
+  );
+}
 
 export type IMSidebarProps = {
   contacts: ContactSummary[];
@@ -128,8 +171,12 @@ export type IMSidebarProps = {
   activeMeetingSessionID?: string;
   onToggleCollapse: () => void;
   onOpenDirectChat: (botID: string) => void;
+  onNewButlerChat?: () => void;
+  onDeleteBotHistory?: (botID: string) => void;
   onNewGroup: () => void;
   onSelectMeetingSession: (id: string) => void;
+  onTogglePinMeetingSession?: (id: string) => void;
+  onDissolveMeetingSession?: (id: string) => void;
   onOpenCreateBotSheet?: () => void;
   onOpenSettings: () => void;
 };
@@ -146,8 +193,12 @@ const IMSidebar = memo(function IMSidebar({
   activeMeetingSessionID = "",
   onToggleCollapse,
   onOpenDirectChat,
+  onNewButlerChat,
+  onDeleteBotHistory,
   onNewGroup,
   onSelectMeetingSession,
+  onTogglePinMeetingSession,
+  onDissolveMeetingSession,
   onOpenCreateBotSheet,
   onOpenSettings,
 }: IMSidebarProps) {
@@ -155,6 +206,7 @@ const IMSidebar = memo(function IMSidebar({
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [collapsedGroupMap, setCollapsedGroupMap] = useState<Record<string, boolean>>(() => loadCollapsedGroups());
+  const [confirmTargetID, setConfirmTargetID] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -183,9 +235,11 @@ const IMSidebar = memo(function IMSidebar({
 
   const cleanQuery = query.trim().toLowerCase();
 
+  const butlerContact = useMemo(() => contacts.find((c) => c.isButler) ?? null, [contacts]);
+
   const messageItems = useMemo<UnifiedMessageItem[]>(() => {
     const dmItems: UnifiedMessageItem[] = contacts
-      .filter((c) => Boolean(c.sessionID))
+      .filter((c) => Boolean(c.sessionID) && !c.isButler)
       .map((c) => ({
         kind: "dm" as const,
         id: `dm:${c.id}`,
@@ -204,7 +258,8 @@ const IMSidebar = memo(function IMSidebar({
       id: `grp:${g.id}`,
       sessionID: g.id,
       name: g.title,
-      preview: locale === "zh" ? `${g.participantIDs.length} 位群成员` : `${g.participantIDs.length} members`,
+      preview: locale === "zh" ? `${g.participantIDs.length} 位成员` : `${g.participantIDs.length} members`,
+      participantIDs: g.participantIDs,
       participantCount: g.participantIDs.length,
       updatedAt: g.updatedAt ?? 0,
       isPinned: g.isPinned,
@@ -393,6 +448,60 @@ const IMSidebar = memo(function IMSidebar({
         <div className="bui-scroll mt-2.5 min-h-0 flex-1 overflow-y-auto px-1.5">
           {activeTab === "messages" ? (
             <>
+              {butlerContact && !cleanQuery && (
+                <div className="mb-2.5 px-0.5">
+                  <div
+                    className={`group/butler flex items-center gap-2 rounded-[10px] border px-2 py-2 transition-colors ${
+                      !meetingRoomActive && activeBotID === butlerContact.id
+                        ? "border-line-strong bg-surface shadow-hairline"
+                        : "border-line/70 bg-surface/65 hover:border-line hover:bg-surface"
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => onOpenDirectChat(butlerContact.id)}
+                      className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                    >
+                      <ContactAvatar
+                        name={butlerContact.name}
+                        avatarURL={butlerContact.avatarURL}
+                        accentHex={butlerContact.accentHex}
+                        sizeClass="size-8"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate text-[13px] font-semibold text-ink">{butlerContact.name}</span>
+                          <span className="rounded-[4px] bg-inset px-1 py-0.5 text-[10px] font-medium text-ink-3">
+                            {locale === "zh" ? "总管" : "Chief"}
+                          </span>
+                        </div>
+                        <div className="truncate text-[11.5px] text-ink-3">
+                          {butlerContact.lastMessagePreview || butlerContact.tagline}
+                        </div>
+                      </div>
+                    </button>
+                    {butlerContact.unreadCount > 0 ? (
+                      <span className="inline-flex h-[17px] min-w-[17px] shrink-0 items-center justify-center rounded-full bg-ink/85 px-1 text-[10.5px] font-semibold tabular-nums text-page">
+                        {butlerContact.unreadCount > 99 ? "99+" : butlerContact.unreadCount}
+                      </span>
+                    ) : (
+                      onNewButlerChat && (
+                        <button
+                          type="button"
+                          onClick={onNewButlerChat}
+                          title={locale === "zh" ? "新建总管对话" : "New Butler Chat"}
+                          className="flex size-6 shrink-0 items-center justify-center rounded-[6px] text-ink-3 transition-colors hover:bg-hover-2 hover:text-ink"
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                            <path d="M12 5v14M5 12h14" />
+                          </svg>
+                        </button>
+                      )
+                    )}
+                  </div>
+                </div>
+              )}
+
               <div className="mx-1.5 mb-1.5 flex items-center justify-between">
                 <button
                   type="button"
@@ -431,78 +540,171 @@ const IMSidebar = memo(function IMSidebar({
                     if (item.kind === "dm") {
                       const isActive = !meetingRoomActive && activeBotID === item.botID;
                       const relTime = formatRelativeTime(item.updatedAt, locale);
+                      const isConfirming = confirmTargetID === item.id;
                       return (
-                        <button
+                        <div
                           key={item.id}
-                          type="button"
                           data-row
-                          onClick={() => onOpenDirectChat(item.botID)}
-                          className={`relative z-10 flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left transition-colors ${
+                          className={`group/item relative z-10 flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 transition-colors ${
                             isActive ? "bg-surface text-ink shadow-hairline" : "text-ink-2 hover:text-ink"
                           }`}
                         >
-                          <ContactAvatar name={item.name} avatarURL={item.avatarURL} accentHex={item.accentHex} sizeClass="size-7" />
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center justify-between gap-1.5">
-                              <span className="truncate text-[13px] font-medium text-ink">{item.name}</span>
-                              {relTime && (
-                                <span className="shrink-0 text-[11px] tabular-nums text-ink-3">{relTime}</span>
-                              )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setConfirmTargetID(null);
+                              onOpenDirectChat(item.botID);
+                            }}
+                            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                          >
+                            <ContactAvatar name={item.name} avatarURL={item.avatarURL} accentHex={item.accentHex} sizeClass="size-7" />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center justify-between gap-1.5">
+                                <span className="truncate text-[13px] font-medium text-ink">{item.name}</span>
+                                {relTime && (
+                                  <span className="shrink-0 text-[11px] tabular-nums text-ink-3 group-hover/item:hidden">{relTime}</span>
+                                )}
+                              </div>
+                              <div className="mt-0.5 flex items-center justify-between gap-1.5">
+                                <span className="truncate text-[12px] text-ink-3">{item.preview || " "}</span>
+                                {item.unreadCount > 0 && (
+                                  <span className="inline-flex h-[17px] min-w-[17px] shrink-0 items-center justify-center rounded-full bg-ink/85 px-1 text-[10.5px] font-semibold tabular-nums text-page">
+                                    {item.unreadCount > 99 ? "99+" : item.unreadCount}
+                                  </span>
+                                )}
+                              </div>
                             </div>
-                            <div className="mt-0.5 flex items-center justify-between gap-1.5">
-                              <span className="truncate text-[12px] text-ink-3">{item.preview || " "}</span>
-                              {item.unreadCount > 0 && (
-                                <span className="inline-flex h-[17px] min-w-[17px] shrink-0 items-center justify-center rounded-full bg-ink/85 px-1 text-[10.5px] font-semibold tabular-nums text-page">
-                                  {item.unreadCount > 99 ? "99+" : item.unreadCount}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </button>
+                          </button>
+
+                          {onDeleteBotHistory && (
+                            isConfirming ? (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setConfirmTargetID(null);
+                                  onDeleteBotHistory(item.botID);
+                                }}
+                                onMouseLeave={() => setConfirmTargetID(null)}
+                                className="shrink-0 rounded-[5px] bg-red px-1.5 py-0.5 text-[10.5px] font-medium text-white"
+                              >
+                                {locale === "zh" ? "确认删除" : "Delete"}
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setConfirmTargetID(item.id);
+                                }}
+                                title={locale === "zh" ? "删除聊天记录" : "Delete chat"}
+                                className="hidden size-5 shrink-0 items-center justify-center rounded-[5px] text-ink-3 group-hover/item:flex hover:bg-hover-2 hover:text-red"
+                              >
+                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                                  <path d="M18 6L6 18M6 6l12 12" />
+                                </svg>
+                              </button>
+                            )
+                          )}
+                        </div>
                       );
                     }
 
                     const isActive = meetingRoomActive && activeMeetingSessionID === item.sessionID;
                     const relTime = formatRelativeTime(item.updatedAt, locale);
+                    const isConfirming = confirmTargetID === item.id;
                     return (
-                      <button
+                      <div
                         key={item.id}
-                        type="button"
                         data-row
-                        onClick={() => onSelectMeetingSession(item.sessionID)}
-                        className={`relative z-10 flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 text-left transition-colors ${
+                        className={`group/item relative z-10 flex w-full items-center gap-2 rounded-[8px] px-2 py-1.5 transition-colors ${
                           isActive ? "bg-surface text-ink shadow-hairline" : "text-ink-2 hover:text-ink"
                         }`}
                       >
-                        <span className="flex size-7 shrink-0 items-center justify-center rounded-[7px] bg-inset text-ink-2 shadow-hairline">
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-                            <circle cx="9" cy="8.5" r="2.8" />
-                            <circle cx="16.5" cy="9.5" r="2.2" />
-                            <path d="M3.5 19a5.5 5.5 0 0 1 11 0" />
-                            <path d="M14.5 18.5a4 4 0 0 1 5.5 0" />
-                          </svg>
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center justify-between gap-1.5">
-                            <span className="flex min-w-0 items-center gap-1 truncate text-[13px] font-medium text-ink">
-                              <span className="truncate">{item.name}</span>
-                              {meetingRoomIsConvening && isActive && (
-                                <span className="size-1.5 shrink-0 rounded-full bg-ink/65" />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setConfirmTargetID(null);
+                            onSelectMeetingSession(item.sessionID);
+                          }}
+                          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                        >
+                          <GroupAvatarMosaic participantIDs={item.participantIDs} contacts={contacts} />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center justify-between gap-1.5">
+                              <span className="flex min-w-0 items-center gap-1 truncate text-[13px] font-medium text-ink">
+                                <span className="truncate">{item.name}</span>
+                                <span className="shrink-0 rounded-[4px] bg-inset px-1 text-[10px] font-medium text-ink-3">
+                                  {locale === "zh" ? "群" : "Grp"}
+                                </span>
+                                {meetingRoomIsConvening && isActive && (
+                                  <span className="size-1.5 shrink-0 rounded-full bg-ink/65" />
+                                )}
+                              </span>
+                              {relTime && (
+                                <span className="shrink-0 text-[11px] tabular-nums text-ink-3 group-hover/item:hidden">{relTime}</span>
                               )}
-                            </span>
-                            {relTime && (
-                              <span className="shrink-0 text-[11px] tabular-nums text-ink-3">{relTime}</span>
+                            </div>
+                            <div className="mt-0.5 truncate text-[12px] text-ink-3">{item.preview}</div>
+                          </div>
+                        </button>
+
+                        {isConfirming ? (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setConfirmTargetID(null);
+                              onDissolveMeetingSession?.(item.sessionID);
+                            }}
+                            onMouseLeave={() => setConfirmTargetID(null)}
+                            className="shrink-0 rounded-[5px] bg-red px-1.5 py-0.5 text-[10.5px] font-medium text-white"
+                          >
+                            {locale === "zh" ? "解散" : "Dissolve"}
+                          </button>
+                        ) : (
+                          <div className="hidden shrink-0 items-center gap-0.5 group-hover/item:flex">
+                            {onTogglePinMeetingSession && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onTogglePinMeetingSession(item.sessionID);
+                                }}
+                                title={item.isPinned ? (locale === "zh" ? "取消置顶" : "Unpin") : locale === "zh" ? "置顶" : "Pin"}
+                                className={`flex size-5 items-center justify-center rounded-[5px] hover:bg-hover-2 ${
+                                  item.isPinned ? "text-ink" : "text-ink-3"
+                                }`}
+                              >
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill={item.isPinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2.1">
+                                  <path d="M12 17v5M5 9l7-7 7 7-3 3v4H8v-4z" />
+                                </svg>
+                              </button>
+                            )}
+                            {onDissolveMeetingSession && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setConfirmTargetID(item.id);
+                                }}
+                                title={locale === "zh" ? "解散群聊" : "Dissolve group"}
+                                className="flex size-5 items-center justify-center rounded-[5px] text-ink-3 hover:bg-hover-2 hover:text-red"
+                              >
+                                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                                  <path d="M18 6L6 18M6 6l12 12" />
+                                </svg>
+                              </button>
                             )}
                           </div>
-                          <div className="mt-0.5 truncate text-[12px] text-ink-3">{item.preview}</div>
-                        </div>
-                      </button>
+                        )}
+                      </div>
                     );
                   })}
 
                   {messageItems.length === 0 && (
                     <div className="px-2 py-4 text-center text-[12.5px] text-ink-3">
-                      {locale === "zh" ? "暂无匹配对话" : "No conversations"}
+                      {locale === "zh" ? "暂无群聊或子智能体对话" : "No conversations"}
                     </div>
                   )}
                 </GlideMenu>

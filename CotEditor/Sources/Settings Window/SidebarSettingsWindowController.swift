@@ -50,8 +50,8 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
             case .typography: AppLanguage.text("字体", en: "Fonts")
             case .editing: AppLanguage.text("编辑", en: "Editing")
             case .models: AppLanguage.text("API 网关", en: "API Gateway")
-            case .bots: "Bots"
-            case .memory: "Memory"
+            case .bots: AppLanguage.text("智能体", en: "Bots")
+            case .memory: AppLanguage.text("记忆", en: "Memory")
             case .scheduledTasks: AppLanguage.text("定时任务", en: "Schedules")
             case .keyBindings: AppLanguage.text("快捷键", en: "Shortcuts")
             case .pass: AppLanguage.text("通行证", en: "Pass")
@@ -60,17 +60,17 @@ enum SidebarSettingsItem: String, CaseIterable, Identifiable, Sendable {
     
     var symbolName: String {
         switch self {
-            case .profile: "person.crop.circle.fill"
-            case .general: "gearshape.fill"
-            case .appearance: "paintpalette.fill"
-            case .typography: "textformat.size"
-            case .editing: "square.and.pencil"
+            case .profile: "person.crop.circle"
+            case .general: "gearshape"
+            case .appearance: "paintpalette"
+            case .typography: "textformat"
+            case .editing: "pencil.line"
             case .models: "network"
-            case .bots: "bubble.left.and.bubble.right.fill"
-            case .memory: "list.bullet.indent"
-            case .scheduledTasks: "clock.fill"
-            case .keyBindings: "keyboard.fill"
-            case .pass: "lanyardcard.fill"
+            case .bots: "bubble.left.and.bubble.right"
+            case .memory: "book.closed"
+            case .scheduledTasks: "clock"
+            case .keyBindings: "command"
+            case .pass: "lanyardcard"
         }
     }
     
@@ -336,7 +336,7 @@ private struct SidebarSettingsRootView: View {
                             .transition(.opacity)
                     }
                 }
-                .padding(.horizontal, SettingsDesignTokens.contentPadding)
+                .padding(.horizontal, SettingsDesignTokens.contentPadding + SettingsDesignTokens.cardHorizontalInset)
                 .frame(height: 52)
                 
                 Rectangle()
@@ -432,6 +432,7 @@ private struct SidebarSettingsRootView: View {
                 SidebarProfileSettingsPane(
                     onExportDatabase: { self.exportLocalDatabase() },
                     onImportDatabase: { self.importLocalDatabase() },
+                    onResetAllConfiguration: { self.confirmResetAllLocalConfiguration() },
                     refreshRevision: self.databaseRefreshRevision,
                     isMigrating: self.isMigratingDatabase,
                     migrationStatus: self.dbStatusMessage
@@ -517,6 +518,32 @@ private struct SidebarSettingsRootView: View {
                 } catch {
                     self.setTemporaryStatus(AppLanguage.text("导入失败：\(error.localizedDescription)", en: "Import failed: \(error.localizedDescription)"))
                 }
+            }
+        }
+    }
+    
+    
+    private func confirmResetAllLocalConfiguration() {
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = AppLanguage.text("清除所有本地配置与数据？", en: "Reset All Local Data?")
+        alert.informativeText = AppLanguage.text(
+            "将清空本地文档、记忆、API 网关、Bot 配置、素材库、主题与壁纸设置（系统会自动留存一份安全快照），便于随后直接原样导入其他设备的迁移包。",
+            en: "This wipes all local documents, memories, API gateways, bots, media, themes, and wallpapers after saving a safety snapshot."
+        )
+        alert.addButton(withTitle: AppLanguage.text("清除所有配置", en: "Reset All"))
+        alert.addButton(withTitle: AppLanguage.text("取消", en: "Cancel"))
+        
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Task { @MainActor in
+            self.isMigratingDatabase = true
+            defer { self.isMigratingDatabase = false }
+            do {
+                _ = try await MigrationArchiveService.resetAllLocalData(database: .shared)
+                self.databaseRefreshRevision &+= 1
+                self.setTemporaryStatus(AppLanguage.text("已清除全部本地配置", en: "Reset complete"))
+            } catch {
+                self.setTemporaryStatus(AppLanguage.text("清除失败：\(error.localizedDescription)", en: "Reset failed: \(error.localizedDescription)"))
             }
         }
     }

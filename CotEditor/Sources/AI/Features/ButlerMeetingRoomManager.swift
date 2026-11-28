@@ -383,22 +383,7 @@ final class ButlerMeetingRoomManager {
     
     private func syncNewlyAddedCustomBotsToActiveSession() {
         let enabledCustomIDs = AIBotStore.shared.customBots.filter(\.isEnabled).map(\.id)
-        let brandNewIDs = enabledCustomIDs.filter { !self.knownCustomBotIDs.contains($0) }
         self.knownCustomBotIDs.formUnion(enabledCustomIDs)
-        guard !brandNewIDs.isEmpty, var session = self.activeSession else {
-            self.cachedRosterKey = nil
-            self.revision &+= 1
-            return
-        }
-        var changed = false
-        for cid in brandNewIDs where !session.participantIDs.contains(cid) {
-            session.participantIDs.append(cid)
-            changed = true
-        }
-        if changed {
-            self.database.upsertMeetingRoomSession(session)
-            self.sessions = self.database.fetchMeetingRoomSessions()
-        }
         self.cachedRosterKey = nil
         self.revision &+= 1
     }
@@ -469,17 +454,36 @@ final class ButlerMeetingRoomManager {
     
     
     @discardableResult
-    func createSession(title: String? = nil, botStore: AIBotStore = .shared) -> MeetingRoomSession {
+    func createSession(
+        title: String? = nil,
+        participantIDs: [String]? = nil,
+        ownerID: String = "user",
+        botStore: AIBotStore = .shared
+    ) -> MeetingRoomSession {
         self.abortMeeting()
         let nowMs = Date().timeIntervalSince1970 * 1000
         let cleanTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let resolvedParticipants: [String] = {
+            if let explicit = participantIDs {
+                var seen = Set<String>()
+                let filtered = explicit
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty && seen.insert($0).inserted }
+                if !filtered.isEmpty {
+                    return filtered
+                }
+            }
+            return Self.defaultParticipantIDs(botStore: botStore)
+        }()
+        let resolvedOwner = ownerID.trimmingCharacters(in: .whitespacesAndNewlines)
         let session = MeetingRoomSession(
             id: "mr-sess-\(UUID().uuidString.prefix(8).lowercased())",
             title: cleanTitle.isEmpty ? AppLanguage.text(Self.defaultMeetingTitle, en: "New Meeting") : cleanTitle,
             isPinned: false,
-            participantIDs: Self.defaultParticipantIDs(botStore: botStore),
+            participantIDs: resolvedParticipants,
             createdAtMs: nowMs,
-            updatedAtMs: nowMs
+            updatedAtMs: nowMs,
+            ownerID: resolvedOwner.isEmpty ? "user" : resolvedOwner
         )
         self.database.upsertMeetingRoomSession(session)
         self.sessions = self.database.fetchMeetingRoomSessions()
@@ -543,6 +547,29 @@ final class ButlerMeetingRoomManager {
         self.sessions = remaining
         if self.activeSessionID == sessionID || !remaining.contains(where: { $0.id == self.activeSessionID }) {
             self.activeSessionID = remaining.first?.id ?? ""
+            self.database.set(self.activeSessionID, forKey: CotLocalDatabase.ConfigKey.butlerMeetingRoomActiveSessionID)
+            self.loadMessagesForActiveSession()
+        }
+        self.revision &+= 1
+    }
+    
+    
+    /// Dissolves a user-owned group chat permanently without recreating a phantom default group.
+    func dissolveSession(_ sessionID: String) {
+        if self.activeSessionID == sessionID {
+            self.abortMeeting()
+        }
+        self.database.deleteMeetingRoomSession(id: sessionID)
+        let remaining = self.database.fetchMeetingRoomSessions()
+        self.sessions = remaining
+        if remaining.isEmpty {
+            self.activeSessionID = ""
+            self.messages = []
+            self.botStatuses = [:]
+            self.database.set("", forKey: CotLocalDatabase.ConfigKey.butlerMeetingRoomActiveSessionID)
+            self.setActive(false)
+        } else if self.activeSessionID == sessionID || !remaining.contains(where: { $0.id == self.activeSessionID }) {
+            self.activeSessionID = remaining[0].id
             self.database.set(self.activeSessionID, forKey: CotLocalDatabase.ConfigKey.butlerMeetingRoomActiveSessionID)
             self.loadMessagesForActiveSession()
         }

@@ -293,6 +293,22 @@ nonisolated struct UserProfile: Identifiable, Codable, Sendable, Equatable {
     }
     
     
+    /// Resets the active local profile back to clean defaults (used during full local config wipe).
+    func resetActiveProfileToDefault() {
+        var target = self.activeProfile
+        target.displayName = "默认用户"
+        target.avatarData = nil
+        target.avatarColorHex = "#0A84FF"
+        self.avatarCache.removeValue(forKey: target.id)
+        self.upsertUserRow(target)
+        self.reloadProfiles()
+        if self === Self.shared {
+            CotLocalDatabase.shared.weeklyReportAuthor = target.displayName
+        }
+        NotificationCenter.default.post(name: Self.activeProfileDidChangeNotification, object: self)
+    }
+    
+    
     /// Creates a new isolated local user profile (with its own SQLite database file).
     @discardableResult
     func createProfile(

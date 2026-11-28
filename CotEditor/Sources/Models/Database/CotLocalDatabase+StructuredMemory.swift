@@ -216,6 +216,7 @@ nonisolated struct ButlerSessionRecord: Identifiable, Codable, Sendable, Equatab
     var unreadCount: Int = 0
     var lastMessagePreview: String = ""
     var lastReadAt: Date? = nil
+    var summary: String = ""
     
     var workspaceName: String? {
         if let custom = self.workspaceDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -292,7 +293,7 @@ nonisolated struct QueuedAgentCommand: Identifiable, Codable, Sendable, Equatabl
 
 extension CotLocalDatabase {
     
-    func createStructuredAssetTablesIfNeeded() {
+    func createStructuredAssetTablesIfNeeded(skipStarterSeeds: Bool = false) {
         let sql = """
         CREATE TABLE IF NOT EXISTS schema_migrations (
             version INTEGER PRIMARY KEY,
@@ -467,6 +468,7 @@ extension CotLocalDatabase {
         CREATE INDEX IF NOT EXISTS idx_ai_conv_logs_channel_session ON ai_conversation_logs(channel, session_id, created_at ASC);
         """
         self.executeSQL(sql)
+        self.createAutonomousAgentTablesIfNeeded()
         
         self.ensureButlerMessageSessionColumnExists()
         self.ensureButlerWorkspaceColumnsExist()
@@ -491,8 +493,10 @@ extension CotLocalDatabase {
         }
         sqlite3_finalize(stmt)
         
-        self.seedStarterWatchlistIfNeeded()
-        self.seedUserFocusStocksIfNeeded()
+        if !skipStarterSeeds {
+            self.seedStarterWatchlistIfNeeded()
+            self.seedUserFocusStocksIfNeeded()
+        }
         self.createStickersAndBotsTablesIfNeeded()
         self.createMediaBlobsTableIfNeeded()
     }
@@ -1370,7 +1374,7 @@ extension CotLocalDatabase {
     }
     
     
-    private func tableColumns(_ tableName: String) -> Set<String> {
+    func tableColumns(_ tableName: String) -> Set<String> {
         var existing: Set<String> = []
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(self.db, "PRAGMA table_info(\(tableName));", -1, &stmt, nil) == SQLITE_OK {
@@ -1418,6 +1422,9 @@ extension CotLocalDatabase {
         }
         if !existing.contains("last_read_at") {
             self.executeSQL("ALTER TABLE butler_sessions ADD COLUMN last_read_at REAL;")
+        }
+        if !existing.contains("summary") {
+            self.executeSQL("ALTER TABLE butler_sessions ADD COLUMN summary TEXT NOT NULL DEFAULT '';")
         }
     }
     
@@ -1847,7 +1854,8 @@ extension CotLocalDatabase {
                COALESCE(NULLIF(s.bot_id, ''), 'butler'),
                COALESCE(s.unread_count, 0),
                COALESCE(s.last_message_preview, ''),
-               s.last_read_at
+               s.last_read_at,
+               COALESCE(s.summary, '')
         FROM butler_sessions s
         LEFT JOIN butler_workspaces w ON s.workspace_id = w.id
     """
@@ -1868,6 +1876,7 @@ extension CotLocalDatabase {
         let lastReadAt: Date? = sqlite3_column_type(stmt, 14) == SQLITE_NULL
             ? nil
             : Date(timeIntervalSince1970: sqlite3_column_double(stmt, 14))
+        let summary = sqlite3_column_text(stmt, 15).map { String(cString: $0) } ?? ""
         return ButlerSessionRecord(
             id: String(cString: idCStr),
             title: String(cString: titleCStr),
@@ -1883,7 +1892,8 @@ extension CotLocalDatabase {
             botID: rawBotID.isEmpty ? "butler" : rawBotID,
             unreadCount: unreadCount,
             lastMessagePreview: storedPreview.isEmpty ? preview : storedPreview,
-            lastReadAt: lastReadAt
+            lastReadAt: lastReadAt,
+            summary: summary
         )
     }
     
@@ -2558,5 +2568,156 @@ extension CotLocalDatabase {
         } else {
             sqlite3_bind_null(stmt, index)
         }
+    }
+    
+    
+    // MARK: - Butler Session Summaries & Autonomous Agent Tasks
+    
+    func createAutonomousAgentTablesIfNeeded() {
+        self.executeSQL("""
+        CREATE TABLE IF NOT EXISTS autonomous_agent_tasks (
+            id TEXT PRIMARY KEY,
+            bot_id TEXT NOT NULL,
+            mission_key TEXT NOT NULL,
+            title TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT '',
+            deliverable_type TEXT NOT NULL DEFAULT '',
+            deliverable_id TEXT NOT NULL DEFAULT '',
+            deliverable_title TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'completed',
+            created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_autonomous_tasks_created ON autonomous_agent_tasks(created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_autonomous_tasks_bot ON autonomous_agent_tasks(bot_id, created_at DESC);
+        """)
+    }
+    
+    func updateButlerSessionSummary(id: String, summary: String) {
+        let clean = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty, !clean.isEmpty else { return }
+        let sql = "UPDATE butler_sessions SET summary = ? WHERE id = ?;"
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, String(clean.prefix(600)), -1, self.transientDestructor)
+            sqlite3_bind_text(stmt, 2, id, -1, self.transientDestructor)
+            sqlite3_step(stmt)
+        }
+        sqlite3_finalize(stmt)
+    }
+    
+    
+    func fetchRecentButlerSessionSummaries(
+        forBotID botID: String,
+        excludingSessionID: String? = nil,
+        limit: Int = 5
+    ) -> [ButlerSessionRecord] {
+        let targetBot = botID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "butler" : botID
+        let excluded = excludingSessionID ?? ""
+        let sql = """
+        \(Self.butlerSessionSelectColumns)
+        WHERE COALESCE(NULLIF(s.bot_id, ''), 'butler') = ?
+          AND s.id != ?
+          AND COALESCE(s.summary, '') != ''
+        ORDER BY s.updated_at DESC
+        LIMIT ?;
+        """
+        var stmt: OpaquePointer?
+        var items: [ButlerSessionRecord] = []
+        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, targetBot, -1, self.transientDestructor)
+            sqlite3_bind_text(stmt, 2, excluded, -1, self.transientDestructor)
+            sqlite3_bind_int64(stmt, 3, Int64(max(1, limit)))
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                if let record = self.parseButlerSessionRow(stmt) {
+                    items.append(record)
+                }
+            }
+        }
+        sqlite3_finalize(stmt)
+        return items
+    }
+    
+    
+    nonisolated struct AutonomousTaskRow: Identifiable, Codable, Sendable, Equatable {
+        var id: String
+        var botID: String
+        var missionKey: String
+        var title: String
+        var detail: String
+        var deliverableType: String
+        var deliverableID: String
+        var deliverableTitle: String
+        var status: String
+        var createdAt: Date
+    }
+    
+    
+    func upsertAutonomousTask(_ task: AutonomousTaskRow) {
+        let sql = """
+        INSERT INTO autonomous_agent_tasks (
+            id, bot_id, mission_key, title, detail,
+            deliverable_type, deliverable_id, deliverable_title, status, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            title = excluded.title,
+            detail = excluded.detail,
+            deliverable_type = excluded.deliverable_type,
+            deliverable_id = excluded.deliverable_id,
+            deliverable_title = excluded.deliverable_title,
+            status = excluded.status;
+        """
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, task.id, -1, self.transientDestructor)
+            sqlite3_bind_text(stmt, 2, task.botID, -1, self.transientDestructor)
+            sqlite3_bind_text(stmt, 3, task.missionKey, -1, self.transientDestructor)
+            sqlite3_bind_text(stmt, 4, task.title, -1, self.transientDestructor)
+            sqlite3_bind_text(stmt, 5, task.detail, -1, self.transientDestructor)
+            sqlite3_bind_text(stmt, 6, task.deliverableType, -1, self.transientDestructor)
+            sqlite3_bind_text(stmt, 7, task.deliverableID, -1, self.transientDestructor)
+            sqlite3_bind_text(stmt, 8, task.deliverableTitle, -1, self.transientDestructor)
+            sqlite3_bind_text(stmt, 9, task.status, -1, self.transientDestructor)
+            sqlite3_bind_double(stmt, 10, task.createdAt.timeIntervalSince1970)
+            sqlite3_step(stmt)
+        }
+        sqlite3_finalize(stmt)
+    }
+    
+    
+    func fetchRecentAutonomousTasks(limit: Int = 20) -> [AutonomousTaskRow] {
+        let sql = """
+        SELECT id, bot_id, mission_key, title, detail,
+               deliverable_type, deliverable_id, deliverable_title, status, created_at
+        FROM autonomous_agent_tasks
+        ORDER BY created_at DESC
+        LIMIT ?;
+        """
+        var stmt: OpaquePointer?
+        var items: [AutonomousTaskRow] = []
+        if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_int64(stmt, 1, Int64(max(1, limit)))
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                guard let idCStr = sqlite3_column_text(stmt, 0),
+                      let botCStr = sqlite3_column_text(stmt, 1),
+                      let keyCStr = sqlite3_column_text(stmt, 2),
+                      let titleCStr = sqlite3_column_text(stmt, 3)
+                else { continue }
+                items.append(AutonomousTaskRow(
+                    id: String(cString: idCStr),
+                    botID: String(cString: botCStr),
+                    missionKey: String(cString: keyCStr),
+                    title: String(cString: titleCStr),
+                    detail: sqlite3_column_text(stmt, 4).map { String(cString: $0) } ?? "",
+                    deliverableType: sqlite3_column_text(stmt, 5).map { String(cString: $0) } ?? "",
+                    deliverableID: sqlite3_column_text(stmt, 6).map { String(cString: $0) } ?? "",
+                    deliverableTitle: sqlite3_column_text(stmt, 7).map { String(cString: $0) } ?? "",
+                    status: sqlite3_column_text(stmt, 8).map { String(cString: $0) } ?? "completed",
+                    createdAt: Date(timeIntervalSince1970: sqlite3_column_double(stmt, 9))
+                ))
+            }
+        }
+        sqlite3_finalize(stmt)
+        return items
     }
 }

@@ -315,6 +315,18 @@ final class CotProactiveDispatchService {
                 signals.butlerTipText = await self.resolveButlerTipText(now: now, signals: signals, manual: manual)
             }
             let effectiveLevel: BotProactiveLevel = manual ? .active : candidate.level
+            if !CotLocalDatabase.isRunningUnitTests, self.database === CotLocalDatabase.shared {
+                let reports = await CotAutonomousAgentEngine.shared.runProactivePatrol(
+                    manual: manual,
+                    onlyBotID: candidate.id,
+                    butlerManager: self.butler
+                )
+                if !reports.isEmpty {
+                    ledger = ProactiveDispatchPlanner.recordingSend(ledger, botID: candidate.id, now: now, calendar: calendar)
+                    delivered.append(candidate.id)
+                    continue
+                }
+            }
             guard let text = ProactiveDispatchPlanner.composeMessage(
                 forBotID: candidate.id,
                 botName: candidate.name,

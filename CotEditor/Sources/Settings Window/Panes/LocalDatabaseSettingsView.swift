@@ -27,6 +27,7 @@ struct LocalDatabaseSettingsView: View {
     
     let onExportDatabase: () -> Void
     let onImportDatabase: () -> Void
+    var onResetAllConfiguration: (() -> Void)? = nil
     var refreshRevision: Int = 0
     var isMigrating: Bool = false
     var migrationStatus: String? = nil
@@ -87,6 +88,14 @@ struct LocalDatabaseSettingsView: View {
                         }
                         .controlSize(.small)
                         .disabled(self.isMigrating)
+                        
+                        if let onResetAllConfiguration = self.onResetAllConfiguration {
+                            Button(AppLanguage.text("清除所有配置", en: "Reset All"), role: .destructive) {
+                                onResetAllConfiguration()
+                            }
+                            .controlSize(.small)
+                            .disabled(self.isMigrating)
+                        }
                     }
                 }
                 .padding(14)

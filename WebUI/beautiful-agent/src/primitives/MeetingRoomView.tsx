@@ -16,6 +16,8 @@ import type {
 type MeetingRoomViewProps = {
   locale: "zh" | "en";
   activeSessionID?: string;
+  activeSessionTitle?: string;
+  isOwner?: boolean;
   messages: MeetingRoomMessage[];
   participants: MeetingRoomParticipant[];
   isConvening: boolean;
@@ -33,6 +35,7 @@ type MeetingRoomViewProps = {
   onOpenBotConfig: (botId: string) => void;
   onToggleParticipant?: (botId: string) => void;
   onOpenCreateBot?: () => void;
+  onDissolveSession?: () => void;
   onUploadSticker?: () => void;
   onRefreshStickers?: () => void;
   onToggleFavoriteSticker?: (id: string) => void;
@@ -309,6 +312,8 @@ const ChatMessageBubbleRow = memo(function ChatMessageBubbleRow({
 const MeetingRoomView = memo(function MeetingRoomView({
   locale,
   activeSessionID,
+  activeSessionTitle,
+  isOwner = true,
   messages,
   participants,
   isConvening,
@@ -326,6 +331,7 @@ const MeetingRoomView = memo(function MeetingRoomView({
   onOpenBotConfig,
   onToggleParticipant,
   onOpenCreateBot,
+  onDissolveSession,
   onUploadSticker,
   onRefreshStickers,
   onToggleFavoriteSticker,
@@ -429,12 +435,12 @@ const MeetingRoomView = memo(function MeetingRoomView({
     <div className="relative flex min-h-0 flex-1 overflow-hidden">
       {/* Main Group Chat Feed (full-width WeChat / Teams proportions) */}
       <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
-        {!hasMessages ? (
-          <div className="bui-scroll flex min-h-0 flex-1 flex-col justify-center overflow-y-auto px-5 py-6">
-            <div className="mx-auto flex w-full max-w-[660px] flex-col gap-5">
-              <h1 className="text-[21px] font-semibold tracking-[-0.02em] text-ink">
-                {locale === "zh" ? "会议室" : "Meeting Room"}
-              </h1>
+      {!hasMessages ? (
+        <div className="bui-scroll flex min-h-0 flex-1 flex-col justify-center overflow-y-auto px-5 py-6">
+          <div className="mx-auto flex w-full max-w-[820px] flex-col gap-5">
+            <h1 className="text-[21px] font-semibold tracking-[-0.02em] text-ink">
+              {activeSessionTitle || (locale === "zh" ? "群聊" : "Group Chat")}
+            </h1>
 
               <PromptBar
                 ref={promptBarRef}
@@ -469,7 +475,7 @@ const MeetingRoomView = memo(function MeetingRoomView({
           <>
             <div ref={scrollRef} className="bui-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain">
               <div
-                className="mx-auto flex w-full max-w-[760px] flex-col gap-4 px-4 pt-5"
+                className="mx-auto flex w-full max-w-[820px] flex-col gap-4 px-5 pt-5"
                 style={{ paddingBottom: composerH + 24 }}
               >
                 {messages.map((msg) => (
@@ -499,8 +505,8 @@ const MeetingRoomView = memo(function MeetingRoomView({
               style={{ height: composerH + 26, background: "linear-gradient(to top, var(--page) 68%, transparent)" }}
             />
 
-            <div ref={composerRef} className="absolute inset-x-0 bottom-0 px-3.5 pb-3.5">
-              <div className="mx-auto max-w-[760px]">
+            <div ref={composerRef} className="absolute inset-x-0 bottom-0 px-4 pb-3.5">
+              <div className="mx-auto max-w-[820px]">
                 <PromptBar
                   ref={promptBarRef}
                   inlineBotMentions
@@ -538,11 +544,13 @@ const MeetingRoomView = memo(function MeetingRoomView({
         open={membersDrawerOpen}
         locale={locale}
         participants={participants}
+        isOwner={isOwner}
         onClose={onCloseMembersDrawer}
         onMentionBot={insertBotMention}
         onOpenBotConfig={onOpenBotConfig}
         onToggleParticipant={onToggleParticipant}
         onOpenCreateBot={onOpenCreateBot}
+        onDissolveSession={onDissolveSession}
       />
 
       {/* Lightbox preview */}

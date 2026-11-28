@@ -1178,14 +1178,9 @@ nonisolated struct AIBotConfig: Codable, Sendable, Equatable {
     
     
     func reloadFromDatabase() {
-        for botID in Array(self.customAvatarCache.keys) {
-            let key = "ai.bot.\(botID.rawValue).avatar"
-            let latestRaw = self.database.string(forKey: key)
-            if latestRaw != self.customAvatarRawStrings[botID] {
-                self.customAvatarCache.removeValue(forKey: botID)
-                self.customAvatarRawStrings.removeValue(forKey: botID)
-            }
-        }
+        self.customAvatarCache.removeAll()
+        self.customAvatarRawStrings.removeAll()
+        self.customBotAvatarCache.removeAll()
         let raw = self.database.string(forKey: CotLocalDatabase.ConfigKey.aiBotsConfigJSON)
         if !raw.isEmpty,
            let data = raw.data(using: .utf8),

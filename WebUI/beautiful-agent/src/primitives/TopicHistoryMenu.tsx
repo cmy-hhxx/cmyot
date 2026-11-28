@@ -165,7 +165,7 @@ export default function TopicHistoryMenu({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className={`flex h-7.5 items-center gap-1 rounded-[7px] px-2 text-[12.5px] font-medium transition-colors duration-100 ${
+        className={`flex h-8 items-center gap-1 rounded-[7px] px-2.5 text-[12.5px] font-medium transition-colors duration-100 ${
           open ? "bg-hover-2 text-ink" : "text-ink-2 hover:bg-hover hover:text-ink"
         }`}
       >

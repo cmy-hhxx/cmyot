@@ -651,20 +651,11 @@ nonisolated enum EvalSunburstLayoutEngine {
         ai30Totals: AIUsageTotals
     ) -> Node {
         func featureDisplayName(_ key: String) -> String {
-            switch key.lowercased() {
-                case "completion", "inline", "continue": "续写"
-                case "translate": "翻译"
-                case "summarize": "摘要"
-                case "explain": "解释"
-                case "weeklyreport", "weekly_report": "周报"
-                case "ocrpolish", "ocr": "识图"
-                default: key.isEmpty ? "对话" : key
-            }
+            AnalyticsManager.featureDisplayName(for: key)
         }
         
         func shortName(_ raw: String) -> String {
-            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.count <= 14 ? trimmed : String(trimmed.prefix(13)) + "…"
+            AnalyticsManager.chineseModelDisplayName(raw)
         }
         
         var modelNodes: [Node] = []
@@ -835,7 +826,7 @@ private enum DashboardQuadMetric: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
             case .typed: "今日码字"
-            case .aiUsage: "AI用量"
+            case .aiUsage: "词元用量"
             case .busyness: "忙碌指数"
             case .mood: "心境流向"
         }
@@ -5698,7 +5689,7 @@ private struct DashboardAIUsageWideCard: View {
                         HStack(alignment: .top, spacing: 8) {
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack(spacing: 6) {
-                                    Text(AppLanguage.text("AI 用量", en: "AI Usage"))
+                                    Text(AppLanguage.text("词元用量", en: "AI Usage"))
                                         .font(.system(size: 11.5, weight: .medium))
                                         .foregroundStyle(self.palette.mutedInk)
                                     if totals.requests > 0 {
@@ -5713,7 +5704,7 @@ private struct DashboardAIUsageWideCard: View {
                                         .font(.system(size: cardGeo.size.height < 120 ? 18 : 21, weight: .bold, design: .rounded).monospacedDigit())
                                         .foregroundStyle(self.palette.pine)
                                         .contentTransition(.numericText())
-                                    Text("tok")
+                                    Text(AppLanguage.text("词元", en: "tok"))
                                         .font(.system(size: 11, weight: .regular))
                                         .foregroundStyle(self.palette.mutedInk)
                                 }
@@ -5726,8 +5717,8 @@ private struct DashboardAIUsageWideCard: View {
                                     .font(.system(size: 13.5, weight: .semibold, design: .rounded).monospacedDigit())
                                     .foregroundStyle(self.palette.pine)
                                     .contentTransition(.numericText())
-                                Text(costEstimate.formattedUSD)
-                                    .font(.system(size: 10.5, weight: .regular, design: .monospaced).monospacedDigit())
+                                Text(AppLanguage.text("近30日预估", en: costEstimate.formattedUSD))
+                                    .font(.system(size: 10.5, weight: .regular))
                                     .foregroundStyle(self.palette.mutedInk)
                             }
                         }
@@ -5800,7 +5791,7 @@ private struct DashboardAIUsageWideCard: View {
             let sum = max(1.0, self.snapshot.aiFeatures.reduce(0.0) { $0 + Double(max(1, $1.totalTokens > 0 ? $1.totalTokens : $1.requests)) })
             return self.snapshot.aiFeatures.prefix(3).map { f in
                 let val = Double(max(1, f.totalTokens > 0 ? f.totalTokens : f.requests))
-                return (f.displayName.isEmpty ? f.feature : f.displayName, val / sum)
+                return (AnalyticsManager.featureDisplayName(for: f.feature), val / sum)
             }
         }
         return []
@@ -5817,19 +5808,12 @@ private struct DashboardAIUsageWideCard: View {
     
     
     private static func shortModelLabel(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return AppLanguage.text("默认模型", en: "Default") }
-        if let slash = trimmed.lastIndex(of: "/") {
-            return String(trimmed[trimmed.index(after: slash)...])
-        }
-        return trimmed
+        AnalyticsManager.chineseModelDisplayName(raw)
     }
     
     
     private static func compactTokens(_ value: Int) -> String {
-        if value >= 1_000_000 { return String(format: "%.1fM", Double(value) / 1_000_000.0) }
-        if value >= 1_000 { return String(format: "%.1fK", Double(value) / 1_000.0) }
-        return value.formatted()
+        AnalyticsManager.chineseCompactTokenCount(value)
     }
 }
 
@@ -5917,7 +5901,7 @@ private struct DashboardCompactQuadCard: View {
     private var heroUnitText: String {
         switch self.metric {
             case .typed: "字"
-            case .aiUsage: "tok"
+            case .aiUsage: AppLanguage.text("词元", en: "tok")
             case .busyness: "%"
             case .mood: ""
         }
@@ -5925,10 +5909,7 @@ private struct DashboardCompactQuadCard: View {
     
     
     private func formatTokens(_ value: Int) -> String {
-        if value >= 10_000 {
-            return String(format: "%.1fK", Double(value) / 1000.0)
-        }
-        return value.formatted()
+        AnalyticsManager.chineseCompactTokenCount(value)
     }
     
     
@@ -6497,7 +6478,7 @@ private struct AIUsageSunburstChartView: View {
         if let nextID, let node = self.snapshot.sunburstIndex[nextID] {
             let parentVal = max(1.0, node.parent?.value ?? self.snapshot.sunburstRoot.value)
             let pct = Self.percentString(node.value / parentVal)
-            onHoverDetail("\(node.name) · \(Self.compactTokens(Int(node.value.rounded()))) tok (\(pct))")
+            onHoverDetail("\(node.name) · \(Self.compactTokens(Int(node.value.rounded()))) \(AppLanguage.text("词元", en: "tok")) (\(pct))")
         } else {
             onHoverDetail(nil)
         }
@@ -6734,9 +6715,7 @@ private struct AIUsageSunburstChartView: View {
     
     
     private static func compactTokens(_ value: Int) -> String {
-        if value >= 1_000_000 { return String(format: "%.1fM", Double(value) / 1_000_000.0) }
-        if value >= 1_000 { return String(format: "%.1fK", Double(value) / 1_000.0) }
-        return value.formatted()
+        AnalyticsManager.chineseCompactTokenCount(value)
     }
 }
 

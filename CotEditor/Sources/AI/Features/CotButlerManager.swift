@@ -52,6 +52,7 @@ nonisolated struct ButlerMessageMetadata: Codable, Sendable, Equatable {
     var stickerID: String? = nil
     var stickerURL: String? = nil
     var stickerCaption: String? = nil
+    var workReport: AutonomousWorkReportPayload? = nil
     
     init(
         receipts: [AppliedActionReceipt] = [],
@@ -68,7 +69,8 @@ nonisolated struct ButlerMessageMetadata: Codable, Sendable, Equatable {
         delegatedModel: String? = nil,
         stickerID: String? = nil,
         stickerURL: String? = nil,
-        stickerCaption: String? = nil
+        stickerCaption: String? = nil,
+        workReport: AutonomousWorkReportPayload? = nil
     ) {
         self.receipts = receipts
         self.thinking = thinking
@@ -85,12 +87,13 @@ nonisolated struct ButlerMessageMetadata: Codable, Sendable, Equatable {
         self.stickerID = stickerID
         self.stickerURL = stickerURL
         self.stickerCaption = stickerCaption
+        self.workReport = workReport
     }
     
     enum CodingKeys: String, CodingKey {
         case receipts, thinking, thinkingDurationMs, steps, toolChips, quoteContext, followUps, errorMessage
         case attachedDocuments, delegatedBotID, delegatedBotName, delegatedModel
-        case stickerID, stickerURL, stickerCaption
+        case stickerID, stickerURL, stickerCaption, workReport
     }
     
     init(from decoder: any Decoder) throws {
@@ -110,6 +113,7 @@ nonisolated struct ButlerMessageMetadata: Codable, Sendable, Equatable {
         self.stickerID = try c.decodeIfPresent(String.self, forKey: .stickerID)
         self.stickerURL = try c.decodeIfPresent(String.self, forKey: .stickerURL)
         self.stickerCaption = try c.decodeIfPresent(String.self, forKey: .stickerCaption)
+        self.workReport = try c.decodeIfPresent(AutonomousWorkReportPayload.self, forKey: .workReport)
     }
 }
 
@@ -492,6 +496,10 @@ final class CotButlerManager {
     
     var activeSession: ButlerSessionRecord? {
         self.sessions.first(where: { $0.id == self.activeSessionID })
+    }
+    
+    var currentBotID: String {
+        self.activeSession?.botID ?? AIBotID.butler.rawValue
     }
     
     var totalUnreadCount: Int {
@@ -893,6 +901,83 @@ final class CotButlerManager {
         if !shouldResetStreaming, self.database === CotLocalDatabase.shared {
             PiKernelManager.shared.resetRPCSession(channel: .butler, forceAbort: true)
         }
+    }
+    
+    
+    /// Summarizes a finished session into Tier-2 cross-session memory if it holds conversation turns.
+    func finalizeAndSummarizeSessionIfNeeded(sessionID: String) {
+        let cleanID = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanID.isEmpty else { return }
+        let msgs = self.database.fetchButlerMessages(sessionID: cleanID)
+        guard !msgs.isEmpty else { return }
+        let firstUser = msgs.first(where: { $0.role == "user" })?.content
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\n", with: " ") ?? ""
+        let lastAssistant = msgs.last(where: { $0.role == "assistant" })?.content
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\n", with: " ") ?? ""
+        var parts: [String] = []
+        if !firstUser.isEmpty {
+            parts.append("关注「\(String(firstUser.prefix(80)))」")
+        }
+        if !lastAssistant.isEmpty {
+            parts.append("结论：\(String(lastAssistant.prefix(160)))")
+        }
+        guard !parts.isEmpty else { return }
+        self.database.updateButlerSessionSummary(id: cleanID, summary: parts.joined(separator: "；"))
+        self.sessions = self.database.fetchButlerSessions()
+    }
+    
+    
+    /// Ensures entering Chief Butler starts a fresh conversation while rolling prior dialogue into Tier-2 memory.
+    func prepareFreshButlerEntryIfNeeded() {
+        guard !self.isStreaming else { return }
+        guard self.currentBotID == AIBotID.butler.rawValue else { return }
+        guard !self.messages.isEmpty, (self.activeSession?.unreadCount ?? 0) == 0 else { return }
+        self.finalizeAndSummarizeSessionIfNeeded(sessionID: self.activeSessionID)
+        let botWorkspace = self.database.findButlerWorkspace(botID: AIBotID.butler.rawValue)
+        let fresh = self.database.createButlerSession(
+            title: AppLanguage.text("总管对话", en: "Butler Chat"),
+            workspaceID: botWorkspace?.id ?? self.activeWorkspaceID,
+            workspacePath: botWorkspace?.folderPath ?? self.activeWorkspacePath,
+            botID: AIBotID.butler.rawValue
+        )
+        self.activeSessionID = fresh.id
+        self.database.set(fresh.id, forKey: CotLocalDatabase.ConfigKey.butlerActiveSessionID)
+        self.sessions = self.database.fetchButlerSessions()
+        self.messages = []
+        if self.database === CotLocalDatabase.shared {
+            PiKernelManager.shared.resetRPCSession(channel: .butler, forceAbort: false)
+        }
+    }
+    
+    
+    /// Deletes all chat sessions belonging to a Bot DM cleanly.
+    func deleteBotChats(botID rawBotID: String) {
+        let targetBotID = rawBotID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !targetBotID.isEmpty else { return }
+        let matching = self.sessions.filter { $0.botID == targetBotID }
+        guard !matching.isEmpty else { return }
+        if self.isStreaming, matching.contains(where: { $0.id == self.streamingSessionID || $0.id == self.activeSessionID }) {
+            self.cancelAndResetStreaming(savePartial: false, resetRPC: true)
+        }
+        for s in matching {
+            self.database.deleteButlerSession(id: s.id)
+        }
+        var remaining = self.database.fetchButlerSessions()
+        if remaining.isEmpty {
+            let fresh = self.database.createButlerSession(
+                title: AppLanguage.text("总管对话", en: "Butler Chat"),
+                botID: AIBotID.butler.rawValue
+            )
+            remaining = [fresh]
+        }
+        self.sessions = remaining
+        if !remaining.contains(where: { $0.id == self.activeSessionID }) {
+            self.activeSessionID = remaining.first?.id ?? ""
+            self.database.set(self.activeSessionID, forKey: CotLocalDatabase.ConfigKey.butlerActiveSessionID)
+        }
+        self.messages = self.database.fetchButlerMessages(sessionID: self.activeSessionID)
     }
     
     
@@ -2370,7 +2455,7 @@ final class CotButlerManager {
             lines.append("""
             ## 帮用户执行操作（仅在需要时使用）
             - 当用户明确需要操作编辑器（打开看盘/播客/资讯、新建文档、插入文本、改名、记住偏好、加自选股、找并下载播客等）时，在回复末尾附带 `<cot_actions>[...]</cot_actions>` JSON 数组，系统会自动执行。
-            - 可用操作：`open_board`、`convert_tab`、`open_document`、`insert_to_editor`、`rename_butler`、`update_global_persona`、`update_bot`、`upsert_memory`、`delete_memory`、`watch_stock`、`unwatch_stock`、`follow_feed`、`follow_creator`、`play_podcast`、`curate_podcast`。
+            - 可用操作：`open_board`、`convert_tab`、`open_document`、`insert_to_editor`、`rename_butler`、`update_global_persona`、`update_bot`、`upsert_memory`、`delete_memory`、`watch_stock`、`unwatch_stock`、`follow_feed`、`follow_creator`、`play_podcast`、`curate_podcast`、`delegate_bot_task`（委派子智能体后台执行：`botID`, `title`, `goal`）。
             """)
         }
         
@@ -2404,6 +2489,21 @@ final class CotButlerManager {
         }
         if !kyc.isEmpty {
             lines.append(kyc)
+        }
+        let recentSummaries = self.database.fetchRecentButlerSessionSummaries(
+            forBotID: self.currentBotID,
+            excludingSessionID: self.activeSessionID,
+            limit: 5
+        )
+        if !recentSummaries.isEmpty {
+            let formatted = recentSummaries.map { "- \($0.title)：\($0.summary)" }.joined(separator: "\n")
+            lines.append("## 近期对话摘要（跨会话记忆，连贯衔接上下文）\n\(formatted)")
+        }
+        if self.database === CotLocalDatabase.shared {
+            let taskSummary = CotAutonomousAgentEngine.shared.recentTasksSummary(limit: 5)
+            if !taskSummary.isEmpty {
+                lines.append("## 团队智能体近期自主交付记录\n\(taskSummary)")
+            }
         }
         if let wp = workspacePath?.trimmingCharacters(in: .whitespacesAndNewlines), !wp.isEmpty {
             let url = URL(filePath: wp)
@@ -2488,7 +2588,11 @@ final class CotButlerManager {
            meta.attachedDocuments.isEmpty,
            meta.delegatedBotID == nil,
            meta.delegatedBotName == nil,
-           meta.delegatedModel == nil
+           meta.delegatedModel == nil,
+           meta.stickerID == nil,
+           meta.stickerURL == nil,
+           meta.stickerCaption == nil,
+           meta.workReport == nil
         {
             return (try? String(data: JSONEncoder().encode(meta.receipts), encoding: .utf8)) ?? "[]"
         }

@@ -96,6 +96,7 @@ nonisolated struct BeautifulAgentMessagePayload: Codable, Equatable, Identifiabl
     var stickerID: String? = nil
     var stickerURL: String? = nil
     var stickerCaption: String? = nil
+    var workReport: AutonomousWorkReportPayload? = nil
 }
 
 
@@ -224,6 +225,7 @@ nonisolated struct MeetingRoomSessionPayload: Codable, Equatable, Identifiable, 
     var isPinned: Bool
     var updatedAt: Double
     var participantIDs: [String]
+    var ownerID: String = "user"
 }
 
 
@@ -362,6 +364,11 @@ struct BeautifulAgentWebActionCallbacks {
     var onRefreshStickers: (() -> Void)? = nil
     var onOpenDirectChat: ((String) -> Void)? = nil
     var onNewTopic: (() -> Void)? = nil
+    var onCreateGroupSession: ((String, [String]) -> Void)? = nil
+    var onDissolveMeetingSession: ((String) -> Void)? = nil
+    var onDeleteBotHistory: ((String) -> Void)? = nil
+    var onOpenDeliverable: ((String, String, String) -> Void)? = nil
+    var onRunAutonomousPatrol: (() -> Void)? = nil
 }
 
 
@@ -935,6 +942,30 @@ struct BeautifulAgentWebView: NSViewRepresentable, Equatable {
                     
                 case "newTopic":
                     self.callbacks.onNewTopic?()
+                    
+                case "createGroupSession":
+                    let title = (dict["title"] as? String) ?? ""
+                    let participantIDs = (dict["participantIDs"] as? [String]) ?? []
+                    self.callbacks.onCreateGroupSession?(title, participantIDs)
+                    
+                case "dissolveMeetingSession":
+                    if let id = dict["id"] as? String, !id.isEmpty {
+                        self.callbacks.onDissolveMeetingSession?(id)
+                    }
+                    
+                case "deleteBotHistory":
+                    if let botID = dict["botId"] as? String, !botID.isEmpty {
+                        self.callbacks.onDeleteBotHistory?(botID)
+                    }
+                    
+                case "openDeliverable":
+                    let kind = (dict["kind"] as? String) ?? "document"
+                    let targetID = (dict["targetId"] as? String) ?? ""
+                    let title = (dict["title"] as? String) ?? ""
+                    self.callbacks.onOpenDeliverable?(kind, targetID, title)
+                    
+                case "runAutonomousPatrol":
+                    self.callbacks.onRunAutonomousPatrol?()
                     
                 default:
                     break

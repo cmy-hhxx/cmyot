@@ -57,6 +57,7 @@ nonisolated struct CotAgentAction: Codable, Sendable, Equatable {
     var handle: String? = nil
     var displayName: String? = nil
     var why: String? = nil
+    var goal: String? = nil
 }
 
 
@@ -474,6 +475,24 @@ final class CotAgentCoordinator {
                     summary: AppLanguage.text("正在搜索并下载「\(topic)」播客", en: "Finding & Downloading: \(topic)")
                 )
                 
+            case "delegate_bot_task":
+                let targetBotID = (action.botID ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let taskTitle = (action.title ?? action.query ?? "后台专项任务").trimmingCharacters(in: .whitespacesAndNewlines)
+                let taskGoal = (action.goal ?? action.detail ?? taskTitle).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !targetBotID.isEmpty, !taskTitle.isEmpty else { return nil }
+                Task { @MainActor in
+                    _ = await CotAutonomousAgentEngine.shared.runDelegatedTask(
+                        botID: targetBotID,
+                        title: taskTitle,
+                        goal: taskGoal,
+                        reportToButler: true
+                    )
+                }
+                return AppliedActionReceipt(
+                    symbolName: "person.2",
+                    summary: taskTitle
+                )
+                
             default:
                 return nil
         }
@@ -645,6 +664,37 @@ final class CotAgentCoordinator {
         else { return false }
         docVC.openNewBoardTab(kind, in: pane, explicitQuery: query, splitRight: splitRight)
         return true
+    }
+    
+    
+    /// Opens a deliverable produced by an autonomous Bot mission (document, board, or memory summary).
+    @discardableResult
+    func openDeliverable(kind: String, targetID: String, title: String) -> Bool {
+        switch kind {
+        case "document":
+            if let doc = self.database.fetchDocumentRecord(id: targetID, filePath: nil) {
+                return self.openNewMarkdownDocument(title: doc.title, content: doc.content, splitRight: false)
+            }
+            return false
+        case "board":
+            let lower = targetID.lowercased()
+            let board: PaneBoardKind = switch lower {
+                case "market": .market
+                case "podcast": .podcast
+                case "butler": .butler
+                default: .news
+            }
+            return self.openBoard(board, query: title.isEmpty ? nil : title, splitRight: false)
+        case "memory":
+            let matches = self.database.fetchKYCMemories(dimension: nil, includeArchived: false)
+                .filter { $0.factKey == targetID || $0.id == targetID }
+            let body = matches.isEmpty
+                ? "# 长期画像记忆\n\n- 条目：\(title)"
+                : matches.map { "### \($0.title)（\($0.dimension.label)）\n\($0.detail)" }.joined(separator: "\n\n")
+            return self.openNewMarkdownDocument(title: title.isEmpty ? "画像记忆" : title, content: body, splitRight: false)
+        default:
+            return false
+        }
     }
     
     

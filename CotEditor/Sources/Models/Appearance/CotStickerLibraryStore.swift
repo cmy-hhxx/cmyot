@@ -158,10 +158,10 @@ final class CotStickerLibraryStore {
         guard let sticker = self.idIndex[stickerID] else { return nil }
         let url = self.fileURL(for: sticker)
         if let data = try? Data(contentsOf: url), !data.isEmpty {
-            return (data, Self.mimeType(for: sticker.format))
+            return (data, Self.sniffMIMEType(from: data, fallbackFormat: sticker.format))
         }
         if let blobData = self.database.fetchMediaBlobData(namespace: .sticker, relativePath: sticker.fileName) {
-            return (blobData, Self.mimeType(for: sticker.format))
+            return (blobData, Self.sniffMIMEType(from: blobData, fallbackFormat: sticker.format))
         }
         return nil
     }
@@ -717,7 +717,21 @@ final class CotStickerLibraryStore {
             case "gif": "image/gif"
             case "png": "image/png"
             case "webp": "image/webp"
+            case "heic", "heif": "image/heic"
             default: "image/jpeg"
         }
+    }
+    
+    
+    nonisolated static func sniffMIMEType(from data: Data, fallbackFormat: String) -> String {
+        guard data.count >= 12 else { return Self.mimeType(for: fallbackFormat) }
+        let b = [UInt8](data.prefix(12))
+        if b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF { return "image/jpeg" }
+        if b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47 { return "image/png" }
+        if b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x38 { return "image/gif" }
+        if b[0] == 0x52 && b[1] == 0x49 && b[2] == 0x46 && b[3] == 0x46,
+           b[8] == 0x57 && b[9] == 0x45 && b[10] == 0x42 && b[11] == 0x50 { return "image/webp" }
+        if b[4] == 0x66 && b[5] == 0x74 && b[6] == 0x79 && b[7] == 0x70 { return "image/heic" }
+        return Self.mimeType(for: fallbackFormat)
     }
 }

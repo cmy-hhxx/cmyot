@@ -87,22 +87,25 @@ extension ButlerMeetingRoomManager {
         var stickersUsedInTurn = 0
         
         if !customMentions.isEmpty && explicitBuiltIn == nil && plan.mentionedBots.isEmpty {
-            for bot in customMentions {
+            var reports: [(botID: String, messageID: String, name: String, text: String)] = []
+            for bot in customMentions where selectedSet.contains(bot.id) {
                 guard self.activeGeneration == generation, !Task.isCancelled else { return }
                 let ctx = MeetingTurnContext(
                     rawPrompt: rawPrompt, llmPrompt: llmPrompt, currentUserMessageID: userMessageID,
                     userSentSticker: userSentSticker, userSticker: userSticker, isProgressCheck: isProgress,
                     isMentioned: true, mustRespond: true, isButlerSynthesis: false, delegatedFromButler: false,
                     shouldRefresh: false, generation: generation, allowRemoteAI: allowRemoteAI,
-                    telemetryMap: telemetryMap, subordinateReports: []
+                    telemetryMap: telemetryMap, subordinateReports: reports
                 )
-                _ = await self.runUnifiedBotTurn(
+                if let rep = await self.runUnifiedBotTurn(
                     bot: bot,
                     context: ctx,
                     stickerOnlyCount: &stickerOnlyCount,
                     stickersUsedInTurn: &stickersUsedInTurn,
                     botStore: botStore
-                )
+                ) {
+                    reports.append(rep)
+                }
             }
             return
         }
@@ -136,6 +139,7 @@ extension ButlerMeetingRoomManager {
                     userSentSticker: userSentSticker,
                     userSticker: userSticker,
                     isProgress: isProgress,
+                    selectedSet: selectedSet,
                     allUnified: allUnified,
                     customMentions: customMentions,
                     telemetryMap: telemetryMap,
@@ -155,6 +159,7 @@ extension ButlerMeetingRoomManager {
                     userMessageID: userMessageID,
                     userSentSticker: userSentSticker,
                     userSticker: userSticker,
+                    selectedSet: selectedSet,
                     allUnified: allUnified,
                     telemetryMap: telemetryMap,
                     generation: generation,
@@ -246,7 +251,9 @@ extension ButlerMeetingRoomManager {
         }
         
         guard self.activeGeneration == generation, !Task.isCancelled else { return }
-        if let butler = allUnified.first(where: { $0.id == AIBotID.butler.rawValue }) {
+        if selectedSet.contains(AIBotID.butler.rawValue),
+           let butler = allUnified.first(where: { $0.id == AIBotID.butler.rawValue })
+        {
             let mustWrapUp = !remoteEnabled || reports.isEmpty || isExplicitAllHands || (userSentSticker && reports.count < 2)
             let ctx = MeetingTurnContext(
                 rawPrompt: rawPrompt, llmPrompt: llmPrompt, currentUserMessageID: userMessageID,
@@ -275,6 +282,7 @@ extension ButlerMeetingRoomManager {
         userSentSticker: Bool,
         userSticker: StickerAsset?,
         isProgress: Bool,
+        selectedSet: Set<String>,
         allUnified: [UnifiedBotDescriptor],
         customMentions: [UnifiedBotDescriptor],
         telemetryMap: [AIBotID: MeetingBotDailyTelemetry],
@@ -284,8 +292,14 @@ extension ButlerMeetingRoomManager {
         stickersUsedInTurn: inout Int,
         botStore: AIBotStore
     ) async {
-        var bots: [UnifiedBotDescriptor] = targets.compactMap { bid in allUnified.first { $0.id == bid.rawValue } }
-        for c in customMentions where !bots.contains(where: { $0.id == c.id }) { bots.append(c) }
+        var bots: [UnifiedBotDescriptor] = targets.compactMap { bid in
+            guard selectedSet.contains(bid.rawValue) else { return nil }
+            return allUnified.first { $0.id == bid.rawValue }
+        }
+        for c in customMentions where selectedSet.contains(c.id) && !bots.contains(where: { $0.id == c.id }) {
+            bots.append(c)
+        }
+        var reports: [(botID: String, messageID: String, name: String, text: String)] = []
         for bot in bots {
             guard self.activeGeneration == generation, !Task.isCancelled else { return }
             let ctx = MeetingTurnContext(
@@ -293,15 +307,17 @@ extension ButlerMeetingRoomManager {
                 userSentSticker: userSentSticker, userSticker: userSticker, isProgressCheck: shouldRefresh || isProgress,
                 isMentioned: true, mustRespond: true, isButlerSynthesis: false, delegatedFromButler: false,
                 shouldRefresh: shouldRefresh, generation: generation, allowRemoteAI: allowRemoteAI,
-                telemetryMap: telemetryMap, subordinateReports: []
+                telemetryMap: telemetryMap, subordinateReports: reports
             )
-            _ = await self.runUnifiedBotTurn(
+            if let rep = await self.runUnifiedBotTurn(
                 bot: bot,
                 context: ctx,
                 stickerOnlyCount: &stickerOnlyCount,
                 stickersUsedInTurn: &stickersUsedInTurn,
                 botStore: botStore
-            )
+            ) {
+                reports.append(rep)
+            }
         }
     }
     
@@ -315,6 +331,7 @@ extension ButlerMeetingRoomManager {
         userMessageID: String,
         userSentSticker: Bool,
         userSticker: StickerAsset?,
+        selectedSet: Set<String>,
         allUnified: [UnifiedBotDescriptor],
         telemetryMap: [AIBotID: MeetingBotDailyTelemetry],
         generation: UInt64,
@@ -324,8 +341,9 @@ extension ButlerMeetingRoomManager {
         botStore: AIBotStore
     ) async {
         var reports: [(botID: String, messageID: String, name: String, text: String)] = []
-        let explicitlyTargeted = subordinates.count <= 3
-        for bid in subordinates {
+        let activeSubordinates = subordinates.filter { selectedSet.contains($0.rawValue) }
+        let explicitlyTargeted = activeSubordinates.count <= 3
+        for bid in activeSubordinates {
             guard self.activeGeneration == generation, !Task.isCancelled else { return }
             guard let bot = allUnified.first(where: { $0.id == bid.rawValue }) else { continue }
             let mustReply = plan.mentionedBots.contains(bid) || explicitlyTargeted
@@ -334,7 +352,7 @@ extension ButlerMeetingRoomManager {
                 userSentSticker: userSentSticker, userSticker: userSticker, isProgressCheck: true,
                 isMentioned: mustReply, mustRespond: mustReply, isButlerSynthesis: false, delegatedFromButler: true,
                 shouldRefresh: shouldRefresh, generation: generation, allowRemoteAI: allowRemoteAI,
-                telemetryMap: telemetryMap, subordinateReports: []
+                telemetryMap: telemetryMap, subordinateReports: reports
             )
             if let rep = await self.runUnifiedBotTurn(
                 bot: bot,
@@ -347,7 +365,9 @@ extension ButlerMeetingRoomManager {
             }
         }
         guard self.activeGeneration == generation, !Task.isCancelled else { return }
-        if let butler = allUnified.first(where: { $0.id == AIBotID.butler.rawValue }) {
+        if selectedSet.contains(AIBotID.butler.rawValue),
+           let butler = allUnified.first(where: { $0.id == AIBotID.butler.rawValue })
+        {
             let ctx = MeetingTurnContext(
                 rawPrompt: rawPrompt, llmPrompt: llmPrompt, currentUserMessageID: userMessageID,
                 userSentSticker: userSentSticker, userSticker: userSticker, isProgressCheck: true,

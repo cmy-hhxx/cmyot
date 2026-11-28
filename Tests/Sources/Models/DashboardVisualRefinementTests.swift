@@ -135,4 +135,19 @@ struct DashboardVisualRefinementTests {
         let afterClear = DashboardHeroCoverStore(database: tempDB)
         #expect(afterClear.blurStyle == .crisp)
     }
+    
+    
+    @Test
+    func aiTokenUsageLabelsAndCompactCountsContainNoEnglish() {
+        let samples = ["deepseek-reasoner", "claude-3-5-sonnet", "gpt-4o-mini", "glm-5-plus", "gemini-2.5-pro", "qwen-max"]
+        for raw in samples {
+            let display = AnalyticsManager.chineseModelDisplayName(raw)
+            #expect(!display.isEmpty)
+            #expect(display.range(of: "[A-Za-z]", options: .regularExpression) == nil)
+        }
+        let compact1 = AnalyticsManager.chineseCompactTokenCount(25_600)
+        #expect(compact1 == "2.6万")
+        let compact2 = AnalyticsManager.chineseCompactTokenCount(120_000_000)
+        #expect(compact2 == "1.2亿")
+    }
 }

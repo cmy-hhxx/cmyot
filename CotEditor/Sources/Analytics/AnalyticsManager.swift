@@ -488,24 +488,95 @@ nonisolated struct TouchedManuscriptItem: Identifiable, Sendable, Equatable {
     }
     
     
-    static func featureDisplayName(for feature: String) -> String {
+    nonisolated static func featureDisplayName(for feature: String) -> String {
         
-        switch feature {
-            case "nextToken": "智能续写"
-            case "weeklyReport": "生成周报"
-            case "weeklyReportItem": "周报片段"
-            case "summarize": "内容总结"
-            case "translate": "双语翻译"
-            case "explain": "文本解读"
-            case "interactiveChart": "交互图表"
-            case "ocrPolish": "OCR 整理"
-            case "organizeAndMerge": "整理合并"
-            case "dailyDigest": "每日摘要"
-            case "personalityAnalyze": "性格弹幕画像"
-            case "documentCenterAgentOrganize": "星图文档整理"
-            case "scheduledNightlyOrganize": "凌晨自动整理"
-            default: feature
+        let trimmed = feature.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        switch lower {
+            case "nexttoken", "completion", "inline", "continue": return "智能续写"
+            case "weeklyreport", "weekly_report": return "生成周报"
+            case "weeklyreportitem": return "周报片段"
+            case "summarize": return "内容总结"
+            case "translate": return "双语翻译"
+            case "explain": return "文本解读"
+            case "interactivechart": return "交互图表"
+            case "ocrpolish", "ocr": return "识图整理"
+            case "organizeandmerge": return "整理合并"
+            case "dailydigest": return "每日摘要"
+            case "personalityanalyze": return "性格画像"
+            case "documentcenteragentorganize": return "文档整理"
+            case "schedulednightlyorganize": return "自动整理"
+            case "butler": return "总管对话"
+            case "newschat": return "资讯解读"
+            case "donetodaycommentary": return "今日点评"
+            case "actionprediction": return "行动建议"
+            case "proactivedailyjournal": return "主动随记"
+            case "semanticrestructure": return "结构重组"
+            case "flow_presentation": return "演示生成"
+            case "daily_butler_digest": return "总管日报"
+            default:
+                if lower.hasPrefix("meeting_") { return "群聊协作" }
+                if lower.hasPrefix("daily_bot_") { return "智能体日报" }
+                if lower.hasPrefix("proactive_") { return "主动任务" }
+                return "智能对话"
         }
+    }
+    
+    
+    /// Converts a raw model identifier into a concise, 100% Chinese display label.
+    nonisolated static func chineseModelDisplayName(_ rawModel: String) -> String {
+        
+        let trimmed = rawModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "主力模型" }
+        let tail = trimmed.split(separator: "/").last.map(String.init) ?? trimmed
+        let lower = tail.lowercased()
+        
+        let family: String = if lower.contains("deepseek") {
+            "深度求索"
+        } else if lower.contains("claude") {
+            "克劳德"
+        } else if lower.contains("gemini") {
+            "双子座"
+        } else if lower.contains("gpt") || lower.hasPrefix("o1") || lower.hasPrefix("o3") || lower.hasPrefix("o4") {
+            "通用大模型"
+        } else if lower.contains("glm") || lower.contains("chatglm") {
+            "智谱清言"
+        } else if lower.contains("qwen") {
+            "通义千问"
+        } else if lower.contains("kimi") || lower.contains("moonshot") {
+            "月之暗面"
+        } else if lower.contains("minimax") {
+            "稀宇模型"
+        } else if lower.contains("doubao") {
+            "豆包模型"
+        } else if lower.contains("llama") || lower.contains("ollama") || lower.contains("mistral") {
+            "本地模型"
+        } else if lower.range(of: "[A-Za-z]", options: .regularExpression) == nil {
+            tail
+        } else {
+            "主力模型"
+        }
+        
+        let tier: String? = if lower.contains("reasoner") || lower.contains("-r1") || lower.contains("thinking") {
+            "推理"
+        } else if lower.contains("flash") || lower.contains("mini") || lower.contains("haiku") || lower.contains("lite") {
+            "轻量"
+        } else if lower.contains("opus") || lower.contains("pro") || lower.contains("max") {
+            "旗舰"
+        } else {
+            nil
+        }
+        
+        return tier.map { "\(family)·\($0)" } ?? family
+    }
+    
+    
+    /// Formats a token count in Chinese units (`万` / `亿`) without English `K`/`M` suffixes.
+    nonisolated static func chineseCompactTokenCount(_ value: Int) -> String {
+        
+        if value >= 100_000_000 { return String(format: "%.1f亿", Double(value) / 100_000_000.0) }
+        if value >= 10_000 { return String(format: "%.1f万", Double(value) / 10_000.0) }
+        return value.formatted()
     }
     
     

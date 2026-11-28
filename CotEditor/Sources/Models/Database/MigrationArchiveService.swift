@@ -20,7 +20,9 @@
 //
 
 import AppleArchive
+import CoreGraphics
 import CryptoKit
+import Defaults
 import Foundation
 import ImageIO
 import SQLite3
@@ -157,7 +159,14 @@ enum MigrationArchiveService {
         "workspace_live_state",
     ]
     
-    private nonisolated static let recompressMinBytes = 128 * 1024
+    private nonisolated static let standardRecompressMinBytes = 32 * 1024
+    private nonisolated static let gifRecompressMinBytes = 160 * 1024
+    private nonisolated static let tightBudgetThresholdBytes: Int64 = 44 * 1024 * 1024
+    
+    nonisolated enum CompressionPass: Sendable {
+        case standard
+        case tightBudget
+    }
     
     
     // MARK: Public Async Entrypoints
@@ -222,10 +231,16 @@ enum MigrationArchiveService {
             
             let fm = FileManager.default
             try fm.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            if fm.fileExists(atPath: destinationURL.path(percentEncoded: false)) {
-                try fm.removeItem(at: destinationURL)
+            let destPath = destinationURL.path(percentEncoded: false)
+            if fm.fileExists(atPath: destPath) {
+                _ = try? fm.replaceItemAt(destinationURL, withItemAt: archiveTempURL)
             }
-            try fm.moveItem(at: archiveTempURL, to: destinationURL)
+            if fm.fileExists(atPath: archiveTempURL.path(percentEncoded: false)) {
+                if fm.fileExists(atPath: destPath) {
+                    try fm.removeItem(at: destinationURL)
+                }
+                try fm.moveItem(at: archiveTempURL, to: destinationURL)
+            }
             
             let archiveBytes = Self.fileSize(at: destinationURL)
             return MigrationArchiveExportResult(
@@ -330,6 +345,85 @@ enum MigrationArchiveService {
     }
     
     
+    /// Resets all local SQLite data, managed media folders, sidecars, API gateways/keys, and portable preferences
+    /// after capturing a safety rollback snapshot in `Backups/`.
+    @MainActor
+    static func resetAllLocalData(
+        database: CotLocalDatabase = .shared,
+        sidecarRoots: MigrationArchiveSidecarRoots? = nil,
+        mediaDirectories: [URL]? = nil,
+        backupDirectory: URL? = nil
+    ) async throws -> URL {
+        let resolvedRoots = sidecarRoots ?? MigrationArchiveSidecarRoots.liveRoots()
+        let resolvedBackupDir = backupDirectory ?? Self.defaultRollbackDirectory(for: database)
+        let rollbackURL = Self.makeRollbackURL(in: resolvedBackupDir)
+        try FileManager.default.createDirectory(at: rollbackURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try database.vacuumSnapshot(to: rollbackURL)
+        
+        try database.resetToEmptyDatabase()
+        
+        let fm = FileManager.default
+        for (_, dirURL) in resolvedRoots.namedDirectories {
+            if fm.fileExists(atPath: dirURL.path(percentEncoded: false)) {
+                try? fm.removeItem(at: dirURL)
+            }
+        }
+        
+        let managedMediaDirs = mediaDirectories ?? Self.liveManagedMediaDirectories()
+        for dirURL in managedMediaDirs {
+            if fm.fileExists(atPath: dirURL.path(percentEncoded: false)) {
+                try? fm.removeItem(at: dirURL)
+            }
+        }
+        
+        if database === CotLocalDatabase.shared {
+            AIEndpointStore.profiles = []
+            AIEndpointStore.activeID = nil
+            AIKeychain.clearAllAPIKeys()
+            
+            let defaults = UserDefaults.standard
+            for key in DefaultSettings.portableKeys {
+                defaults.removeObject(forKey: key.rawValue)
+            }
+            for extraKey in [
+                DefaultKeys.vimMode.rawValue,
+                DefaultKeys.usesCustomCursorColor.rawValue,
+                DefaultKeys.customCursorColorHex.rawValue,
+                DefaultKeys.aiActiveProfileID.rawValue,
+                DefaultKeys.aiProfiles.rawValue,
+                DefaultKeys.showStatusBar.rawValue,
+                DefaultKeys.showNavigationBar.rawValue,
+                DefaultKeys.splitViewVertical.rawValue,
+            ] {
+                defaults.removeObject(forKey: extraKey)
+            }
+            
+            UserProfileManager.shared.resetActiveProfileToDefault()
+            try? KeyBindingManager.shared.restoreDefaults()
+            await Self.invalidateSharedSettingManagers()
+            database.reloadAllSharedStoresAfterMigration()
+            NotificationCenter.default.post(name: CotLocalDatabase.structuredAssetsDidChangeNotification, object: database)
+            NotificationCenter.default.post(name: UserProfileManager.activeProfileDidChangeNotification, object: UserProfileManager.shared)
+        }
+        
+        return rollbackURL
+    }
+    
+    
+    private nonisolated static func liveManagedMediaDirectories() -> [URL] {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let cotEditorBase = appSupport.appending(path: "CotEditor", directoryHint: .isDirectory)
+        let cotBase = appSupport.appending(path: "Cot", directoryHint: .isDirectory)
+        return [
+            cotEditorBase.appending(path: "MediaLibrary", directoryHint: .isDirectory),
+            cotEditorBase.appending(path: "Wallpapers", directoryHint: .isDirectory),
+            cotBase.appending(path: "CustomAppIcon", directoryHint: .isDirectory),
+            cotBase.appending(path: "InlineImages", directoryHint: .isDirectory),
+        ]
+    }
+    
+    
     // MARK: Nonisolated SQLite Optimization & Media Recompression
     
     nonisolated static func slimAndOptimizeSQLiteCopy(at sqliteURL: URL) throws -> (count: Int, reclaimedBytes: Int64) {
@@ -357,50 +451,48 @@ enum MigrationArchiveService {
             sqlite3_finalize(stmt)
         }
         
-        // 2. Recompress safe large media_blobs (wallpaper, media_background, media_avatar originals)
-        let outcome = Self.recompressEligibleMediaBlobs(in: db)
-        
-        // 3. Reclaim freed SQLite pages
+        // 2. Pass 1: recompress all media_blobs and oversized base64 images in configs
+        var outcome = Self.recompressMediaBlobs(in: db, pass: .standard)
+        let configOutcome = Self.recompressOversizedConfigImages(in: db)
+        outcome.count += configOutcome.count
+        outcome.reclaimedBytes += configOutcome.reclaimedBytes
         _ = sqlite3_exec(db, "VACUUM;", nil, nil, nil)
+        
+        // 3. Adaptive Pass 2 when still above 44 MB threshold to keep .cotbackup under 50 MB
+        if Self.fileSize(at: sqliteURL) > Self.tightBudgetThresholdBytes {
+            let pass2 = Self.recompressMediaBlobs(in: db, pass: .tightBudget)
+            outcome.count += pass2.count
+            outcome.reclaimedBytes += pass2.reclaimedBytes
+            _ = sqlite3_exec(db, "VACUUM;", nil, nil, nil)
+        }
         return outcome
     }
     
     
-    private nonisolated static func recompressEligibleMediaBlobs(in db: OpaquePointer) -> (count: Int, reclaimedBytes: Int64) {
+    private nonisolated static func recompressMediaBlobs(in db: OpaquePointer, pass: CompressionPass) -> (count: Int, reclaimedBytes: Int64) {
         struct BlobCandidate {
             let key: String
             let namespace: String
-            let relativePath: String
             let data: Data
         }
         
+        let minBytes = (pass == .standard) ? Self.standardRecompressMinBytes : (48 * 1024)
         var candidates: [BlobCandidate] = []
-        let selectSQL = """
-        SELECT blob_key, namespace, relative_path, data
-        FROM media_blobs
-        WHERE bytes > ?
-          AND (
-              namespace IN ('wallpaper', 'media_background')
-              OR (namespace = 'media_avatar' AND relative_path LIKE 'originals/%')
-          );
-        """
+        let selectSQL = "SELECT blob_key, namespace, data FROM media_blobs WHERE bytes > ?;"
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(db, selectSQL, -1, &stmt, nil) == SQLITE_OK {
-            sqlite3_bind_int(stmt, 1, Int32(Self.recompressMinBytes))
+            sqlite3_bind_int(stmt, 1, Int32(minBytes))
             while sqlite3_step(stmt) == SQLITE_ROW {
                 guard let keyCStr = sqlite3_column_text(stmt, 0),
                       let nsCStr = sqlite3_column_text(stmt, 1),
-                      let pathCStr = sqlite3_column_text(stmt, 2),
-                      let rawPtr = sqlite3_column_blob(stmt, 3)
+                      let rawPtr = sqlite3_column_blob(stmt, 2)
                 else { continue }
-                let len = Int(sqlite3_column_bytes(stmt, 3))
-                guard len > Self.recompressMinBytes else { continue }
-                let data = Data(bytes: rawPtr, count: len)
+                let len = Int(sqlite3_column_bytes(stmt, 2))
+                guard len > minBytes else { continue }
                 candidates.append(BlobCandidate(
                     key: String(cString: keyCStr),
                     namespace: String(cString: nsCStr),
-                    relativePath: String(cString: pathCStr),
-                    data: data
+                    data: Data(bytes: rawPtr, count: len)
                 ))
             }
         }
@@ -413,8 +505,7 @@ enum MigrationArchiveService {
         
         _ = sqlite3_exec(db, "BEGIN IMMEDIATE TRANSACTION;", nil, nil, nil)
         for item in candidates {
-            let maxEdge: CGFloat = (item.namespace == MediaBlobNamespace.mediaAvatar.rawValue) ? 1024 : 2400
-            guard let optimized = Self.recompressImageData(item.data, maxPixelEdge: maxEdge),
+            guard let optimized = Self.optimizeBlobData(item.data, namespace: item.namespace, pass: pass),
                   optimized.count < item.data.count
             else { continue }
             
@@ -439,7 +530,118 @@ enum MigrationArchiveService {
     }
     
     
-    nonisolated static func recompressImageData(_ data: Data, maxPixelEdge: CGFloat) -> Data? {
+    private nonisolated static func optimizeBlobData(_ data: Data, namespace: String, pass: CompressionPass) -> Data? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let frameCount = CGImageSourceGetCount(source)
+        if frameCount > 1 {
+            let gifMin = (pass == .standard) ? Self.gifRecompressMinBytes : (96 * 1024)
+            guard data.count > gifMin else { return nil }
+            let edge: CGFloat = (pass == .standard) ? 280 : 220
+            let maxFrames = (pass == .standard) ? 18 : 12
+            return Self.recompressAnimatedGIF(source: source, frameCount: frameCount, maxPixelEdge: edge, maxFrames: maxFrames)
+        }
+        
+        switch namespace {
+            case MediaBlobNamespace.mediaBackground.rawValue, MediaBlobNamespace.wallpaper.rawValue:
+                let edge: CGFloat = (pass == .standard) ? 1600 : 1280
+                let q: CGFloat = (pass == .standard) ? 0.66 : 0.52
+                return Self.recompressImageData(data, maxPixelEdge: edge, quality: q, forceOpaqueHEICOrJPEG: true)
+            case MediaBlobNamespace.mediaAvatar.rawValue:
+                let edge: CGFloat = (pass == .standard) ? 512 : 384
+                let q: CGFloat = (pass == .standard) ? 0.72 : 0.62
+                return Self.recompressImageData(data, maxPixelEdge: edge, quality: q, forceOpaqueHEICOrJPEG: false)
+            case MediaBlobNamespace.sticker.rawValue:
+                let edge: CGFloat = (pass == .standard) ? 480 : 360
+                let q: CGFloat = (pass == .standard) ? 0.72 : 0.60
+                return Self.recompressImageData(data, maxPixelEdge: edge, quality: q, forceOpaqueHEICOrJPEG: false, preferUniversalJPEG: true)
+            case MediaBlobNamespace.inlineImage.rawValue:
+                let edge: CGFloat = (pass == .standard) ? 1600 : 1280
+                let q: CGFloat = (pass == .standard) ? 0.74 : 0.62
+                return Self.recompressImageData(data, maxPixelEdge: edge, quality: q, forceOpaqueHEICOrJPEG: false, preferUniversalJPEG: true)
+            default:
+                return nil
+        }
+    }
+    
+    
+    private nonisolated static func recompressOversizedConfigImages(in db: OpaquePointer) -> (count: Int, reclaimedBytes: Int64) {
+        let minB64Bytes = 120 * 1024
+        var rows: [(key: String, value: String)] = []
+        let sql = """
+        SELECT key, value FROM configs
+        WHERE length(value) > ?
+          AND (key = 'dashboard.heroCoverImageBase64'
+               OR key = 'butler.customAvatarBase64'
+               OR key = 'sync.userProfileSnapshot'
+               OR key LIKE 'ai.bot.%.avatar');
+        """
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_int(stmt, 1, Int32(minB64Bytes))
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                guard let k = sqlite3_column_text(stmt, 0),
+                      let v = sqlite3_column_text(stmt, 1) else { continue }
+                rows.append((String(cString: k), String(cString: v)))
+            }
+        }
+        sqlite3_finalize(stmt)
+        guard !rows.isEmpty else { return (0, 0) }
+        
+        var count = 0
+        var reclaimed: Int64 = 0
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        let updateSQL = "UPDATE configs SET value = ? WHERE key = ?;"
+        
+        _ = sqlite3_exec(db, "BEGIN IMMEDIATE TRANSACTION;", nil, nil, nil)
+        for row in rows {
+            let maxEdge: CGFloat = (row.key == "dashboard.heroCoverImageBase64") ? 1600 : 512
+            let newValue: String? = if row.key == "sync.userProfileSnapshot" {
+                Self.recompressUserProfileSnapshotJSON(row.value, maxPixelEdge: maxEdge)
+            } else if let raw = Data(base64Encoded: row.value),
+                      let shrunk = Self.recompressImageData(raw, maxPixelEdge: maxEdge, quality: 0.72, forceOpaqueHEICOrJPEG: false, preferUniversalJPEG: true),
+                      shrunk.count < raw.count {
+                shrunk.base64EncodedString()
+            } else {
+                nil
+            }
+            guard let newValue, newValue.utf8.count < row.value.utf8.count else { continue }
+            var uStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, updateSQL, -1, &uStmt, nil) == SQLITE_OK {
+                sqlite3_bind_text(uStmt, 1, newValue, -1, transient)
+                sqlite3_bind_text(uStmt, 2, row.key, -1, transient)
+                if sqlite3_step(uStmt) == SQLITE_DONE {
+                    count += 1
+                    reclaimed += Int64(row.value.utf8.count - newValue.utf8.count)
+                }
+            }
+            sqlite3_finalize(uStmt)
+        }
+        _ = sqlite3_exec(db, "COMMIT;", nil, nil, nil)
+        return (count, reclaimed)
+    }
+    
+    
+    private nonisolated static func recompressUserProfileSnapshotJSON(_ json: String, maxPixelEdge: CGFloat) -> String? {
+        guard let data = json.data(using: .utf8),
+              var dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let b64 = dict["avatarDataBase64"] as? String,
+              let raw = Data(base64Encoded: b64),
+              let shrunk = Self.recompressImageData(raw, maxPixelEdge: maxPixelEdge, quality: 0.72, forceOpaqueHEICOrJPEG: false, preferUniversalJPEG: true),
+              shrunk.count < raw.count
+        else { return nil }
+        dict["avatarDataBase64"] = shrunk.base64EncodedString()
+        guard let outData = try? JSONSerialization.data(withJSONObject: dict) else { return nil }
+        return String(data: outData, encoding: .utf8)
+    }
+    
+    
+    nonisolated static func recompressImageData(
+        _ data: Data,
+        maxPixelEdge: CGFloat,
+        quality: CGFloat = 0.76,
+        forceOpaqueHEICOrJPEG: Bool = false,
+        preferUniversalJPEG: Bool = false
+    ) -> Data? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               CGImageSourceGetCount(source) == 1
         else { return nil }
@@ -454,34 +656,112 @@ enum MigrationArchiveService {
                 ?? CGImageSourceCreateImageAtIndex(source, 0, nil)
         else { return nil }
         
-        let alpha = cgImage.alphaInfo
-        let hasAlpha = (alpha == .first || alpha == .last || alpha == .premultipliedFirst || alpha == .premultipliedLast)
-        
+        let isTransparent = !forceOpaqueHEICOrJPEG && Self.hasMeaningfulTransparency(cgImage)
         let outData = NSMutableData()
-        if hasAlpha {
+        if isTransparent {
             guard let dest = CGImageDestinationCreateWithData(outData, UTType.png.identifier as CFString, 1, nil) else {
                 return nil
             }
             CGImageDestinationAddImage(dest, cgImage, nil)
             guard CGImageDestinationFinalize(dest) else { return nil }
-        } else {
-            let targetType = UTType.heic.identifier as CFString
-            let props: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: 0.80]
-            if let dest = CGImageDestinationCreateWithData(outData, targetType, 1, nil) {
+            return outData.length > 0 ? (outData as Data) : nil
+        }
+        
+        let props: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: quality]
+        if !preferUniversalJPEG {
+            if let dest = CGImageDestinationCreateWithData(outData, UTType.heic.identifier as CFString, 1, nil) {
                 CGImageDestinationAddImage(dest, cgImage, props as CFDictionary)
                 if CGImageDestinationFinalize(dest), outData.length > 0 {
                     return outData as Data
                 }
             }
             outData.length = 0
-            guard let jpegDest = CGImageDestinationCreateWithData(outData, UTType.jpeg.identifier as CFString, 1, nil) else {
-                return nil
-            }
-            CGImageDestinationAddImage(jpegDest, cgImage, props as CFDictionary)
-            guard CGImageDestinationFinalize(jpegDest) else { return nil }
         }
-        
+        guard let jpegDest = CGImageDestinationCreateWithData(outData, UTType.jpeg.identifier as CFString, 1, nil) else {
+            return nil
+        }
+        CGImageDestinationAddImage(jpegDest, cgImage, props as CFDictionary)
+        guard CGImageDestinationFinalize(jpegDest) else { return nil }
         return outData.length > 0 ? (outData as Data) : nil
+    }
+    
+    
+    private nonisolated static func recompressAnimatedGIF(
+        source: CGImageSource,
+        frameCount: Int,
+        maxPixelEdge: CGFloat,
+        maxFrames: Int
+    ) -> Data? {
+        let step = max(1, Int(ceil(Double(frameCount) / Double(max(1, maxFrames)))))
+        var kept: [(index: Int, delay: Double)] = []
+        var accumulatedDelay = 0.0
+        
+        for i in 0..<frameCount {
+            let frameProps = CGImageSourceCopyPropertiesAtIndex(source, i, nil) as? [CFString: Any]
+            let gifDict = frameProps?[kCGImagePropertyGIFDictionary] as? [CFString: Any]
+            let unclamped = gifDict?[kCGImagePropertyGIFUnclampedDelayTime] as? Double
+            let clamped = gifDict?[kCGImagePropertyGIFDelayTime] as? Double
+            let delay = max(0.02, unclamped ?? clamped ?? 0.08)
+            accumulatedDelay += delay
+            if i % step == 0 || i == frameCount - 1 {
+                kept.append((i, accumulatedDelay))
+                accumulatedDelay = 0.0
+            }
+        }
+        guard !kept.isEmpty else { return nil }
+        
+        let outData = NSMutableData()
+        guard let dest = CGImageDestinationCreateWithData(outData, UTType.gif.identifier as CFString, kept.count, nil) else {
+            return nil
+        }
+        let containerProps: [CFString: Any] = [
+            kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFLoopCount: 0],
+        ]
+        CGImageDestinationSetProperties(dest, containerProps as CFDictionary)
+        
+        let thumbOpts: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: Int(maxPixelEdge),
+        ]
+        for entry in kept {
+            guard let img = CGImageSourceCreateThumbnailAtIndex(source, entry.index, thumbOpts as CFDictionary)
+                    ?? CGImageSourceCreateImageAtIndex(source, entry.index, nil)
+            else { continue }
+            let frameMeta: [CFString: Any] = [
+                kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: entry.delay],
+            ]
+            CGImageDestinationAddImage(dest, img, frameMeta as CFDictionary)
+        }
+        guard CGImageDestinationFinalize(dest), outData.length > 0 else { return nil }
+        return outData as Data
+    }
+    
+    
+    private nonisolated static func hasMeaningfulTransparency(_ cgImage: CGImage) -> Bool {
+        let alpha = cgImage.alphaInfo
+        let hasAlphaChannel = (alpha == .first || alpha == .last || alpha == .premultipliedFirst || alpha == .premultipliedLast)
+        guard hasAlphaChannel else { return false }
+        
+        let sampleSide = 24
+        var buf = [UInt8](repeating: 255, count: sampleSide * sampleSide * 4)
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: &buf,
+            width: sampleSide,
+            height: sampleSide,
+            bitsPerComponent: 8,
+            bytesPerRow: sampleSide * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return true
+        }
+        ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: sampleSide, height: sampleSide))
+        for i in stride(from: 3, to: buf.count, by: 4) where buf[i] < 245 {
+            return true
+        }
+        return false
     }
     
     
@@ -633,6 +913,9 @@ enum MigrationArchiveService {
         try fm.createDirectory(at: backupDir, withIntermediateDirectories: true)
         for (name, srcDir) in roots.namedDirectories where fm.fileExists(atPath: srcDir.path(percentEncoded: false)) {
             let dest = backupDir.appending(path: name, directoryHint: .isDirectory)
+            if fm.fileExists(atPath: dest.path(percentEncoded: false)) {
+                try? fm.removeItem(at: dest)
+            }
             try fm.copyItem(at: srcDir, to: dest)
         }
     }

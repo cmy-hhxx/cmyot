@@ -2048,24 +2048,32 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         CotButlerManager.shared.reloadFromDatabase()
         ButlerMeetingRoomManager.shared.reloadFromDatabase()
         CotMemoryStore.shared.reloadFromDatabase()
+        CotMarketService.shared.reloadFromDatabase()
+        CotPodcastService.shared.reloadFromDatabase()
         ScheduledAIDocumentOrganizer.shared.reloadFromDatabase()
         ProactiveDailyJournalService.shared.reloadFromDatabase()
         UserHabitPredictor.shared.reloadFromDatabase()
         AINextTokenPredictor.shared.reloadForActiveUser()
         AnalyticsManager.shared.reloadFromDatabase()
+        PiKernelManager.shared.scheduleWorkspaceSync()
     }
     
     
     /// Creates an atomic WAL-checkpointed SQLite snapshot at `destinationURL` without touching live state.
     func vacuumSnapshot(to destinationURL: URL) throws {
         self.executeSQL("PRAGMA wal_checkpoint(FULL);")
-        if FileManager.default.fileExists(atPath: destinationURL.path) {
-            try FileManager.default.removeItem(at: destinationURL)
+        let fm = FileManager.default
+        let destPath = destinationURL.path(percentEncoded: false)
+        if fm.fileExists(atPath: destPath) {
+            try fm.removeItem(at: destinationURL)
         }
-        let escapedPath = destinationURL.path.replacingOccurrences(of: "'", with: "''")
+        let escapedPath = destPath.replacingOccurrences(of: "'", with: "''")
         let vacuumSQL = "VACUUM INTO '\(escapedPath)';"
         if sqlite3_exec(self.db, vacuumSQL, nil, nil, nil) != SQLITE_OK {
-            try FileManager.default.copyItem(at: self.databaseURL, to: destinationURL)
+            if fm.fileExists(atPath: destPath) {
+                try fm.removeItem(at: destinationURL)
+            }
+            try fm.copyItem(at: self.databaseURL, to: destinationURL)
         }
     }
     
@@ -2089,24 +2097,52 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     /// Imports another Cot SQLite database file, replacing/merging documents, media blobs, AI endpoints+keys, user avatar/profile, and configurations.
     func importDatabase(from sourceURL: URL, resetEndpointsIfMissing: Bool = false) throws {
         
-        // Validate that the source is a readable SQLite database with our tables
+        let fm = FileManager.default
+        let sourcePath = sourceURL.path(percentEncoded: false)
         var checkDB: OpaquePointer?
-        guard sqlite3_open_v2(sourceURL.path, &checkDB, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+        guard sqlite3_open_v2(sourcePath, &checkDB, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
             sqlite3_close(checkDB)
             throw CocoaError(.fileReadCorruptFile)
         }
         sqlite3_close(checkDB)
         
+        let parentDir = self.databaseURL.deletingLastPathComponent()
+        try fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
+        let stagedURL = parentDir.appending(path: ".\(self.databaseURL.lastPathComponent).import-\(UUID().uuidString)")
+        let stagedPath = stagedURL.path(percentEncoded: false)
+        if fm.fileExists(atPath: stagedPath) {
+            try? fm.removeItem(at: stagedURL)
+        }
+        try fm.copyItem(at: sourceURL, to: stagedURL)
+        
         self.closeDatabase()
         
-        let walURL = URL(filePath: self.databaseURL.path + "-wal")
-        let shmURL = URL(filePath: self.databaseURL.path + "-shm")
-        try? FileManager.default.removeItem(at: walURL)
-        try? FileManager.default.removeItem(at: shmURL)
-        if FileManager.default.fileExists(atPath: self.databaseURL.path) {
-            try FileManager.default.removeItem(at: self.databaseURL)
+        let dbPath = self.databaseURL.path(percentEncoded: false)
+        for suffix in ["-wal", "-shm"] {
+            let auxURL = URL(filePath: dbPath + suffix)
+            if fm.fileExists(atPath: auxURL.path(percentEncoded: false)) {
+                try? fm.removeItem(at: auxURL)
+            }
         }
-        try FileManager.default.copyItem(at: sourceURL, to: self.databaseURL)
+        
+        do {
+            if fm.fileExists(atPath: dbPath) {
+                do {
+                    _ = try fm.replaceItemAt(self.databaseURL, withItemAt: stagedURL, backupItemName: nil, options: [])
+                } catch {
+                    try fm.removeItem(at: self.databaseURL)
+                    try fm.moveItem(at: stagedURL, to: self.databaseURL)
+                }
+            } else {
+                try fm.moveItem(at: stagedURL, to: self.databaseURL)
+            }
+        } catch {
+            try? fm.removeItem(at: stagedURL)
+            self.openDatabase()
+            self.createTablesIfNeeded()
+            self.reloadAll()
+            throw error
+        }
         
         self.openDatabase()
         self.createTablesIfNeeded()
@@ -2124,6 +2160,31 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
             NotificationCenter.default.post(name: Self.structuredAssetsDidChangeNotification, object: self)
             NotificationCenter.default.post(name: UserProfileManager.activeProfileDidChangeNotification, object: UserProfileManager.shared)
         }
+    }
+    
+    
+    /// Closes, removes, and recreates an empty database ready for a clean-slate reset or fresh import.
+    func resetToEmptyDatabase() throws {
+        
+        let fm = FileManager.default
+        self.closeDatabase()
+        
+        let dbPath = self.databaseURL.path(percentEncoded: false)
+        for suffix in ["", "-wal", "-shm"] {
+            let target = URL(filePath: dbPath + suffix)
+            if fm.fileExists(atPath: target.path(percentEncoded: false)) {
+                try fm.removeItem(at: target)
+            }
+        }
+        
+        try fm.createDirectory(at: self.databaseURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        self.openDatabase()
+        self.createTablesIfNeeded(skipStarterSeeds: true)
+        self.withTransaction {
+            self.seedDefaultConfigsIfNeeded()
+            self.reloadConfigs()
+        }
+        self.reloadAll()
     }
     
     
@@ -2203,7 +2264,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     
     private func openDatabase() {
         
-        if sqlite3_open(self.databaseURL.path, &self.db) != SQLITE_OK {
+        if sqlite3_open(self.databaseURL.path(percentEncoded: false), &self.db) != SQLITE_OK {
             self.db = nil
             return
         }
@@ -2224,7 +2285,10 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
             if self.transactionDepth == 0 {
                 sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE);", nil, nil, nil)
             }
-            sqlite3_close(db)
+            let rc = sqlite3_close(db)
+            if rc == SQLITE_BUSY {
+                sqlite3_close_v2(db)
+            }
             self.db = nil
         }
         self.transactionDepth = 0
@@ -2243,7 +2307,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
     }
     
     
-    private func createTablesIfNeeded() {
+    private func createTablesIfNeeded(skipStarterSeeds: Bool = false) {
         
         let sql = """
         CREATE TABLE IF NOT EXISTS documents (
@@ -2342,7 +2406,7 @@ nonisolated struct PortableUserProfileSnapshot: Codable, Sendable, Equatable {
         self.ensureDailyStatsExtendedColumnsExist()
         self.ensureRemindersExtendedColumnsExist()
         self.executeSQL("CREATE INDEX IF NOT EXISTS idx_reminders_sort ON user_reminders(is_completed ASC, is_pinned DESC, due_date DESC);")
-        self.createStructuredAssetTablesIfNeeded()
+        self.createStructuredAssetTablesIfNeeded(skipStarterSeeds: skipStarterSeeds)
     }
     
     

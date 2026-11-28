@@ -223,7 +223,24 @@ final class ToolbarButlerBotButtonView: NSView {
         )
         botsSettingsItem.target = self
         menu.addItem(botsSettingsItem)
+        
+        menu.addItem(.separator())
+        
+        let patrolItem = NSMenuItem(
+            title: AppLanguage.text("立即让智能体巡检干活", en: "Run Autonomous Team Patrol Now"),
+            action: #selector(self.triggerAutonomousPatrolNow(_:)),
+            keyEquivalent: ""
+        )
+        patrolItem.target = self
+        menu.addItem(patrolItem)
         return menu
+    }
+    
+    
+    @objc private func triggerAutonomousPatrolNow(_ sender: Any?) {
+        Task { @MainActor in
+            _ = await CotAutonomousAgentEngine.shared.runProactivePatrol(manual: true)
+        }
     }
     
     
@@ -278,6 +295,8 @@ final class ToolbarButlerBotButtonView: NSView {
             CotButlerManager.shared.selectSession(unreadSession.id)
         } else if let active = CotButlerManager.shared.activeSession, active.unreadCount > 0 {
             CotButlerManager.shared.selectSession(active.id)
+        } else if !ButlerMeetingRoomManager.shared.isActive {
+            CotButlerManager.shared.prepareFreshButlerEntryIfNeeded()
         }
         self.showFloatingPanel()
     }
@@ -785,6 +804,13 @@ struct ButlerCommandHubView: View {
             for chipLabel in meta.toolChips where !chips.contains(where: { $0.label == chipLabel }) {
                 chips.append(BeautifulAgentToolReceipt(id: "tool-\(msg.id)-\(chipLabel)", label: chipLabel, detail: nil, status: "done"))
             }
+            let resolvedStickerURL: String? = if let url = meta.stickerURL, !url.isEmpty {
+                url
+            } else if let sid = meta.stickerID, !sid.isEmpty {
+                CotMediaSchemeHandler.stickerURLString(id: sid)
+            } else {
+                nil
+            }
             return BeautifulAgentMessagePayload(
                 id: msg.id,
                 role: msg.role == "user" ? "user" : "assistant",
@@ -803,8 +829,9 @@ struct ButlerCommandHubView: View {
                 delegatedBotName: meta.delegatedBotName,
                 delegatedModel: meta.delegatedModel,
                 stickerID: meta.stickerID,
-                stickerURL: meta.stickerURL,
-                stickerCaption: meta.stickerCaption
+                stickerURL: resolvedStickerURL,
+                stickerCaption: meta.stickerCaption,
+                workReport: meta.workReport
             )
         }
         
@@ -924,7 +951,8 @@ struct ButlerCommandHubView: View {
                 title: $0.title,
                 isPinned: $0.isPinned,
                 updatedAt: $0.updatedAtMs,
-                participantIDs: $0.participantIDs
+                participantIDs: $0.participantIDs,
+                ownerID: $0.ownerID
             )
         }
         let refreshedMeetingMessages: [MeetingRoomMessage] = self.meetingRoom.messages.map { msg in
@@ -1489,13 +1517,42 @@ struct ButlerCommandHubView: View {
         }
         cb.onOpenDirectChat = { botID in
             self.meetingRoom.setActive(false)
-            _ = self.butler.openDirectChat(botID: botID)
+            let session = self.butler.openDirectChat(botID: botID)
+            if botID == AIBotID.butler.rawValue && session.unreadCount == 0 {
+                self.butler.prepareFreshButlerEntryIfNeeded()
+            }
             self.webController.focusComposer()
         }
         cb.onNewTopic = {
             self.meetingRoom.setActive(false)
             self.butler.startNewTopic()
             self.webController.focusComposer()
+        }
+        cb.onCreateGroupSession = { title, participantIDs in
+            _ = self.meetingRoom.createSession(
+                title: title,
+                participantIDs: participantIDs,
+                ownerID: "user",
+                botStore: self.botStore
+            )
+            self.webController.focusComposer()
+        }
+        cb.onDissolveMeetingSession = { sessionID in
+            self.meetingRoom.dissolveSession(sessionID)
+        }
+        cb.onDeleteBotHistory = { botID in
+            self.butler.deleteBotChats(botID: botID)
+        }
+        cb.onOpenDeliverable = { kind, targetID, title in
+            if !self.isDockedPane {
+                self.onDismiss()
+            }
+            _ = CotAgentCoordinator.shared.openDeliverable(kind: kind, targetID: targetID, title: title)
+        }
+        cb.onRunAutonomousPatrol = {
+            Task { @MainActor in
+                _ = await CotAutonomousAgentEngine.shared.runProactivePatrol(manual: true)
+            }
         }
         return cb
     }

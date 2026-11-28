@@ -21,6 +21,7 @@
 
 import AppKit
 import Foundation
+import ImageIO
 import SQLite3
 import Testing
 @testable import CotEditor
@@ -63,7 +64,7 @@ struct MigrationArchiveTests {
         #expect(largeWallpaperData.count > 128 * 1024)
         srcDB.upsertMediaBlob(namespace: .wallpaper, relativePath: "custom-wp.png", data: largeWallpaperData)
         
-        // Also write a sticker blob (must NOT be recompressed)
+        // Also write a large compressible opaque PNG sticker blob (> 32 KB -> slimmed cleanly)
         let stickerData = try Self.makeLargeNoisyOpaquePNG(width: 400, height: 400)
         srcDB.upsertMediaBlob(namespace: .sticker, relativePath: "cat.png", data: stickerData)
         
@@ -116,10 +117,28 @@ struct MigrationArchiveTests {
         #expect(wpMeta.sha256 == MigrationArchiveService.sha256Hex(restoredWallpaperData))
         
         let restoredStickerData = try #require(dstDB.fetchMediaBlobData(namespace: .sticker, relativePath: "cat.png"))
-        #expect(restoredStickerData == stickerData)
+        #expect(!restoredStickerData.isEmpty)
+        #expect(restoredStickerData.count <= stickerData.count)
+        #expect(CGImageSourceCreateWithData(restoredStickerData as CFData, nil) != nil)
         
         #expect((try? Data(contentsOf: dstRoots.keyBindings.appending(path: "Shortcuts.plist"))) == plistData)
         #expect((try? Data(contentsOf: dstRoots.themes.appending(path: "Studio Custom.cottheme"))) == themeData)
+        
+        // 7. Re-importing onto an existing populated DB must succeed cleanly without "already exists" errors.
+        srcDB.set("覆写总管", forKey: CotLocalDatabase.ConfigKey.butlerName)
+        let overwriteArchiveURL = root.appending(path: "export_overwrite.cotbackup")
+        _ = try await MigrationArchiveService.exportArchive(
+            from: srcDB,
+            to: overwriteArchiveURL,
+            sidecarRoots: srcRoots
+        )
+        _ = try await MigrationArchiveService.importArchive(
+            from: overwriteArchiveURL,
+            into: dstDB,
+            sidecarRoots: dstRoots,
+            backupDirectory: backupDir
+        )
+        #expect(dstDB.string(forKey: CotLocalDatabase.ConfigKey.butlerName) == "覆写总管")
     }
     
     
@@ -162,6 +181,34 @@ struct MigrationArchiveTests {
         }
         #expect(didThrow)
         #expect(dstDB.string(forKey: CotLocalDatabase.ConfigKey.butlerName) == "旧版迁移总管")
+    }
+    
+    
+    @Test func resetAllLocalDataWipesDatabaseKeysBlobsAndSidecars() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "cot_m3_reset_\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        
+        let db = CotLocalDatabase(customURL: root.appending(path: "reset.sqlite3"))
+        let roots = Self.makeSidecarRoots(under: root.appending(path: "AppSupport", directoryHint: .isDirectory))
+        try Self.createSidecarDirs(roots)
+        
+        db.set("待清除总管", forKey: CotLocalDatabase.ConfigKey.butlerName)
+        db.upsertMediaBlob(namespace: .sticker, relativePath: "temp.png", data: Data([0x89, 0x50, 0x4E, 0x47]))
+        try Data("theme".utf8).write(to: roots.themes.appending(path: "Custom.cottheme"))
+        
+        let rollbackURL = try await MigrationArchiveService.resetAllLocalData(
+            database: db,
+            sidecarRoots: roots,
+            mediaDirectories: [],
+            backupDirectory: root.appending(path: "Backups", directoryHint: .isDirectory)
+        )
+        #expect(FileManager.default.fileExists(atPath: rollbackURL.path(percentEncoded: false)))
+        
+        #expect(db.string(forKey: CotLocalDatabase.ConfigKey.butlerName).isEmpty)
+        #expect(db.fetchMediaBlobData(namespace: .sticker, relativePath: "temp.png") == nil)
+        #expect(!FileManager.default.fileExists(atPath: roots.themes.appending(path: "Custom.cottheme").path(percentEncoded: false)))
     }
     
     

@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { copyTextWithFallback, postToNative } from "./bridge";
+import CreateGroupModal from "./primitives/CreateGroupModal";
 import LoadingState from "./primitives/LoadingState";
 import MarkdownProse from "./primitives/MarkdownProse";
 import MeetingRoomView from "./primitives/MeetingRoomView";
@@ -9,9 +10,11 @@ import IMSidebar from "./primitives/IMSidebar";
 import TopicHistoryMenu from "./primitives/TopicHistoryMenu";
 import ThinkingState from "./primitives/ThinkingState";
 import ToolChips from "./primitives/ToolChips";
+import WorkReportCard from "./primitives/WorkReportCard";
 import type {
   AgentMessage,
   AttachedDocumentRef,
+  AutonomousDeliverable,
   HostState,
   SessionSummary,
   StreamPatch,
@@ -69,6 +72,7 @@ const UserBubble = memo(function UserBubble({
   userAvatarURL,
   locale,
   onOpenUserConfig,
+  onPreviewSticker,
 }: {
   text: string;
   quoteContext?: string;
@@ -79,6 +83,7 @@ const UserBubble = memo(function UserBubble({
   userAvatarURL?: string | null;
   locale: "zh" | "en";
   onOpenUserConfig: () => void;
+  onPreviewSticker: (url: string, caption?: string | null) => void;
 }) {
   const hasAttachments = Boolean((attachedDocuments && attachedDocuments.length > 0) || delegatedBotName);
   return (
@@ -119,11 +124,17 @@ const UserBubble = memo(function UserBubble({
       )}
       {stickerURL && (
         <div className="flex items-start justify-end gap-2">
-          <img
-            src={stickerURL}
-            alt={stickerCaption || "Sticker"}
-            className="max-h-[144px] max-w-[144px] rounded-[10px] object-contain"
-          />
+          <button
+            type="button"
+            onClick={() => onPreviewSticker(stickerURL, stickerCaption)}
+            className="overflow-hidden rounded-[10px] transition-opacity hover:opacity-90"
+          >
+            <img
+              src={stickerURL}
+              alt={stickerCaption || "Sticker"}
+              className="max-h-[144px] max-w-[144px] rounded-[10px] object-contain"
+            />
+          </button>
           <button
             type="button"
             onClick={onOpenUserConfig}
@@ -152,6 +163,8 @@ const AssistantMessageBlock = memo(function AssistantMessageBlock({
   onInsert,
   onOpenNote,
   onOpenBotConfig,
+  onOpenDeliverable,
+  onPreviewSticker,
 }: {
   message: AgentMessage;
   locale: "zh" | "en";
@@ -162,6 +175,8 @@ const AssistantMessageBlock = memo(function AssistantMessageBlock({
   onInsert?: (text: string) => void;
   onOpenNote?: (text: string) => void;
   onOpenBotConfig: (botId: string) => void;
+  onOpenDeliverable: (deliverable: AutonomousDeliverable) => void;
+  onPreviewSticker: (url: string, caption?: string | null) => void;
 }) {
   const [copied, setCopied] = useState(false);
   const hasText = message.text.trim().length > 0;
@@ -235,6 +250,14 @@ const AssistantMessageBlock = memo(function AssistantMessageBlock({
 
           {message.toolChips && message.toolChips.length > 0 && <ToolChips items={message.toolChips} />}
 
+          {message.workReport && (
+            <WorkReportCard
+              report={message.workReport}
+              locale={locale}
+              onOpenDeliverable={onOpenDeliverable}
+            />
+          )}
+
           {message.stickerURL && (
             <div className="mt-2 flex items-start gap-2">
               <button
@@ -251,11 +274,17 @@ const AssistantMessageBlock = memo(function AssistantMessageBlock({
                   </span>
                 )}
               </button>
-              <img
-                src={message.stickerURL}
-                alt={message.stickerCaption || "Sticker"}
-                className="max-h-[148px] max-w-[148px] rounded-[10px] object-contain"
-              />
+              <button
+                type="button"
+                onClick={() => message.stickerURL && onPreviewSticker(message.stickerURL, message.stickerCaption)}
+                className="overflow-hidden rounded-[10px] transition-opacity hover:opacity-90"
+              >
+                <img
+                  src={message.stickerURL}
+                  alt={message.stickerCaption || "Sticker"}
+                  className="max-h-[148px] max-w-[148px] rounded-[10px] object-contain"
+                />
+              </button>
             </div>
           )}
 
@@ -350,6 +379,8 @@ const ChatMessageList = memo(function ChatMessageList({
   onOpenNote,
   onOpenGatewaySettings,
   onOpenBotConfig,
+  onOpenDeliverable,
+  onPreviewSticker,
 }: {
   messages: AgentMessage[];
   locale: "zh" | "en";
@@ -365,6 +396,8 @@ const ChatMessageList = memo(function ChatMessageList({
   onOpenNote: (text: string) => void;
   onOpenGatewaySettings: () => void;
   onOpenBotConfig: (botId: string) => void;
+  onOpenDeliverable: (deliverable: AutonomousDeliverable) => void;
+  onPreviewSticker: (url: string, caption?: string | null) => void;
 }) {
   return (
     <>
@@ -382,6 +415,7 @@ const ChatMessageList = memo(function ChatMessageList({
             userAvatarURL={userAvatarURL}
             locale={locale}
             onOpenUserConfig={() => onOpenBotConfig("user")}
+            onPreviewSticker={onPreviewSticker}
           />
         ) : (
           <AssistantMessageBlock
@@ -395,6 +429,8 @@ const ChatMessageList = memo(function ChatMessageList({
             onInsert={isNews ? onInsert : undefined}
             onOpenNote={isNews ? onOpenNote : undefined}
             onOpenBotConfig={onOpenBotConfig}
+            onOpenDeliverable={onOpenDeliverable}
+            onPreviewSticker={onPreviewSticker}
           />
         );
       })}
@@ -687,6 +723,9 @@ export default function App() {
   const [state, setState] = useState<HostState>(DEFAULT_STATE);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [membersDrawerOpen, setMembersDrawerOpen] = useState(false);
+  const [createGroupOpen, setCreateGroupOpen] = useState(false);
+  const [confirmDissolveGroup, setConfirmDissolveGroup] = useState(false);
+  const [lightboxSticker, setLightboxSticker] = useState<{ url: string; caption?: string | null } | null>(null);
   const [localQuote, setLocalQuote] = useState<string | null>(null);
   const [revealStage, setRevealStage] = useState(4);
   const [composerH, setComposerH] = useState(118);
@@ -1041,12 +1080,20 @@ export default function App() {
   const availableBots = state.availableBots ?? [];
   const meetingParticipants = state.meetingRoomBots ?? [];
   const activeMeetingParticipants = meetingParticipants.filter((p) => p.isSelected !== false);
+  const activeMeetingGroup = (state.meetingRoomSessions ?? []).find(
+    (s) => s.id === state.activeMeetingSessionID,
+  );
 
   useEffect(() => {
+    setConfirmDissolveGroup(false);
     if (!isMeetingRoom) {
       setMembersDrawerOpen(false);
     }
   }, [isMeetingRoom, state.activeMeetingSessionID]);
+
+  const handleOpenDeliverable = useCallback((d: AutonomousDeliverable) => {
+    postToNative("openDeliverable", { kind: d.kind, targetId: d.targetID, title: d.title });
+  }, []);
 
   const butlerEmptyHeading = activeSession?.workspaceName
     ? state.locale === "zh"
@@ -1069,11 +1116,12 @@ export default function App() {
           activeMeetingSessionID={state.activeMeetingSessionID ?? ""}
           onToggleCollapse={handleToggleCollapse}
           onOpenDirectChat={(botId) => postToNative("openDirectChat", { botId })}
-          onNewGroup={() => {
-            postToNative("newMeetingSession");
-            postToNative("toggleMeetingRoom", { active: true });
-          }}
+          onNewButlerChat={() => postToNative("newTopic")}
+          onDeleteBotHistory={(botId) => postToNative("deleteBotHistory", { botId })}
+          onNewGroup={() => setCreateGroupOpen(true)}
           onSelectMeetingSession={(id) => postToNative("selectMeetingSession", { id })}
+          onTogglePinMeetingSession={(id) => postToNative("togglePinMeetingSession", { id })}
+          onDissolveMeetingSession={(id) => postToNative("dissolveMeetingSession", { id })}
           onOpenCreateBotSheet={() => postToNative("openCreateBotSheet")}
           onOpenSettings={handleOpenBotSettings}
         />
@@ -1084,22 +1132,26 @@ export default function App() {
         className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-page"
         style={{ contain: "layout paint" }}
       >
-        {/* Clean top header bar */}
+        {/* Clean aligned top header bar */}
         <header
           className={`flex shrink-0 items-center justify-between gap-2 border-b border-line px-4 ${
             isNews ? "h-10" : "h-12"
           }`}
         >
-          <div className="flex min-w-0 items-center gap-2.5">
+          <div className="flex min-w-0 items-center gap-2">
             {isNews ? (
               <span className="truncate text-[13px] font-medium tracking-tight text-ink-2">
                 {state.locale === "zh" ? "AI" : "AI"}
               </span>
             ) : isMeetingRoom ? (
-              <span className="truncate text-[14px] font-semibold text-ink">
-                {(state.meetingRoomSessions ?? []).find((s) => s.id === state.activeMeetingSessionID)?.title ||
-                  (state.locale === "zh" ? "会议室" : "Meeting Room")}
-              </span>
+              <>
+                <span className="truncate text-[14px] font-semibold text-ink">
+                  {activeMeetingGroup?.title || (state.locale === "zh" ? "群聊" : "Group Chat")}
+                </span>
+                <span className="shrink-0 rounded-[5px] bg-inset px-1.5 py-0.5 text-[11px] font-medium text-ink-3">
+                  {state.locale === "zh" ? "群主：我" : "Owner"}
+                </span>
+              </>
             ) : (
               <>
                 <span className="truncate text-[14px] font-semibold text-ink">
@@ -1147,9 +1199,9 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => postToNative("newTopic")}
-                  className="flex h-7.5 items-center rounded-[7px] px-2 text-[12.5px] font-medium text-ink-2 transition-colors duration-100 hover:bg-hover hover:text-ink"
+                  className="flex h-8 items-center rounded-[7px] px-2.5 text-[12.5px] font-medium text-ink-2 transition-colors duration-100 hover:bg-hover hover:text-ink"
                 >
-                  {state.locale === "zh" ? "新话题" : "New Topic"}
+                  {state.locale === "zh" ? "新对话" : "New Chat"}
                 </button>
                 <TopicHistoryMenu
                   topics={botTopics}
@@ -1160,79 +1212,98 @@ export default function App() {
                   onDeleteSession={handleDeleteSession}
                   onTogglePinSession={handleTogglePinSession}
                 />
+                <button
+                  type="button"
+                  onClick={() => postToNative("runAutonomousPatrol")}
+                  title={state.locale === "zh" ? "立即触发智能体团队巡检并汇报" : "Run autonomous patrol"}
+                  className="flex h-8 items-center rounded-[7px] px-2.5 text-[12.5px] font-medium text-ink-2 transition-colors duration-100 hover:bg-hover hover:text-ink"
+                >
+                  {state.locale === "zh" ? "巡检" : "Patrol"}
+                </button>
+                {hasMessages && !state.isStreaming && (
+                  <button
+                    type="button"
+                    onClick={() => postToNative("clearChat")}
+                    className="flex h-8 items-center rounded-[7px] px-2 text-[12.5px] font-medium text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
+                  >
+                    {state.locale === "zh" ? "清空" : "Clear"}
+                  </button>
+                )}
               </>
             )}
 
             {!isNews && isMeetingRoom && (
-              <button
-                type="button"
-                data-members-toggle
-                onClick={() => setMembersDrawerOpen((v) => !v)}
-                title={state.locale === "zh" ? "群成员管理" : "Members"}
-                className={`flex h-7.5 items-center gap-1.5 rounded-[7px] px-2 text-[12.5px] font-medium transition-colors duration-100 ${
-                  membersDrawerOpen
-                    ? "bg-hover-2 text-ink"
-                    : "text-ink-2 hover:bg-hover hover:text-ink"
-                }`}
-              >
-                <span className="flex items-center -space-x-1.5">
-                  {activeMeetingParticipants.slice(0, 4).map((bot) => {
-                    const isActiveBot = bot.status === "thinking" || bot.status === "speaking";
-                    return (
-                      <span
-                        key={bot.id}
-                        className="relative flex size-5 items-center justify-center overflow-hidden rounded-[5px] bg-surface ring-[1.5px] ring-page"
-                        style={
-                          !bot.avatarURL
-                            ? { backgroundColor: `${bot.accentHex}24`, color: bot.accentHex }
-                            : isActiveBot
-                              ? { boxShadow: `0 0 0 1.5px ${bot.accentHex || "var(--accent)"}` }
-                              : undefined
-                        }
-                      >
-                        {bot.avatarURL ? (
-                          <img src={bot.avatarURL} alt={bot.name} className="size-full object-cover" />
-                        ) : (
-                          <span className="text-[10px] font-semibold">{bot.name.slice(0, 1)}</span>
-                        )}
-                      </span>
-                    );
-                  })}
-                </span>
-                <span className="tabular-nums">{activeMeetingParticipants.length}</span>
-              </button>
-            )}
-
-            {!isNews && isMeetingRoom && (state.meetingRoomMessages?.length ?? 0) > 0 && !state.meetingRoomIsConvening && (
-              <button
-                type="button"
-                onClick={() => postToNative("clearMeetingRoom")}
-                className="flex h-7.5 items-center rounded-[7px] px-2.5 text-[13px] font-medium text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
-              >
-                {state.locale === "zh" ? "清空" : "Clear"}
-              </button>
-            )}
-
-            {!isNews && (
-              <button
-                type="button"
-                onClick={() => postToNative("toggleMeetingRoom", { active: !isMeetingRoom })}
-                className={`flex h-7.5 items-center gap-1.5 rounded-[7px] px-2.5 text-[13px] font-medium transition-colors duration-100 ${
-                  isMeetingRoom
-                    ? "bg-surface text-ink shadow-hairline"
-                    : "text-ink-2 hover:bg-hover hover:text-ink"
-                }`}
-              >
-                <span>
-                  {isMeetingRoom
-                    ? state.locale === "zh"
-                      ? "返回"
-                      : "Back"
-                    : state.locale === "zh"
-                      ? "群聊"
-                      : "Group"}
-                </span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  data-members-toggle
+                  onClick={() => setMembersDrawerOpen((v) => !v)}
+                  title={state.locale === "zh" ? "群成员管理" : "Members"}
+                  className={`flex h-8 items-center gap-1.5 rounded-[7px] px-2 text-[12.5px] font-medium transition-colors duration-100 ${
+                    membersDrawerOpen
+                      ? "bg-hover-2 text-ink"
+                      : "text-ink-2 hover:bg-hover hover:text-ink"
+                  }`}
+                >
+                  <span className="flex items-center -space-x-1.5">
+                    {activeMeetingParticipants.slice(0, 4).map((bot) => {
+                      const isActiveBot = bot.status === "thinking" || bot.status === "speaking";
+                      return (
+                        <span
+                          key={bot.id}
+                          className="relative flex size-5 items-center justify-center overflow-hidden rounded-[5px] bg-surface ring-[1.5px] ring-page"
+                          style={
+                            !bot.avatarURL
+                              ? { backgroundColor: `${bot.accentHex}24`, color: bot.accentHex }
+                              : isActiveBot
+                                ? { boxShadow: `0 0 0 1.5px ${bot.accentHex || "var(--accent)"}` }
+                                : undefined
+                          }
+                        >
+                          {bot.avatarURL ? (
+                            <img src={bot.avatarURL} alt={bot.name} className="size-full object-cover" />
+                          ) : (
+                            <span className="text-[10px] font-semibold">{bot.name.slice(0, 1)}</span>
+                          )}
+                        </span>
+                      );
+                    })}
+                  </span>
+                  <span className="tabular-nums">{activeMeetingParticipants.length}</span>
+                </button>
+                {(state.meetingRoomMessages?.length ?? 0) > 0 && !state.meetingRoomIsConvening && (
+                  <button
+                    type="button"
+                    onClick={() => postToNative("clearMeetingRoom")}
+                    className="flex h-8 items-center rounded-[7px] px-2.5 text-[12.5px] font-medium text-ink-3 transition-colors duration-100 hover:bg-hover hover:text-ink"
+                  >
+                    {state.locale === "zh" ? "清空" : "Clear"}
+                  </button>
+                )}
+                {state.activeMeetingSessionID && (
+                  confirmDissolveGroup ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setConfirmDissolveGroup(false);
+                        postToNative("dissolveMeetingSession", { id: state.activeMeetingSessionID });
+                      }}
+                      onMouseLeave={() => setConfirmDissolveGroup(false)}
+                      className="flex h-8 items-center rounded-[7px] bg-red px-2.5 text-[12.5px] font-medium text-white transition-opacity hover:opacity-90"
+                    >
+                      {state.locale === "zh" ? "确认解散" : "Confirm"}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmDissolveGroup(true)}
+                      className="flex h-8 items-center rounded-[7px] px-2 text-[12.5px] font-medium text-ink-3 transition-colors duration-100 hover:bg-red-tint hover:text-red"
+                    >
+                      {state.locale === "zh" ? "解散" : "Dissolve"}
+                    </button>
+                  )
+                )}
+              </>
             )}
 
             {isNews && hasMessages && !state.isStreaming && (
@@ -1382,6 +1453,8 @@ export default function App() {
           <MeetingRoomView
             locale={state.locale}
             activeSessionID={state.activeMeetingSessionID}
+            activeSessionTitle={activeMeetingGroup?.title}
+            isOwner={(activeMeetingGroup?.ownerID ?? "user") === "user"}
             messages={state.meetingRoomMessages ?? []}
             participants={state.meetingRoomBots ?? []}
             isConvening={Boolean(state.meetingRoomIsConvening)}
@@ -1399,6 +1472,10 @@ export default function App() {
             onOpenBotConfig={handleOpenBotConfig}
             onToggleParticipant={(botId) => postToNative("toggleMeetingParticipant", { botId })}
             onOpenCreateBot={() => postToNative("openCreateBotSheet")}
+            onDissolveSession={() =>
+              state.activeMeetingSessionID &&
+              postToNative("dissolveMeetingSession", { id: state.activeMeetingSessionID })
+            }
             onUploadSticker={handleUploadSticker}
             onRefreshStickers={handleRefreshStickers}
             onToggleFavoriteSticker={handleToggleFavoriteSticker}
@@ -1406,7 +1483,7 @@ export default function App() {
           />
         ) : !hasMessages ? (
           <div className="bui-scroll flex min-h-0 flex-1 flex-col justify-center overflow-y-auto px-5 py-6">
-            <div className="mx-auto flex w-full max-w-[640px] flex-col">
+            <div className="mx-auto flex w-full max-w-[820px] flex-col">
               {!isNews && (
                 <div className="mb-5" style={homeRevealStyle(revealStage >= 1)}>
                   <h1 className="text-[22px] font-semibold tracking-[-0.02em] text-ink">
@@ -1454,7 +1531,7 @@ export default function App() {
           <div className="relative flex min-h-0 flex-1 flex-col">
             <div ref={scrollRef} className="bui-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain">
               <div
-                className="mx-auto flex w-full max-w-[680px] flex-col gap-6 px-4 pt-5"
+                className="mx-auto flex w-full max-w-[820px] flex-col gap-6 px-5 pt-5"
                 style={{ paddingBottom: composerH + 24 }}
               >
                 <ChatMessageList
@@ -1472,6 +1549,8 @@ export default function App() {
                   onOpenNote={handleOpenNewDocument}
                   onOpenGatewaySettings={handleOpenGatewaySettings}
                   onOpenBotConfig={handleOpenBotConfig}
+                  onOpenDeliverable={handleOpenDeliverable}
+                  onPreviewSticker={(url, caption) => setLightboxSticker({ url, caption })}
                 />
               </div>
             </div>
@@ -1486,8 +1565,8 @@ export default function App() {
             />
 
             {/* Floating PromptBar */}
-            <div ref={composerRef} className="absolute inset-x-0 bottom-0 px-3.5 pb-3.5">
-              <div className="mx-auto max-w-[680px]">
+            <div ref={composerRef} className="absolute inset-x-0 bottom-0 px-4 pb-3.5">
+              <div className="mx-auto max-w-[820px]">
                 <PromptBar
                   ref={promptBarRef}
                   placeholder={state.placeholder}
@@ -1523,6 +1602,34 @@ export default function App() {
           </div>
         )}
       </section>
+
+      <CreateGroupModal
+        open={createGroupOpen}
+        locale={state.locale}
+        contacts={contacts}
+        onClose={() => setCreateGroupOpen(false)}
+        onCreate={(title, participantIDs) =>
+          postToNative("createGroupSession", { title, participantIDs })
+        }
+      />
+
+      {lightboxSticker && (
+        <div
+          onClick={() => setLightboxSticker(null)}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-6"
+        >
+          <div className="flex max-w-[360px] flex-col items-center gap-2 rounded-[14px] bg-surface p-3 shadow-overlay">
+            <img
+              src={lightboxSticker.url}
+              alt={lightboxSticker.caption || "Sticker"}
+              className="max-h-[300px] max-w-[320px] rounded-[10px] object-contain"
+            />
+            {lightboxSticker.caption && (
+              <span className="text-[12.5px] text-ink-2">{lightboxSticker.caption}</span>
+            )}
+          </div>
+        </div>
+      )}
     </main>
   );
 }

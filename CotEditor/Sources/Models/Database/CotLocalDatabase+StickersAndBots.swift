@@ -30,6 +30,40 @@ nonisolated struct MeetingRoomSession: Identifiable, Codable, Equatable, Sendabl
     var participantIDs: [String]
     var createdAtMs: Double
     var updatedAtMs: Double
+    var ownerID: String = "user"
+    
+    init(
+        id: String,
+        title: String,
+        isPinned: Bool,
+        participantIDs: [String],
+        createdAtMs: Double,
+        updatedAtMs: Double,
+        ownerID: String = "user"
+    ) {
+        self.id = id
+        self.title = title
+        self.isPinned = isPinned
+        self.participantIDs = participantIDs
+        self.createdAtMs = createdAtMs
+        self.updatedAtMs = updatedAtMs
+        self.ownerID = ownerID
+    }
+    
+    enum CodingKeys: String, CodingKey {
+        case id, title, isPinned, participantIDs, createdAtMs, updatedAtMs, ownerID
+    }
+    
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(String.self, forKey: .id)
+        self.title = try c.decode(String.self, forKey: .title)
+        self.isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
+        self.participantIDs = try c.decodeIfPresent([String].self, forKey: .participantIDs) ?? []
+        self.createdAtMs = try c.decodeIfPresent(Double.self, forKey: .createdAtMs) ?? 0
+        self.updatedAtMs = try c.decodeIfPresent(Double.self, forKey: .updatedAtMs) ?? 0
+        self.ownerID = try c.decodeIfPresent(String.self, forKey: .ownerID) ?? "user"
+    }
 }
 
 
@@ -79,7 +113,8 @@ extension CotLocalDatabase {
             is_pinned INTEGER NOT NULL DEFAULT 0,
             participant_ids_json TEXT NOT NULL DEFAULT '[]',
             created_at_ms REAL NOT NULL,
-            updated_at_ms REAL NOT NULL
+            updated_at_ms REAL NOT NULL,
+            owner_id TEXT NOT NULL DEFAULT 'user'
         );
         CREATE INDEX IF NOT EXISTS idx_meeting_sessions_order ON meeting_room_sessions(is_pinned DESC, updated_at_ms DESC);
 
@@ -92,6 +127,15 @@ extension CotLocalDatabase {
         CREATE INDEX IF NOT EXISTS idx_meeting_messages_session ON meeting_room_messages(session_id, created_at_ms ASC);
         """
         self.executeSQL(sql)
+        self.ensureMeetingRoomSessionColumnsExist()
+    }
+    
+    
+    private func ensureMeetingRoomSessionColumnsExist() {
+        let existing = self.tableColumns("meeting_room_sessions")
+        if !existing.contains("owner_id") {
+            self.executeSQL("ALTER TABLE meeting_room_sessions ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'user';")
+        }
     }
     
     
@@ -366,7 +410,7 @@ extension CotLocalDatabase {
     
     func fetchMeetingRoomSessions() -> [MeetingRoomSession] {
         let sql = """
-        SELECT id, title, is_pinned, participant_ids_json, created_at_ms, updated_at_ms
+        SELECT id, title, is_pinned, participant_ids_json, created_at_ms, updated_at_ms, COALESCE(NULLIF(owner_id, ''), 'user')
         FROM meeting_room_sessions
         ORDER BY is_pinned DESC, updated_at_ms DESC;
         """
@@ -380,13 +424,15 @@ extension CotLocalDatabase {
                 else { continue }
                 let participantsRaw = sqlite3_column_text(stmt, 3).map { String(cString: $0) } ?? "[]"
                 let participantIDs = (try? decoder.decode([String].self, from: Data(participantsRaw.utf8))) ?? []
+                let ownerID = sqlite3_column_text(stmt, 6).map { String(cString: $0) } ?? "user"
                 items.append(MeetingRoomSession(
                     id: String(cString: idCStr),
                     title: String(cString: titleCStr),
                     isPinned: sqlite3_column_int(stmt, 2) != 0,
                     participantIDs: participantIDs,
                     createdAtMs: sqlite3_column_double(stmt, 4),
-                    updatedAtMs: sqlite3_column_double(stmt, 5)
+                    updatedAtMs: sqlite3_column_double(stmt, 5),
+                    ownerID: ownerID.isEmpty ? "user" : ownerID
                 ))
             }
         }
@@ -398,14 +444,17 @@ extension CotLocalDatabase {
     func upsertMeetingRoomSession(_ session: MeetingRoomSession) {
         let participantsJSON = (try? JSONEncoder().encode(session.participantIDs))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+        let resolvedOwner = session.ownerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ownerID = resolvedOwner.isEmpty ? "user" : resolvedOwner
         let sql = """
-        INSERT INTO meeting_room_sessions (id, title, is_pinned, participant_ids_json, created_at_ms, updated_at_ms)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO meeting_room_sessions (id, title, is_pinned, participant_ids_json, created_at_ms, updated_at_ms, owner_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             title = excluded.title,
             is_pinned = excluded.is_pinned,
             participant_ids_json = excluded.participant_ids_json,
-            updated_at_ms = excluded.updated_at_ms;
+            updated_at_ms = excluded.updated_at_ms,
+            owner_id = excluded.owner_id;
         """
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(self.db, sql, -1, &stmt, nil) == SQLITE_OK {
@@ -415,6 +464,7 @@ extension CotLocalDatabase {
             sqlite3_bind_text(stmt, 4, participantsJSON, -1, self.transientDestructor)
             sqlite3_bind_double(stmt, 5, session.createdAtMs)
             sqlite3_bind_double(stmt, 6, session.updatedAtMs)
+            sqlite3_bind_text(stmt, 7, ownerID, -1, self.transientDestructor)
             sqlite3_step(stmt)
         }
         sqlite3_finalize(stmt)

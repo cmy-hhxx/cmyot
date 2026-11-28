@@ -405,21 +405,29 @@ struct Round17FeatureTests {
     
     @Test func customToolbarVectorIconsRenderCrispImages() {
         
-        let icons: [NSImage] = [
+        let templateIcons: [NSImage] = [
             WorkspaceCenterIcons.editableIcon(isEditable: true),
-            WorkspaceCenterIcons.editableIcon(isEditable: false),
             WorkspaceCenterIcons.analyticsDashboardIcon(isActive: false),
-            WorkspaceCenterIcons.analyticsDashboardIcon(isActive: true),
             WorkspaceCenterIcons.appearanceModeIcon(isDark: false),
             WorkspaceCenterIcons.appearanceModeIcon(isDark: true),
             WorkspaceCenterIcons.weeklyReportIcon(isActive: false),
-            WorkspaceCenterIcons.weeklyReportIcon(isActive: true),
             WorkspaceCenterIcons.documentCenterIcon(isActive: false),
-            WorkspaceCenterIcons.documentCenterIcon(isActive: true),
             WorkspaceCenterIcons.terminalIcon(),
             WorkspaceCenterIcons.settingsIcon(),
         ]
-        for icon in icons {
+        for icon in templateIcons {
+            #expect(icon.size.width == 18)
+            #expect(icon.size.height == 18)
+            #expect(icon.isTemplate == true)
+        }
+        
+        let activeIcons: [NSImage] = [
+            WorkspaceCenterIcons.editableIcon(isEditable: false),
+            WorkspaceCenterIcons.analyticsDashboardIcon(isActive: true),
+            WorkspaceCenterIcons.weeklyReportIcon(isActive: true),
+            WorkspaceCenterIcons.documentCenterIcon(isActive: true),
+        ]
+        for icon in activeIcons {
             #expect(icon.size.width == 18)
             #expect(icon.size.height == 18)
             #expect(icon.isTemplate == false)

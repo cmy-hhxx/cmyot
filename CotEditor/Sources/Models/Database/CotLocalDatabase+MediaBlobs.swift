@@ -383,10 +383,26 @@ extension CotLocalDatabase {
     
     func syncReferencedInlineImagesToDatabase(globalFolder: URL? = nil) {
         let folder = globalFolder ?? Self.defaultGlobalInlineImagesDirectory
-        let allDocs = self.documents + self.trashedDocuments
         var referencedFiles: Set<String> = []
-        for doc in allDocs {
-            let nsStr = doc.content as NSString
+        
+        var allContents: [String] = []
+        if let db = self.db {
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, "SELECT content FROM documents;", -1, &stmt, nil) == SQLITE_OK {
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    if let cStr = sqlite3_column_text(stmt, 0) {
+                        allContents.append(String(cString: cStr))
+                    }
+                }
+            }
+            sqlite3_finalize(stmt)
+        }
+        if allContents.isEmpty {
+            allContents = (self.documents + self.trashedDocuments).map(\.content)
+        }
+        
+        for content in allContents {
+            let nsStr = content as NSString
             guard nsStr.length > 0 else { continue }
             let tokens = PlainTextInlineImageStore.shared.findTokens(
                 in: nsStr,

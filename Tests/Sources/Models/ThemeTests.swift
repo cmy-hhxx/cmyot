@@ -89,6 +89,17 @@ actor ThemeTests {
             #expect(throws: Never.self) { try decoder.decode(Theme.self, from: data) }
         }
     }
+    
+    
+    @Test func unemphasizedSelectionPreservesLightTintWithoutTurningBlack() throws {
+        var theme = try self.loadThemeWithName("Dendrobates")
+        // Translucent dark-hue accent selection (alpha 0.26) must not collapse to opaque dark gray.
+        theme.selection = Theme.SystemDefaultStyle(color: NSColor(srgbRed: 0.12, green: 0.25, blue: 0.55, alpha: 0.26), usesSystemSetting: false)
+        let unemphasized = try #require(theme.unemphasizedSelectionColor?.usingColorSpace(.sRGB))
+        #expect(unemphasized.alphaComponent < 0.5)
+        let effectiveLuminance = (1.0 - unemphasized.alphaComponent) + unemphasized.alphaComponent * unemphasized.brightnessComponent
+        #expect(effectiveLuminance > 0.72)
+    }
 }
 
 

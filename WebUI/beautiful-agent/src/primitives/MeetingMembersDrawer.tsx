@@ -5,11 +5,13 @@ type MeetingMembersDrawerProps = {
   open: boolean;
   locale: "zh" | "en";
   participants: MeetingRoomParticipant[];
+  isOwner?: boolean;
   onClose: () => void;
   onMentionBot: (label: string) => void;
   onOpenBotConfig: (botId: string) => void;
   onToggleParticipant?: (botId: string) => void;
   onOpenCreateBot?: () => void;
+  onDissolveSession?: () => void;
 };
 
 const DrawerAvatar = memo(function DrawerAvatar({
@@ -49,18 +51,22 @@ const MeetingMembersDrawer = memo(function MeetingMembersDrawer({
   open,
   locale,
   participants,
+  isOwner = true,
   onClose,
   onMentionBot,
   onOpenBotConfig,
   onToggleParticipant,
   onOpenCreateBot,
+  onDissolveSession,
 }: MeetingMembersDrawerProps) {
   const [query, setQuery] = useState("");
+  const [confirmDissolve, setConfirmDissolve] = useState(false);
   const drawerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) {
       setQuery("");
+      setConfirmDissolve(false);
       return;
     }
     const onPointerDown = (event: PointerEvent) => {
@@ -113,6 +119,11 @@ const MeetingMembersDrawer = memo(function MeetingMembersDrawer({
           <span className="rounded-full bg-inset px-1.5 py-0.5 text-[12px] font-medium text-ink-3 tabular-nums">
             {activeCount}
           </span>
+          {isOwner && (
+            <span className="rounded-[5px] bg-inset px-1.5 py-0.5 text-[10.5px] font-medium text-ink-3">
+              {locale === "zh" ? "群主：我" : "Owner"}
+            </span>
+          )}
         </div>
         <button
           type="button"
@@ -216,18 +227,44 @@ const MeetingMembersDrawer = memo(function MeetingMembersDrawer({
         })}
       </div>
 
-      {onOpenCreateBot && (
-        <div className="border-t border-line p-2">
-          <button
-            type="button"
-            onClick={() => {
-              onClose();
-              onOpenCreateBot();
-            }}
-            className="flex h-8 w-full items-center justify-center gap-1 rounded-[8px] bg-inset text-[12.5px] font-medium text-ink transition-colors hover:bg-hover-2"
-          >
-            <span>+ {locale === "zh" ? "新建 Bot" : "New Bot"}</span>
-          </button>
+      {(onOpenCreateBot || onDissolveSession) && (
+        <div className="flex flex-col gap-1.5 border-t border-line p-2">
+          {onOpenCreateBot && (
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onOpenCreateBot();
+              }}
+              className="flex h-8 w-full items-center justify-center gap-1 rounded-[8px] bg-inset text-[12.5px] font-medium text-ink transition-colors hover:bg-hover-2"
+            >
+              <span>+ {locale === "zh" ? "新建 Bot" : "New Bot"}</span>
+            </button>
+          )}
+          {onDissolveSession && (
+            confirmDissolve ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setConfirmDissolve(false);
+                  onClose();
+                  onDissolveSession();
+                }}
+                onMouseLeave={() => setConfirmDissolve(false)}
+                className="flex h-8 w-full items-center justify-center rounded-[8px] bg-red text-[12.5px] font-medium text-white transition-opacity hover:opacity-90"
+              >
+                {locale === "zh" ? "确认解散此群聊" : "Confirm Dissolve"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmDissolve(true)}
+                className="flex h-8 w-full items-center justify-center rounded-[8px] text-[12.5px] font-medium text-red transition-colors hover:bg-red-tint"
+              >
+                {locale === "zh" ? "解散群聊" : "Dissolve Group"}
+              </button>
+            )
+          )}
         </div>
       )}
     </div>

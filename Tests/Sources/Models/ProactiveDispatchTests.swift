@@ -124,4 +124,46 @@ struct ProactiveDispatchTests {
         let manualRun = await service.tick(manual: true, onlyBotID: AIBotID.butler.rawValue)
         #expect(manualRun == [AIBotID.butler.rawValue])
     }
+    
+    
+    @MainActor
+    @Test func autonomousAgentPatrolExecutesConcreteWorkAndDeliversReport() async throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appending(path: "CotAutonomousPatrol-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        
+        let db = CotLocalDatabase(customURL: dir.appending(path: "autonomous.sqlite3"))
+        db.appendWeeklyReportFragment("完成了导出体积压缩与主动智能体架构升级")
+        let butler = CotButlerManager(database: db)
+        let botStore = AIBotStore(database: db)
+        let engine = CotAutonomousAgentEngine(database: db)
+        
+        let missions = AutonomousMissionPlanner.selectMissions(
+            eligibleBotIDs: [AIBotID.butler.rawValue, AIBotID.weeklyReport.rawValue],
+            weeklyFragmentCount: 1,
+            ungroupedDocCount: 0,
+            unextractedTurnCount: 0,
+            unreadNewsCount: 0,
+            manual: false
+        )
+        #expect(missions.contains(where: { $0.botID == AIBotID.weeklyReport.rawValue }))
+        #expect(missions.contains(where: { $0.botID == AIBotID.butler.rawValue }))
+        
+        let reports = await engine.runProactivePatrol(
+            manual: true,
+            onlyBotID: AIBotID.weeklyReport.rawValue,
+            botStore: botStore,
+            butlerManager: butler
+        )
+        #expect(reports.count == 1)
+        #expect(!reports[0].deliverables.isEmpty)
+        #expect(!db.fetchRecentAutonomousTasks(limit: 10).isEmpty)
+        
+        let weeklyDM = butler.sessions.first(where: { $0.botID == AIBotID.weeklyReport.rawValue })
+        #expect(weeklyDM != nil)
+        let msgs = db.fetchButlerMessages(sessionID: weeklyDM?.id ?? "")
+        let lastMeta = CotButlerManager.decodeMetadata(from: msgs.last?.actionsJSON ?? "")
+        #expect(lastMeta.workReport?.deliverables.count == reports[0].deliverables.count)
+    }
 }

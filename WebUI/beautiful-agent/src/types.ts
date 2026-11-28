@@ -21,6 +21,25 @@ export type ToolReceipt = {
   status?: "done" | "error";
 };
 
+export type AutonomousDeliverable = {
+  id: string;
+  kind: "document" | "board" | "memory" | string;
+  targetID: string;
+  title: string;
+  subtitle?: string;
+};
+
+export type AutonomousWorkReport = {
+  missionID: string;
+  botID: string;
+  botName: string;
+  title: string;
+  summary: string;
+  steps: string[];
+  deliverables: AutonomousDeliverable[];
+  completedAtMs: number;
+};
+
 export type AgentMessage = {
   id: string;
   role: "user" | "assistant";
@@ -41,6 +60,7 @@ export type AgentMessage = {
   stickerID?: string | null;
   stickerURL?: string | null;
   stickerCaption?: string | null;
+  workReport?: AutonomousWorkReport | null;
 };
 
 export type SessionSummary = {
@@ -204,6 +224,7 @@ export type MeetingRoomSessionSummary = {
   isPinned: boolean;
   updatedAt: number;
   participantIDs: string[];
+  ownerID?: string;
 };
 
 export type StickerItem = {

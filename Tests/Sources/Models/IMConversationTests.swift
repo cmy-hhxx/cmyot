@@ -312,4 +312,118 @@ struct IMConversationTests {
         db.clearBotFromWorkspaces(botID: AIBotID.translate.rawValue)
         #expect(db.findButlerWorkspace(botID: AIBotID.translate.rawValue) == nil)
     }
+    
+    
+    @Test func encodeMetadataPreservesUserStickersAndWorkReports() throws {
+        let report = AutonomousWorkReportPayload(
+            missionID: "m-1",
+            botID: AIBotID.weeklyReport.rawValue,
+            botName: "周报搭子",
+            title: "整理周报草稿",
+            summary: "已输出草稿文档。",
+            steps: ["汇总记录", "生成 Markdown 草稿"],
+            deliverables: [
+                AutonomousDeliverable(
+                    id: "d-1",
+                    kind: "document",
+                    targetID: "doc-1",
+                    title: "本周周报",
+                    subtitle: "Markdown"
+                )
+            ],
+            completedAtMs: 1_700_000_000_000
+        )
+        let meta = ButlerMessageMetadata(
+            stickerID: "stk-user-1",
+            stickerURL: "cot-media://sticker/stk-user-1",
+            stickerCaption: "开心",
+            workReport: report
+        )
+        let encoded = CotButlerManager.encodeMetadata(meta)
+        #expect(encoded != "[]")
+        let decoded = CotButlerManager.decodeMetadata(from: encoded)
+        #expect(decoded.stickerID == "stk-user-1")
+        #expect(decoded.stickerURL == "cot-media://sticker/stk-user-1")
+        #expect(decoded.stickerCaption == "开心")
+        #expect(decoded.workReport?.title == "整理周报草稿")
+        #expect(decoded.workReport?.deliverables.count == 1)
+    }
+    
+    
+    @Test func butlerFreshEntrySummarizesPriorSessionAndCreatesNewChat() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appending(path: "CotIMButlerFreshEntry-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        
+        let db = CotLocalDatabase(customURL: dir.appending(path: "fresh-butler.sqlite3"))
+        let manager = CotButlerManager(database: db)
+        let firstID = manager.activeSessionID
+        
+        db.appendButlerMessage(ButlerChatMessage(
+            id: UUID().uuidString,
+            sessionID: firstID,
+            role: "user",
+            content: "帮我梳理下周重点目标",
+            actionsJSON: "[]",
+            createdAt: Date()
+        ))
+        db.appendButlerMessage(ButlerChatMessage(
+            id: UUID().uuidString,
+            sessionID: firstID,
+            role: "assistant",
+            content: "建议优先完成数据库迁移与自主智能体集成。",
+            actionsJSON: "[]",
+            createdAt: Date()
+        ))
+        manager.reloadFromDatabase()
+        #expect(!manager.messages.isEmpty)
+        
+        manager.prepareFreshButlerEntryIfNeeded()
+        #expect(manager.activeSessionID != firstID)
+        #expect(manager.messages.isEmpty)
+        
+        let summaries = db.fetchRecentButlerSessionSummaries(
+            forBotID: AIBotID.butler.rawValue,
+            excludingSessionID: manager.activeSessionID,
+            limit: 5
+        )
+        #expect(summaries.contains(where: { $0.id == firstID && !$0.summary.isEmpty }))
+    }
+    
+    
+    @MainActor
+    @Test func userOwnedGroupCreationHonorsSelectionAndDissolvesWithoutPhantomGroup() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appending(path: "CotIMUserGroupTest-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        
+        let db = CotLocalDatabase(customURL: dir.appending(path: "group-owner.sqlite3"))
+        let botStore = AIBotStore(database: db)
+        let manager = ButlerMeetingRoomManager(database: db)
+        
+        // Remove bootstrapped group first to verify dissolve leaves zero phantom groups.
+        for existing in manager.sessions {
+            manager.dissolveSession(existing.id)
+        }
+        #expect(manager.sessions.isEmpty)
+        #expect(manager.isActive == false)
+        
+        let created = manager.createSession(
+            title: "周报攻坚群",
+            participantIDs: [AIBotID.butler.rawValue, AIBotID.weeklyReport.rawValue],
+            ownerID: "user",
+            botStore: botStore
+        )
+        #expect(created.ownerID == "user")
+        #expect(created.participantIDs == [AIBotID.butler.rawValue, AIBotID.weeklyReport.rawValue])
+        #expect(manager.sessions.count == 1)
+        #expect(manager.isActive == true)
+        
+        manager.dissolveSession(created.id)
+        #expect(manager.sessions.isEmpty)
+        #expect(manager.activeSessionID.isEmpty)
+        #expect(manager.isActive == false)
+    }
 }

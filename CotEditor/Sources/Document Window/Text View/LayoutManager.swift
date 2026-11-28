@@ -255,17 +255,18 @@ class LayoutManager: NSLayoutManager, InvisibleDrawing, ValidationIgnorable {
     /// Fills background rectangles with a color.
     override func fillBackgroundRectArray(_ rectArray: UnsafePointer<NSRect>, count rectCount: Int, forCharacterRange charRange: NSRange, color: NSColor) {
         
-        // modify selected highlight color when the window is inactive
-        // -> Otherwise, `.unemphasizedSelectedContentBackgroundColor` will be used forcibly and text becomes unreadable
-        //    when the window appearance and theme are inconsistent.
-        if color == .unemphasizedSelectedContentBackgroundColor,  // check if inactive
+        var resolvedColor = color
+        // Modify selected highlight color when the window is inactive so text stays legible
+        // even when the window appearance and theme are inconsistent.
+        if color == .unemphasizedSelectedContentBackgroundColor,
            let newColor = self.unemphasizedSelectedContentBackgroundColor,
            newColor != color
         {
-            newColor.setFill()
+            resolvedColor = newColor
+            resolvedColor.setFill()
         }
         
-        super.fillBackgroundRectArray(rectArray, count: rectCount, forCharacterRange: charRange, color: color)
+        super.fillBackgroundRectArray(rectArray, count: rectCount, forCharacterRange: charRange, color: resolvedColor)
     }
     
     

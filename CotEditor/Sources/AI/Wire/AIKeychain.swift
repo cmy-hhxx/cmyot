@@ -79,6 +79,15 @@ nonisolated enum AIKeychain {
     }
     
     
+    /// Removes every stored API key (both per-profile and legacy keys) from the local secret store.
+    static func clearAllAPIKeys() {
+        
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        self.saveSecretsLocked([:])
+    }
+    
+    
     /// Returns a snapshot of all non-empty stored API keys keyed by account identifier.
     static func allAPIKeys() -> [String: String] {
         
